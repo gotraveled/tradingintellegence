@@ -9,14 +9,14 @@ const eslintConfig = defineConfig([
   prettier,
   {
     files: ["src/**/*.{ts,tsx}"],
-    ignores: ["src/lib/services/**", "src/lib/mock/**"],
+    ignores: ["src/lib/services/**", "src/lib/mock-data/**"],
     rules: {
       "no-restricted-imports": [
         "error",
         {
           patterns: [
             {
-              group: ["@/lib/mock", "@/lib/mock/*"],
+              group: ["@/lib/mock-data", "@/lib/mock-data/*"],
               message: "Demo data must be accessed through src/lib/services so it stays labelled.",
             },
           ],

@@ -1,14 +1,14 @@
 import Link from "next/link";
 import { Brand } from "@/components/navigation/brand";
 import { buttonVariants } from "@/components/ui/button";
-import { ROUTES } from "@/lib/constants";
+import { PUBLIC_ROUTES, ROUTES } from "@/lib/constants";
 
 const LINKS = [
-  { href: "#intelligence", label: "Intelligence" },
-  { href: "#setups", label: "Setups" },
-  { href: "#scoring", label: "Scoring" },
-  { href: "#validation", label: "Validation" },
-  { href: "#ai", label: "AI Explanation" },
+  { href: PUBLIC_ROUTES.features, label: "Features" },
+  { href: PUBLIC_ROUTES.methodology, label: "Methodology" },
+  { href: PUBLIC_ROUTES.markets, label: "Markets" },
+  { href: PUBLIC_ROUTES.pricing, label: "Pricing" },
+  { href: PUBLIC_ROUTES.about, label: "About" },
 ];
 
 export function SiteHeader() {
@@ -18,13 +18,13 @@ export function SiteHeader() {
         <Brand />
         <nav aria-label="Marketing" className="hidden items-center gap-5 md:flex">
           {LINKS.map((link) => (
-            <a
+            <Link
               key={link.href}
               href={link.href}
               className="text-[13px] text-muted-foreground transition-colors hover:text-foreground"
             >
               {link.label}
-            </a>
+            </Link>
           ))}
         </nav>
         <Link

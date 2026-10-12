@@ -1,4 +1,4 @@
-import { DEMO_BACKTEST_RESULT, DEMO_STRATEGIES } from "@/lib/mock";
+import { DEMO_BACKTEST_RESULT, DEMO_STRATEGIES } from "@/lib/mock-data";
 import type { BacktestResult, Strategy } from "@/lib/types";
 import type { DataEnvelope } from "./types";
 

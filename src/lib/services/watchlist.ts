@@ -1,4 +1,4 @@
-import { DEMO_WATCHLIST } from "@/lib/mock";
+import { DEMO_WATCHLIST } from "@/lib/mock-data";
 import type { WatchlistItem } from "@/lib/types";
 import type { DataEnvelope } from "./types";
 

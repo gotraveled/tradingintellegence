@@ -11,3 +11,17 @@ export const RISK_DISCLAIMER =
 
 export const RISK_DISCLAIMER_SHORT =
   "Analysis only. Not financial advice. No outcome is guaranteed.";
+
+/** Public marketing/content pages. `/markets` is the platform's public Markets overview. */
+export const PUBLIC_ROUTES = {
+  home: "/",
+  about: "/about",
+  features: "/features",
+  markets: "/markets",
+  methodology: "/methodology",
+  pricing: "/pricing",
+  riskDisclosure: "/risk-disclosure",
+  privacyPolicy: "/privacy-policy",
+  terms: "/terms",
+  contact: "/contact",
+} as const;

@@ -1,4 +1,4 @@
-import { DEMO_ANALYSIS, DEMO_MARKET_REGIMES, DEMO_OPPORTUNITIES } from "@/lib/mock";
+import { DEMO_ANALYSIS, DEMO_MARKET_REGIMES, DEMO_OPPORTUNITIES } from "@/lib/mock-data";
 import type { AnalysisSnapshot, MarketRegimeSnapshot, Opportunity } from "@/lib/types";
 import {
   filterOpportunities,

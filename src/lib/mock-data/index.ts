@@ -1,9 +1,9 @@
 /**
- * DEMO DATA — NOT REAL MARKET DATA.
+ * This is development/demo data and must be replaced by the market intelligence API.
  *
- * Illustrative values used to design and exercise the UI before market-data providers and the
- * analysis engine exist. Prices, scores, timestamps, and regimes are invented and must never be
- * presented without a visible "Demo" label. Only `src/lib/services/*` may import this module
+ * Shaped like the eventual API responses so service boundaries stay identical when real data
+ * arrives. Prices, scores, timestamps, and regimes are invented and must never be presented
+ * without a visible "Demo" label. Only `src/lib/services/*` may import this module
  * (enforced by ESLint).
  */
 export { DEMO_ALERT_EVENTS, DEMO_ALERTS } from "./alerts";

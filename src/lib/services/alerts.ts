@@ -1,4 +1,4 @@
-import { DEMO_ALERT_EVENTS, DEMO_ALERTS } from "@/lib/mock";
+import { DEMO_ALERT_EVENTS, DEMO_ALERTS } from "@/lib/mock-data";
 import type { Alert, AlertEvent } from "@/lib/types";
 import type { DataEnvelope } from "./types";
 
