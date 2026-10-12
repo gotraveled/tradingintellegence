@@ -140,3 +140,31 @@ interface SwingPoint {
 - Property: truncating the series at any bar yields the identical confirmed prefix.
 - Sensitivity: `minSignificanceAtr` ↑ ⇒ swing count ↓; `leftBars`/`rightBars` ↑ ⇒ count ↓ and
   confirmation latency ↑.
+
+## Implementation notes (Phase 4A — `src/lib/engines/swing.ts`)
+
+Points where the spec left room for interpretation — recorded, not silently changed:
+
+- **ATR startup.** Wilder ATR is defined for `i ≥ atrLength` (seed = SMA of `TR[1..atrLength]`,
+  then smoothed). For `i < atrLength` — where early pivots live — `atr[i]` is the **mean of the
+  available true ranges** `TR[1..i]`. Fully causal; never uses bars after `i`.
+- **Equal-merge vs significance.** The significance gate uses the literal left-window maximum.
+  A second equal bar inside the window has near-zero margin and is usually not a candidate —
+  so `mergeEqual` effectively merges equal peaks separated by ≥ `leftBars` (the "equal highs
+  as liquidity pool" case) plus any adjacent equal bars that do pass the gate. This is the
+  literal-spec reading; tests cover both.
+- **Dominance vs confirmed history.** The isolation rule says a higher high replaces "the
+  developing/prior high". Reconciled with "confirmed history does not rewrite" as:
+  a _developing_ open swing yields to any more-extreme candidate; a _confirmed_ open yields
+  **only to a confirmed candidate** — a still-developing candidate may die and must never kill
+  confirmed history. Less-extreme/absorbed candidates are diagnostics (`superseded`), never
+  emitted. Confirmed pivots/prices are never rewritten — supersession is a status transition.
+- **Merge into a confirmed open** (equal bar arriving after the first member confirmed) updates
+  `equalCount`, anchor and `confirmedIndex` — the merged entity's `confirmedIndex` is the
+  **max** of its members, so the merged data was never knowable earlier. Point-in-time safe.
+- **`state(atIndex)`** is implemented by re-detection on the `0..t` prefix — guaranteed to match
+  what a live pass knew at `t`. O(n·w) per call; backtests should batch-detect once and filter
+  by `confirmedIndex <= t`.
+- **Swing id**: `sw:{symbol}:{timeframe}:{kind}:{pivotTime}` — deterministic, never random.
+- **Invalidation index** is additionally stored in `metadata.invalidatedIndex` alongside
+  `invalidatedAt` for point-in-time filtering.

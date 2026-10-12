@@ -154,3 +154,35 @@ A confirmed BOS/CHOCH is an immutable historical fact — it happened. What can 
   (single event), gap-through (first close counts).
 - Property: at bar `t`, no `StructureBreak` is emitted whose confirmation bar is `> t`.
 - Property: a BOS can never occur while trend state is `transition` or `range`.
+
+## Implementation notes (Phase 4B — `src/lib/engines/structure.ts`)
+
+Points where the spec left room for interpretation — recorded, not silently changed:
+
+- **ATR source.** `StructureConfig` has no `atrLength`; the spec writes `× ATR` unqualified.
+  The implementation uses the **reference swing's `metadata.atrAtPivot`** (computed by the
+  Swing Engine at its own `atrLength`) for both `classifyToleranceAtr` and `minBreakAtr`
+  margins. Deterministic, scale-free, and consistent — a level's margin was already measured
+  at its own formation volatility. Missing `atrAtPivot` degrades to a pure close beyond the
+  level (margin 0).
+- **"State at the start of that bar."** Read as: at bar `t`, swing confirmations are applied
+  first (spec's own priority), then BOS/CHOCH are evaluated against the updated state — a bar
+  may confirm the trend and break a pre-existing level on the same close. Only information
+  knowable at `t` is ever used; `structureStateAt(t)` truncates identically.
+- **"EH or EL dominant."** Implemented as: if the most recent confirmed high classifies `EH`
+  or the most recent confirmed low classifies `EL`, trend is `range`. Any single equal
+  classification flags range until a non-equal swing arrives — deterministic and honest about
+  bound markets.
+- **Protected level.** Most recent confirmed `HL` in an uptrend / `LH` in a downtrend —
+  tracked as classification-time state, never re-derived from closes.
+- **Swing output is point-in-time.** `structure.swings` contains only swings whose
+  `confirmedIndex ≤ end` — a truncated snapshot cannot leak later confirmations.
+- **Failed-break window.** Assessment runs on bars `breakIndex+1 … breakIndex+failedBreakBars`;
+  expiry without a close back inside leaves the break standing. Failed CHOCH restores the
+  `structureBefore` trend; failed BOS forces `transition`.
+- **`swings` ingestion order.** Swings confirming on the same bar ingest in `pivotIndex` order;
+  invalidations apply before ingestions on the same bar (a dead reference never classifies).
+- **`MarketStructure.swings`** includes confirmed and invalidated swings that participated;
+  developing/superseded swings are excluded by contract (confirmed-only input).
+- **Event ids** `sb:{symbol}:{tf}:{type}:{dir}:{refSwingId}:{breakTime}` — a `break_failed`
+  event reuses its break's refId intentionally (it annotates the same event).

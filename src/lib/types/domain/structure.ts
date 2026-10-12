@@ -17,7 +17,10 @@ export type SwingKind = "high" | "low";
 export type SwingStatus = "developing" | "confirmed" | "superseded" | "invalidated";
 
 export interface SwingPoint {
+  /** Deterministic id derived from symbol/timeframe/kind/pivot time — never random. */
   id?: ID;
+  symbol?: string;
+  timeframe?: Timeframe;
   /** Whether the pivot is a high or a low — intrinsic. */
   kind: SwingKind;
   /**
@@ -42,12 +45,23 @@ export interface SwingPoint {
 export type StructureBreakType = "BOS" | "CHOCH";
 
 export interface StructureBreak {
+  /** Deterministic id — symbol/timeframe/type/direction/ref-swing/break time. Never random. */
+  id?: ID;
   type: StructureBreakType;
   direction: Direction;
   price: Price;
   time: ISODateTime;
   /** Whether the break was confirmed by a candle close beyond the level. */
   confirmed: boolean;
+  /** Swing whose level was broken. */
+  refSwingId?: ID;
+  /** Level that was broken (the reference swing's price). */
+  refPrice?: Price;
+  /** Bar index of the breaking close. */
+  breakIndex?: number;
+  /** Trend state before/after the event. */
+  structureBefore?: TrendState;
+  structureAfter?: TrendState;
   /**
    * Price closed back inside the broken level within `structure.failedBreakBars`.
    * The break still happened — `failed` marks its assessment, not the event (spec 03).
