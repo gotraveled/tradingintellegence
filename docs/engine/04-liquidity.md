@@ -146,3 +146,47 @@ Deterministic rules:
   from two sources (merged, `sources` length 2); expired pool.
 - Property: sweep events never appear at bars before the reclaim close.
 - Property: `sources` merging produces exactly one pool per level band.
+
+## Implementation notes (Phase 4C — `src/lib/engines/liquidity.ts`)
+
+Points where the spec left room for interpretation — recorded, not silently changed:
+
+- **ATR source.** `LiquidityConfig` has no `atrLength`; every level margin (`equalToleranceAtr`,
+  `minPenetrationAtr`, `minCloseAtr`, `approachAtr`, displacement thresholds) uses the pool's
+  **frozen formation ATR** — the representative swing's `metadata.atrAtPivot`; session pools use
+  the mean TR of the prior session's bars. Deterministic and scale-free.
+- **`approachAtr = 0.1`.** The spec hard-codes `approachAtr (0.1×ATR)` — implemented as a named
+  constant, not config.
+- **Range pools not implemented.** The pool table references `range.lookbackBars`, which does
+  not exist in `LiquidityConfig` — flagged as a spec/config gap rather than inventing a param.
+  `range_high`/`range_low` land in a later pass once the config exists.
+- **Session pools.** `prev_day_*`/`prev_week_*` use UTC day and ISO-week (UTC Monday)
+  boundaries — the spec's 24/7 default. Market-specific session calendars land when consumed
+  via `Market.sessions`.
+- **Pool status `swept` at the reclaim bar.** The spec ties `status = swept` to the confirmed
+  sweep but also says an aborted sweep's pool "still counts as swept" — so the pool flips at
+  reclaim (stops were taken), `sweptAt` recorded then; `sweep_developing`/`sweep_confirmed`
+  carry the event lifecycle. Aborted sweeps are diagnostics-only (`metadata.sweepAborted` +
+  `diagnostics.abortedSweeps`), per spec.
+- **Sweep vs break same raid.** A close beyond `minCloseAtr` emits `break_attempt` immediately;
+  if the reclaim lands inside `maxReclaimBars` the pending break is superseded — the sweep
+  classification wins (spec). Re-entry after `maxReclaimBars` but inside `holdBars` →
+  `false_breakout`, pool marked `falseBroken`.
+- **`approaching` is transient.** Recomputed per bar: the pool is `approaching` only while the
+  latest bar sits inside the approach band without touching; moving away reverts to `resting`.
+- **Cascade merge.** A cluster band forming after its members' single-swing pools bridges
+  overlapping bands — pools consolidate until no same-side overlaps remain (identity keeps the
+  earliest pool, status keeps the most advanced lifecycle). Satisfies "one pool per level band".
+- **Strength formula.** Spec defines 0–100 over "touches, source count, recency, tightness"
+  without weights — implemented as `touches 40 + sources 25 + recency 20 + tightness 15`
+  (touches capped at 5, sources at 3, recency decays linearly over `poolExpiryBars`, tightness
+  = 1 − band width in ATR clamped [0,1]). Documented for later tuning.
+- **Displacement bar timing.** Displacement is required strictly **after** the reclaim bar
+  (window `reclaim+1 … reclaim+displacementBars`) — the reclaim bar itself cannot satisfy it.
+- **Sweep event payload.** `sweep_developing`/`sweep_confirmed` metadata carries
+  `eventId` (`{poolId}:sweep:{barTime}` — deterministic), `side`, `level`, `penetrationBar`,
+  `reclaimBar`, and `extreme` (deepest wick of the raid). The pool's stops are taken at the
+  penetration extreme — recorded for later engines.
+- **Pool composition + freshness.** `metadata.memberSwingIds` (comma-joined ids) preserves
+  membership through sweeps/merges — pools are never deleted. `metadata.freshnessBars` is the
+  bars-since-last-touch at snapshot time — bar-index freshness, no wall-clock.
