@@ -40,10 +40,14 @@ export interface LiquidityConfig {
     holdBars: number;
     retestWindow: number;
   };
+  /** Active-range pool band window (spec 04 pool table: `range.lookbackBars`). */
+  range: { lookbackBars: number };
 }
 
 /** Demand/supply zones (05–07). `sideOverrides` has no defaults — evidence may set it. */
 export interface ZoneConfig {
+  /** Leg-in preceding the base (spec 05: `lookbackLeg`, `legMinAtr`). */
+  leg: { lookbackBars: number; minMoveAtr: number };
   base: { minBars: number; maxBars: number; maxRangeAtr: number; maxBodyAtr: number };
   departure: {
     minMoveAtr: number;
@@ -51,7 +55,15 @@ export interface ZoneConfig {
     displacementBodyAtr: number;
     displacementRangeAtr: number;
   };
-  retest: { depthMitigatedPct: number; invalidateCloseAtr: number; maxRetests: number };
+  retest: {
+    depthMitigatedPct: number;
+    invalidateCloseAtr: number;
+    maxRetests: number;
+    /** remainingStrength decay per completed retest (spec 07). */
+    retestDecay: number;
+    /** remainingStrength decay vs penetration depth (spec 07). */
+    depthDecay: number;
+  };
   freshnessMaxBars: number;
   boundaryMode: "extremes" | "bodies";
   /** Sessioned-market rule: open beyond distal edge invalidates without a close (06). */

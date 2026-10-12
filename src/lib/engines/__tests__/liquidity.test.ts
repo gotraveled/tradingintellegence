@@ -14,6 +14,7 @@ const CFG: LiquidityConfig = {
   poolExpiryBars: 250,
   sweep: { minPenetrationAtr: 0.05, maxReclaimBars: 3, displacementBars: 3, displacementBodyAtr: 0.6, displacementRangeAtr: 1.2 },
   break: { minCloseAtr: 0.1, holdBars: 5, retestWindow: 10 },
+  range: { lookbackBars: 5 },
 };
 
 /** Synthetic confirmed swing — mirrors Phase 4A output shape. */
@@ -151,6 +152,24 @@ describe("pool formation", () => {
   it("below clusterMinCount → no cluster source", () => {
     const { pools } = run(mk(8), [sw("high", 15.0, 0, 2), sw("high", 15.1, 1, 4)]);
     expect(pools.every((p) => !p.sources.includes("cluster_high"))).toBe(true);
+  });
+
+  it("range pools form at the horizon when structure.trend = range", () => {
+    const candles = mk(10);
+    setBar(candles, 7, { high: 20, low: 18 });
+    const structure = { ...ms([]), trend: "range" as const };
+    const { pools } = analyzeLiquidity(candles, structure, "T", "5m", CFG, "v1");
+    const rh = pools.find((p) => p.sources.includes("range_high"));
+    const rl = pools.find((p) => p.sources.includes("range_low"));
+    expect(rh?.price).toBe(20); // max high of last 5 bars (6..10 window → bars 5-9: high 20)
+    expect(rl?.side).toBe("sell_side");
+  });
+
+  it("no range pools when the trend is not range", () => {
+    const structure = { ...ms([]), trend: "uptrend" as const };
+    const { pools } = analyzeLiquidity(mk(10), structure, "T", "5m", CFG, "v1");
+    expect(pools.some((p) => p.sources.includes("range_high"))).toBe(false);
+    expect(pools.some((p) => p.sources.includes("range_low"))).toBe(false);
   });
 
   it("prev_day pools form at the UTC day boundary", () => {

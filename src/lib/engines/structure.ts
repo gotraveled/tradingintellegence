@@ -304,6 +304,7 @@ export function analyzeStructure(
       state.trend === "uptrend" ? "bullish" : state.trend === "downtrend" ? "bearish" : "neutral",
     swings: classified,
     lastBreak: state.breaks[state.breaks.length - 1],
+    breaks: state.breaks,
     keyLevels,
     updatedAt: candles.length > 0 ? toISO(candles[lastBar].time) : new Date(0).toISOString(),
   };

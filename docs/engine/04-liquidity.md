@@ -157,9 +157,13 @@ Points where the spec left room for interpretation — recorded, not silently ch
   the mean TR of the prior session's bars. Deterministic and scale-free.
 - **`approachAtr = 0.1`.** The spec hard-codes `approachAtr (0.1×ATR)` — implemented as a named
   constant, not config.
-- **Range pools not implemented.** The pool table references `range.lookbackBars`, which does
-  not exist in `LiquidityConfig` — flagged as a spec/config gap rather than inventing a param.
-  `range_high`/`range_low` land in a later pass once the config exists.
+- **Range pools.** The pool table defines `range_high`/`range_low` via `range.lookbackBars`,
+  which was missing from `LiquidityConfig` — added as `liquidity.range.lookbackBars`
+  (typed; value injected by the caller, per the config contract). The rule evaluates at the
+  **analysis horizon only**: `MarketStructure` exposes `trend` as end-state (no per-bar
+  history), so when `structure.trend = range` the band is computed over the last
+  `lookbackBars` candles and both boundary pools form at `end`. A per-bar trend-history
+  contract extension would allow mid-history formation — flagged, not invented.
 - **Session pools.** `prev_day_*`/`prev_week_*` use UTC day and ISO-week (UTC Monday)
   boundaries — the spec's 24/7 default. Market-specific session calendars land when consumed
   via `Market.sessions`.

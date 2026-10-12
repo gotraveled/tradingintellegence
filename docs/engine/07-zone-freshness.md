@@ -93,3 +93,16 @@ remainingStrength = strength × (1 − retestDecay × retestCount) × (1 − dep
 - Property: `penetrationDepthPct` monotonically non-decreasing while alive.
 - Property: `remainingStrength ≤ strength` always.
 - Property: `retestCount` never exceeds the number of distinct entry blocks.
+
+## Implementation notes (Phase 4D)
+
+- **`tested` lives in `freshness`, not `status`.** `ZoneStatus` has no `tested` member — a
+  retested-but-alive zone stays `status: "active"` with `freshness: "tested"` (the spec's
+  own alias table). `mitigated` = this doc's `consumed`.
+- **Events.** `zone_created` at the confirm bar, `zone_retested` at each retest-block exit,
+  `zone_consumed` / `zone_invalidated` at their triggers. `expired` has no
+  `DetectionEventKind` — diagnostics-only, consistent with pool expiry in 04.
+- **`lastEntryBar`.** Expiry tracks the most recent in-zone bar (creation counts), matching
+  "zero re-entry" wording.
+- **`penetrationDepthPct` is unclamped above 100** — a wick through the distal edge is
+  deeper-than-100% penetration; the spec caps nothing.

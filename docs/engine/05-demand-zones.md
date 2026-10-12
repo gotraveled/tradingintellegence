@@ -145,3 +145,45 @@ remaining features — the score is still a weighted mean, never padded.
 - Property: `widthAtr` appears only in the width feature — it never blocks zone creation.
 - Property: score in [0, 100] always; zero when all features are 0.
 - Property: weights redistributed when volume absent still sum to 1.0.
+
+## Implementation notes (Phase 4D — `src/lib/engines/zones.ts`)
+
+Interpretations recorded where the spec left room — not silent changes:
+
+- **Config gaps resolved.** `lookbackLeg`/`legMinAtr` (this spec) and `retestDecay`/`depthDecay`
+  (07) had spec defaults but no typed fields — added as `zone.leg.lookbackBars`,
+  `zone.leg.minMoveAtr`, `zone.retest.retestDecay`, `zone.retest.depthDecay`. Values are
+  injected; the type only declares them.
+- **ATR convention.** `ZoneConfig` has no `atrLength`; every margin uses the frozen formation
+  ATR = mean true range of the `leg.lookbackBars` bars preceding the base. Deterministic,
+  causal, scale-free.
+- **Leg-in.** Measured as `close[i−1] − close[i−lookbackLeg]`: negative ≥ `legMinAtr` → drop
+  (DBR), positive → rally (RBR); |move| < `legMinAtr` → no candidate. Continuation patterns
+  additionally require `departureMove > |legMove|` (spec: "departure stronger than leg in").
+- **Base scan.** Longest qualifying contiguous run starting at `i`, ≤ `base.maxBars`. A wide
+  bar (range ≥ `displacementRangeAtr × ATR`) **terminates extension** — a base already found
+  is unaffected since departure legs are supposed to be wide. A compressed region extending
+  past `maxBars` is consolidation → rejected (advances `i` by 1 so a tail base can form).
+- **Displacement candle test.** `close > open` for bullish (`close < open` bearish) — the
+  spec's "bullish close" read literally.
+- **`structureImpact`.** `strong` = a `BOS`/`CHOCH` in `structure.breaks` with `breakIndex`
+  inside the departure window and matching direction (a `failed` break still counts — it was
+  produced). `minor` = the departure close crosses a confirmed same-direction-opposite-kind
+  swing that is not a `keyLevels` price, with no break event. `MarketStructure.breaks` was
+  added to the 4B output for this — the engine computed the array already.
+- **`liquidityContext`.** `formed_on_sweep` = opposite-side pool whose
+  `metadata.sweepConfirmedBar` (added in 4C) falls in `[i − departure.maxBars, j]`.
+  `departure_through_pool` = departure close clears a pool that was still resting at `d`
+  (`formedAt ≤ d`, no `sweptAt`/`brokenAt`/`expiredAt` ≤ d — `brokenAt` added in 4C).
+- **FVG link.** Spec-05 literal predicate only: leftmost 3-bar gap in the departure leg with
+  a directional middle candle → `fvgId` recorded + `fvgAssociation` feature. The full FVG
+  engine (min gap/body ATR, fill tracking) is Phase 4E+ — `FVGConfig` is not in this
+  engine's contract.
+- **HTF confluence.** No HTF input in the `ZoneEngine` contract — the feature is treated as
+  unavailable and its weight redistributed pro-rata, same as missing volume. `htfAligned`
+  stays unset.
+- **Side overrides.** `sideOverrides` keys are dotted `"group.field"` paths (e.g.
+  `"departure.minMoveAtr"`) resolved per side — empty by default, per spec.
+- **Overlapping zones.** Distinct bases produce distinct zones (never merged — spec defines
+  no zone consolidation). A single `i` can emit both a demand and a supply zone only if both
+  departure tests confirm independently.

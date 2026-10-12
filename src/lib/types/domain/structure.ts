@@ -79,6 +79,8 @@ export interface MarketStructure {
   bias: Bias;
   swings: SwingPoint[];
   lastBreak?: StructureBreak;
+  /** All confirmed breaks in chronological order — `lastBreak` is the tail. */
+  breaks?: StructureBreak[];
   /** Key levels derived from structure (e.g. last protected high/low). */
   keyLevels?: { label: string; price: Price }[];
   updatedAt: ISODateTime;

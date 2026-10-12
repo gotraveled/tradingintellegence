@@ -398,6 +398,9 @@ export function analyzeLiquidity(
           range >= cfg.sweep.displacementRangeAtr * atr &&
           initiative;
         if (within && displaced) {
+          // Recorded for downstream consumers (zone liquidityContext) — the pool's
+          // sweep is *confirmed* here, not at reclaim.
+          p.metadata = { ...(p.metadata ?? {}), sweepConfirmedAt: toISO(bar.time), sweepConfirmedBar: t };
           events.push({
             kind: "sweep_confirmed",
             refId: p.id,
@@ -466,6 +469,7 @@ export function analyzeLiquidity(
             metadata: { side: p.side, level: L, mode: "held" },
           });
           p.status = "broken";
+          p.metadata = { ...(p.metadata ?? {}), brokenAt: toISO(bar.time), brokenBar: t };
           p.pendingBreak = undefined;
         } else {
           // intervening retest that holds → early success (spec 04)
@@ -484,6 +488,7 @@ export function analyzeLiquidity(
               metadata: { side: p.side, level: L, mode: "retest_hold" },
             });
             p.status = "broken";
+            p.metadata = { ...(p.metadata ?? {}), brokenAt: toISO(bar.time), brokenBar: t };
             p.pendingBreak = undefined;
           }
         }
@@ -497,6 +502,20 @@ export function analyzeLiquidity(
         }
       }
     }
+  }
+
+  // 4. Range pools — spec 04: boundaries of an active range. `MarketStructure`
+  //    exposes trend as end-state only (no per-bar history), so range pools form
+  //    at the analysis horizon when the snapshot trend is "range" — documented.
+  if (structure.trend === "range" && end >= 0) {
+    const a = Math.max(0, end - cfg.range.lookbackBars + 1);
+    const lo = Math.min(...candles.slice(a, end + 1).map((c) => c.low));
+    const hi = Math.max(...candles.slice(a, end + 1).map((c) => c.high));
+    const atr = sessionAtr(a, end);
+    const mt = cfg.equalToleranceAtr * atr;
+    addOrMerge(pools, { side: "buy_side", source: "range_high", price: hi, lo: hi, hi, touches: 1, memberIds: [`rh:${candles[end].time}`], atr }, mt, symbol, timeframe, end, candles[end].time, events);
+    addOrMerge(pools, { side: "sell_side", source: "range_low", price: lo, lo, hi: lo, touches: 1, memberIds: [`rl:${candles[end].time}`], atr }, mt, symbol, timeframe, end, candles[end].time, events);
+    consolidate(pools, cfg.equalToleranceAtr);
   }
 
   // Strength at snapshot: touches 40% · sources 25% · recency 20% · tightness 15%.
@@ -560,8 +579,8 @@ export function createLiquidityEngine(): LiquidityEngine {
         barsConsumed: { from: 0, to: series.candles.length - 1 },
       };
 
-      if (config.clusterMinCount < 2 || config.sweep.maxReclaimBars < 1 || config.poolExpiryBars < 1) {
-        errors.push({ code: "invalid_config", message: "clusterMinCount ≥ 2, maxReclaimBars ≥ 1, poolExpiryBars ≥ 1" });
+      if (config.clusterMinCount < 2 || config.sweep.maxReclaimBars < 1 || config.poolExpiryBars < 1 || config.range.lookbackBars < 1) {
+        errors.push({ code: "invalid_config", message: "clusterMinCount ≥ 2, maxReclaimBars ≥ 1, poolExpiryBars ≥ 1, range.lookbackBars ≥ 1" });
         return { ok: false, errors, meta: { ...metaBase, events: [] } };
       }
 
