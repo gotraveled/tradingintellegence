@@ -1,6 +1,7 @@
 "use client";
 
-import { RotateCcw } from "lucide-react";
+import { ChevronDown, RotateCcw, SlidersHorizontal } from "lucide-react";
+import { useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Label, Select } from "@/components/ui/field";
 import {
@@ -11,7 +12,7 @@ import {
   SETUP_TYPES,
   TIMEFRAMES,
 } from "@/lib/constants";
-import type { OpportunityFilter } from "@/lib/utils";
+import { cn, type OpportunityFilter } from "@/lib/utils";
 
 const ALL = "all";
 
@@ -42,6 +43,9 @@ export function ScannerFilterBar({
   canReset,
 }: ScannerFilterBarProps) {
   const merged = { ...value, ...locked };
+  const [open, setOpen] = useState(false);
+  const panelId = useId();
+  const activeCount = Object.keys(value).length;
 
   const set = (key: FilterKey, raw: string) => {
     const next = { ...value };
@@ -86,42 +90,71 @@ export function ScannerFilterBar({
   };
 
   return (
-    <div className="rounded-lg border border-border bg-surface p-4">
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-7">
-        {control(
-          "market",
-          "Market",
-          MARKET_SEGMENTS.map((segment) => ({ value: segment.id, label: segment.label })),
-          "All markets",
+    <div className="rounded-lg border border-border bg-surface">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        aria-controls={panelId}
+        className="flex w-full items-center justify-between gap-2 px-4 py-3 text-sm font-medium lg:hidden"
+      >
+        <span className="flex items-center gap-2">
+          <SlidersHorizontal className="size-4 text-muted-foreground" aria-hidden="true" />
+          Filters
+          {activeCount ? (
+            <span className="rounded bg-info-muted px-1.5 numeric text-[11px] text-info">
+              {activeCount} active
+            </span>
+          ) : null}
+        </span>
+        <ChevronDown
+          className={cn("size-4 text-subtle-foreground transition-transform", open && "rotate-180")}
+          aria-hidden="true"
+        />
+      </button>
+      <div
+        id={panelId}
+        className={cn(
+          "border-t border-border p-4 lg:block lg:border-t-0",
+          open ? "block" : "hidden",
         )}
-        {control("assetClass", "Asset class", ASSET_CLASSES, "All asset classes")}
-        {control("timeframe", "Timeframe", TIMEFRAMES, "All timeframes")}
-        {control("setupType", "Setup type", SETUP_TYPES, "All setup types")}
-        {control("minScore", "Minimum score", MIN_SCORES, "Any score")}
-        {control(
-          "direction",
-          "Direction",
-          [
-            { value: "bullish", label: "Bullish" },
-            { value: "bearish", label: "Bearish" },
-          ],
-          "Both directions",
-        )}
-        {control(
-          "status",
-          "Status",
-          OPPORTUNITY_STATUSES.map((status) => ({
-            value: status,
-            label: SETUP_STATUS_LABEL[status],
-          })),
-          "All statuses",
-        )}
-      </div>
-      <div className="mt-3 flex justify-end">
-        <Button variant="ghost" size="sm" onClick={onReset} disabled={!canReset}>
-          <RotateCcw aria-hidden="true" />
-          Reset filters
-        </Button>
+      >
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-7">
+          {control(
+            "market",
+            "Market",
+            MARKET_SEGMENTS.map((segment) => ({ value: segment.id, label: segment.label })),
+            "All markets",
+          )}
+          {control("assetClass", "Asset class", ASSET_CLASSES, "All asset classes")}
+          {control("timeframe", "Timeframe", TIMEFRAMES, "All timeframes")}
+          {control("setupType", "Setup type", SETUP_TYPES, "All setup types")}
+          {control("minScore", "Minimum score", MIN_SCORES, "Any score")}
+          {control(
+            "direction",
+            "Direction",
+            [
+              { value: "bullish", label: "Bullish" },
+              { value: "bearish", label: "Bearish" },
+            ],
+            "Both directions",
+          )}
+          {control(
+            "status",
+            "Status",
+            OPPORTUNITY_STATUSES.map((status) => ({
+              value: status,
+              label: SETUP_STATUS_LABEL[status],
+            })),
+            "All statuses",
+          )}
+        </div>
+        <div className="mt-3 flex justify-end">
+          <Button variant="ghost" size="sm" onClick={onReset} disabled={!canReset}>
+            <RotateCcw aria-hidden="true" />
+            Reset filters
+          </Button>
+        </div>
       </div>
     </div>
   );

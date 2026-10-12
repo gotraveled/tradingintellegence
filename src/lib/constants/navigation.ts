@@ -24,7 +24,7 @@ export const ROUTES = {
   alerts: "/alerts",
   watchlist: "/watchlist",
   marketIntelligence: "/market-intelligence",
-  assistant: "/assistant",
+  assistant: "/ai-assistant",
   settings: "/settings",
 } as const;
 
@@ -103,7 +103,8 @@ export const NAV_ITEMS: NavItem[] = [
     title: "AI Assistant",
     href: ROUTES.assistant,
     icon: Bot,
-    description: "Ask questions about setups, structure, and market context in plain language.",
+    description:
+      "Market Intelligence Assistant — ask why setups qualify, how they were scored, and what the structure shows.",
     availability: "planned",
   },
 ];

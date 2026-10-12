@@ -1,0 +1,68 @@
+/**
+ * DEMO DATA — NOT REAL MARKET DATA. See ./index.ts.
+ */
+import type { WatchlistItem } from "@/lib/types";
+
+export const DEMO_WATCHLIST: WatchlistItem[] = [
+  {
+    id: "demo-wl-1",
+    symbol: "BTCUSDT",
+    market: "crypto",
+    assetClass: "crypto",
+    status: "developing",
+    setupType: "reversal",
+    direction: "bullish",
+    score: 76,
+    opportunityId: "demo-opp-btc-1",
+    lastUpdate: "2026-10-12T08:00:00Z",
+    createdAt: "2026-10-01T00:00:00Z",
+  },
+  {
+    id: "demo-wl-2",
+    symbol: "XAUUSD",
+    market: "commodities",
+    assetClass: "commodities",
+    status: "confirmed",
+    setupType: "continuation",
+    direction: "bullish",
+    score: 78,
+    opportunityId: "demo-opp-xau-1",
+    lastUpdate: "2026-10-12T09:00:00Z",
+    createdAt: "2026-10-01T00:00:00Z",
+  },
+  {
+    id: "demo-wl-3",
+    symbol: "EURUSD",
+    market: "forex",
+    assetClass: "forex",
+    status: "confirmed",
+    setupType: "reversal",
+    direction: "bearish",
+    score: 71,
+    opportunityId: "demo-opp-eur-1",
+    lastUpdate: "2026-10-12T09:15:00Z",
+    createdAt: "2026-10-02T00:00:00Z",
+  },
+  {
+    id: "demo-wl-4",
+    symbol: "NIFTY 50",
+    market: "indian-markets",
+    assetClass: "indices",
+    status: "confirmed",
+    setupType: "breakout",
+    direction: "bearish",
+    score: 63,
+    opportunityId: "demo-opp-nifty-1",
+    lastUpdate: "2026-10-12T07:30:00Z",
+    createdAt: "2026-10-03T00:00:00Z",
+  },
+  {
+    id: "demo-wl-5",
+    symbol: "AAPL",
+    market: "us-stocks",
+    assetClass: "equities",
+    status: "no_setup",
+    lastUpdate: "2026-10-11T20:00:00Z",
+    createdAt: "2026-10-04T00:00:00Z",
+  },
+];

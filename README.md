@@ -37,17 +37,20 @@ src/
       dashboard/             "Market Intelligence" overview
       markets/ [segment]/    Global Markets + crypto, forex, commodities, indices, us-stocks, indian-markets
       scanner/ [view]/       All Opportunities + reversals, breakouts, continuations, developing
-      chart/ strategy-lab/ alerts/ watchlist/ market-intelligence/ assistant/ settings/
+      chart/ strategy-lab/ alerts/ watchlist/ market-intelligence/ ai-assistant/ settings/
+      loading.tsx error.tsx  Route-group loading skeleton and error boundary
   components/
     ui/                      Design-system primitives (button, card, badge, status, field, table)
     layout/                  App shell, topbar, page header/container
     navigation/              Brand, sidebar, nav list, mobile nav
     marketing/               Landing page sections
-    dashboard/ scanner/ charts/ opportunities/ markets/ shared/
+    dashboard/ scanner/ charts/ opportunities/ markets/ strategy-lab/ alerts/ watchlist/
+    assistant/ shared/
   lib/
     constants/               Site copy, navigation/routes, markets, evidence taxonomy
     types/domain/            Central domain model (Asset, Market, Candle, MarketStructure, LiquidityEvent,
-                             Zone, Setup, Opportunity, Signal, Alert, BacktestResult, AnalysisSnapshot)
+                             Zone, Setup, Opportunity, Signal, Alert, AlertEvent, Strategy,
+                             BacktestRequest, BacktestResult, WatchlistItem, AnalysisSnapshot)
     types/                   UI-only types (status tones, navigation)
     services/                Contracts for external systems + `intelligence.ts` data access layer
     mock/                    DEMO DATA ONLY — importable from `services/` alone (ESLint-enforced)

@@ -6,14 +6,9 @@ import {
   type OpportunityFilter,
   type OpportunitySortKey,
 } from "@/lib/utils/opportunity-filters";
+import type { DataEnvelope } from "./types";
 
-export type DataSource = "demo" | "live";
-
-/** Every payload declares its source so the UI can label demo content. */
-export interface DataEnvelope<T> {
-  source: DataSource;
-  data: T;
-}
+export type { DataEnvelope, DataSource } from "./types";
 
 export interface OpportunityQuery extends OpportunityFilter {
   sort?: OpportunitySortKey;

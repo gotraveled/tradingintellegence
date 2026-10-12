@@ -1,10 +1,10 @@
-import { FlaskConical } from "lucide-react";
 import type { Metadata } from "next";
 import { PageContainer, PageHeader } from "@/components/layout/page-header";
 import { CapabilityList } from "@/components/shared/capability-list";
-import { Card, CardHeader } from "@/components/ui/card";
-import { EmptyState } from "@/components/ui/empty-state";
+import { StrategyLabWorkspace } from "@/components/strategy-lab/strategy-lab-workspace";
+import { Notice } from "@/components/ui/notice";
 import { getNavItem, ROUTES } from "@/lib/constants";
+import { getDemoBacktestResult, getStrategies } from "@/lib/services/backtesting";
 
 export const metadata: Metadata = { title: "Strategy Lab" };
 
@@ -28,20 +28,17 @@ const CAPABILITIES = [
 ];
 
 export default function StrategyLabPage() {
+  const strategies = getStrategies();
+
   return (
     <PageContainer>
       <PageHeader module={getNavItem(ROUTES.strategyLab)} />
-      <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
-        <Card>
-          <CardHeader title="Backtests" description="Saved strategies and their validation runs." />
-          <EmptyState
-            icon={FlaskConical}
-            title="No strategies yet"
-            description="Past performance of a strategy does not guarantee future results. Validation here is designed to expose weaknesses, not to promise returns."
-          />
-        </Card>
-        <CapabilityList capabilities={CAPABILITIES} />
-      </div>
+      <Notice tone="warning" title="Backtesting engine not connected">
+        This is the future backtesting environment. Runs are not executed yet, and any results shown
+        are illustrative demo data — not real performance.
+      </Notice>
+      <StrategyLabWorkspace strategies={strategies.data} demoResult={getDemoBacktestResult()} />
+      <CapabilityList capabilities={CAPABILITIES} />
     </PageContainer>
   );
 }

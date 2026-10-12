@@ -16,3 +16,15 @@ const DATE_TIME = new Intl.DateTimeFormat("en-GB", {
 export function formatDateTimeUTC(value: ISODateTime) {
   return `${DATE_TIME.format(new Date(value))} UTC`;
 }
+
+const DATE = new Intl.DateTimeFormat("en-GB", {
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
+/** e.g. "01 Oct 2025". */
+export function formatDateUTC(value: ISODateTime) {
+  return DATE.format(new Date(value));
+}

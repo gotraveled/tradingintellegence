@@ -65,6 +65,8 @@ export const SETUP_STATUS_TONE: Record<SetupStatus, Tone> = {
   expired: "inactive",
 };
 
+export const NO_SETUP_LABEL = "No active setup";
+
 export const OPPORTUNITY_STATUSES: OpportunityStatus[] = [
   "developing",
   "confirmed",

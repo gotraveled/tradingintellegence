@@ -7,5 +7,7 @@ export * from "./market";
 export * from "./opportunity";
 export * from "./setup";
 export * from "./signal";
+export * from "./strategy";
 export * from "./structure";
+export * from "./watchlist";
 export * from "./zone";

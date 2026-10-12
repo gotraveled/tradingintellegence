@@ -52,11 +52,16 @@ export default function DashboardPage() {
         description="Direction, regime, and strength for key benchmarks."
         badge={<SourceBadge source={regimes.source} />}
       >
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
+        <ul
+          aria-label="Market regime by benchmark"
+          className="-mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-1 sm:mx-0 sm:grid sm:grid-cols-2 sm:gap-4 sm:overflow-visible sm:px-0 lg:grid-cols-3 2xl:grid-cols-5"
+        >
           {regimes.data.map((snapshot) => (
-            <MarketRegimeCard key={snapshot.symbol} snapshot={snapshot} />
+            <li key={snapshot.symbol} className="w-[78%] shrink-0 snap-start sm:w-auto">
+              <MarketRegimeCard snapshot={snapshot} className="h-full" />
+            </li>
           ))}
-        </div>
+        </ul>
       </Section>
 
       <Section
