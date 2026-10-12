@@ -151,15 +151,24 @@ export interface BreakoutConfig {
   compressionBars: number;
   breakAtr: number;
   dispMinScore: number;
+  /** Spec 13: "breakout bar or the next dispBars bars" — displacement detection window.
+   *  Distinct from `holdBars` (acceptance) and `momentum.disp.bars` (leg scoring window). */
+  dispBars: number;
   holdBars: number;
   retestWindow: number;
   volumeMinRatio: number;
+  /** Boundary-pool anchor matching tolerance in ATR — spec ties the boundary to a
+   *  `range_high`/`range_low` pool (04) but defines no match tolerance. */
+  anchorNearAtr: number;
 }
 
 /** Continuation setup (14). */
 export interface ContinuationConfig {
   minTrendSwings: number;
   impulseMinAtr: number;
+  /** Spec 14: impulse leg "formed within `impulseMaxBars` (default 15) bars" — required by the
+   *  spec but absent from the contract; added as the smallest additive typed change. */
+  impulseMaxBars: number;
   pullbackMinPct: number;
   pullbackMaxPct: number;
   pullbackMinBars: number;

@@ -85,16 +85,26 @@ HTF — never auto-confirmed.
   The untaken side expires (`range_lost`/`stalled`) or is cancelled by an opposing CHOCH —
   it can never "confirm" from the opposite direction's evidence.
 - **Anchors.** The boundary pool (`sources` includes `range_high`/`range_low`, matching side)
-  is the anchor within 1×ATR; id `bo:{symbol}:{tf}:{dir}:{anchorPoolId|rng:rangeStart}`.
-  A missing pool is explicit (`B3` unmet, `anchorPoolId: null`), never fabricated.
+  is the anchor within `breakout.anchorNearAtr`×ATR — **source: config** (spec ties the
+  boundary to a pool but defines no match tolerance; the value is caller-supplied, not a
+  hidden constant). Id `bo:{symbol}:{tf}:{dir}:{anchorPoolId|rng:rangeStart}`; nearest pool
+  wins, ties by id. A missing pool is explicit (`B3` unmet, `anchorPoolId: null`).
 - **Sweep classification wins.** An attempt is disqualified when the boundary pool is
   sweep-tagged (`poolStatusAt === "swept"` or a knowable `sweep_*`/`false_breakout` event on
   the anchor). Post-attempt, that classification invalidates the setup (`boundary_*` reason).
-- **False breakout.** Any inside-close before acceptance → `invalidated` (`false_breakout`);
-  after `active`, only a close past `boundary ∓ lifecycle.invalidateAtr×ATR` invalidates
-  (`close_through_invalidation`). Wicks never trigger either — close-only throughout.
-- **`dispBars` window.** Spec 13's "next `dispBars` bars" maps to `breakout.holdBars` — the
-  momentum-stage window (`momentum.disp.bars`) is unreachable through the setup contract.
+- **False breakout / acceptance — source: spec.** Any inside-close before acceptance →
+  `invalidated` (`false_breakout`, lookalikes table: "reclaim inside, within `holdBars`");
+  a close exactly ON the boundary is outside. After `active`, only a close past
+  `boundary ∓ lifecycle.invalidateAtr×ATR` invalidates (`close_through_invalidation`) —
+  shallow inside-closes are permitted retest depth, never a retroactive false breakout.
+  Wicks never trigger either rule — close-only throughout.
+- **`dispBars` window — `breakout.dispBars`, source: config (spec-required).** Spec 13's
+  "breakout bar or the next `dispBars` bars" is a setup-side detection window — semantically
+  distinct from `holdBars` (acceptance) and `momentum.disp.bars` (leg-scoring window in 09).
+  The setup contract lacked the parameter, so it was added to `BreakoutConfig` as the
+  smallest additive typed change; callers should pass `momentum.disp.bars`-consistent values.
+  Window is `[attemptBar, attemptBar+dispBars]` inclusive; expiry precedes confirm so a late
+  score can never confirm outside it.
 - **Volume.** Evaluated once at the attempt bar; `median(20)` needs 20 volume-carrying bars —
   otherwise skipped (spec: "skipped with redistribution otherwise"), `B6` marked accordingly.
 - **Retest/entry band constants.** The `0.1×ATR` retest touch and `0.25×ATR` entry band are
@@ -105,5 +115,10 @@ HTF — never auto-confirmed.
 - **`expired` paths.** `range_lost` (range ceases to qualify / suffix start shifts),
   `stalled` (`lifecycle.expiryBars`), `attempt_unconfirmed` (disp window elapsed),
   `retest_window` (spec's named expiry for confirmed setups).
+- **Targets — source: spec.** T1 = range height projected from the boundary (measured move);
+  T2 = the single nearest opposing pool/zone level beyond the boundary in the break direction
+  (resting pools, active zones; snapshot-derived at candidate bar). Ordered by distance;
+  equal levels dedupe (float-normalized). Missing opposition → T1 only — explicit, never
+  fabricated.
 - **`score: 0`** placeholder — spec 15; targets/entry band in `metadata` are lifecycle
   evidence, not a trade plan (doc 16).

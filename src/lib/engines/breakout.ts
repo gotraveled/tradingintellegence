@@ -54,8 +54,6 @@ const num = (v: unknown): number | undefined => (typeof v === "number" ? v : und
 const RETEST_ATR = 0.1;
 /** Spec 13: entry band = broken boundary ± 0.25×ATR (metadata evidence, not an order). */
 const ENTRY_BAND_ATR = 0.25;
-/** Anchor search: boundary pools are matched within 1×ATR of the measured boundary. */
-const ANCHOR_NEAR_ATR = 1;
 
 /** Everything the detector may legally see at one closed bar — same shape as the 4H provider. */
 export interface BreakoutInput {
@@ -203,7 +201,7 @@ export function detectBreakouts(input: {
     return { start, support: lo, resistance: hi, height: hi - lo };
   }
 
-  /** Nearest boundary pool of the matching source/side within ANCHOR_NEAR_ATR×ATR. */
+  /** Nearest boundary pool of the matching source/side within `anchorNearAtr`×ATR. */
   function anchorPool(pools: LiquidityPool[] | undefined, dir: Direction, boundary: number, t: number, atr: number) {
     const src = dir === "bullish" ? "range_high" : "range_low";
     const side = dir === "bullish" ? "buy_side" : "sell_side";
@@ -213,9 +211,9 @@ export function detectBreakouts(input: {
           p.side === side &&
           p.sources.includes(src) &&
           poolStatusAt(p, t) !== "swept" &&
-          Math.abs(p.price - boundary) <= ANCHOR_NEAR_ATR * atr,
+          Math.abs(p.price - boundary) <= bc.anchorNearAtr * atr,
       )
-      .sort((a, b) => Math.abs(a.price - boundary) - Math.abs(b.price - boundary))[0];
+      .sort((a, b) => Math.abs(a.price - boundary) - Math.abs(b.price - boundary) || a.id.localeCompare(b.id))[0];
   }
 
   /** Knowable sweep/false-breakout classification on the boundary pool (upstream label wins). */
@@ -305,14 +303,16 @@ export function detectBreakouts(input: {
           htfBias(snap.alignment) !== "neutral" && htfBias(snap.alignment) !== l.dir;
         const r7 = s.reasons.find((r) => r.id === "B7");
         if (r7) r7.met = snap?.alignment !== undefined && !fighting;
-        if (dispMet && l.volumeOk !== false && !fighting) {
-          l.confirmedBar = t;
-          s.metadata = { ...(s.metadata ?? {}), dispScore: snap?.momentum?.displacementScore ?? null };
-          transit(l, t, "confirmed", "attempt_disp_confirmed");
-        } else if (t - l.attemptBar > bc.holdBars) {
+        // dispBars window is [attemptBar, attemptBar+dispBars] — expiry precedes confirm so a
+        // late displacement can never confirm outside the spec window.
+        if (t - l.attemptBar > bc.dispBars) {
           transit(l, t, "expired", "attempt_unconfirmed"); // displacement window elapsed
           finish(l);
           continue;
+        } else if (dispMet && l.volumeOk !== false && !fighting) {
+          l.confirmedBar = t;
+          s.metadata = { ...(s.metadata ?? {}), confirmBar: t, dispScore: snap?.momentum?.displacementScore ?? null };
+          transit(l, t, "confirmed", "attempt_disp_confirmed");
         }
       }
       // 6. acceptance or retest → active (spec 13: setup tradeable only once the level holds)
@@ -378,8 +378,11 @@ export function detectBreakouts(input: {
           .filter((z) => forward(dir === "bullish" ? z.lowerPrice : z.upperPrice) > 0 && z.status === "active")
           .map((z) => (dir === "bullish" ? z.lowerPrice : z.upperPrice));
         const t2 = [...opposing, ...opposingZones].sort((a, b) => forward(a) - forward(b))[0];
-        const targets = [t1, t2].filter((x): x is number => x !== undefined && Number.isFinite(x))
-          .sort((a, b) => forward(a) - forward(b));
+        const targets = [...new Set(
+          [t1, t2]
+            .filter((x): x is number => x !== undefined && Number.isFinite(x))
+            .map((x) => Number(x.toFixed(8))), // collapse float-noise duplicates (T1 == zone edge)
+        )].sort((a, b) => forward(a) - forward(b));
         const id = `bo:${symbol}:${timeframe}:${dir}:${rangeKey}`;
         const setup: Setup = {
           id,
@@ -456,11 +459,12 @@ export function createBreakoutSetupEngine(): SetupDetectionEngine {
         b.rangeMinBars < 1 || b.compressionBars < 1 || b.rangeMaxWidthAtr <= 0 ||
         b.compressionRatio <= 0 || b.breakAtr < 0 || b.dispMinScore < 0 ||
         b.holdBars < 1 || b.retestWindow < 1 || b.volumeMinRatio < 0 ||
+        b.dispBars < 0 || b.anchorNearAtr < 0 ||
         input.config.lifecycle.expiryBars < 0 || input.config.lifecycle.invalidateAtr < 0;
       if (bad)
         errors.push({
           code: "invalid_config",
-          message: "breakout: rangeMinBars/compressionBars/holdBars/retestWindow ≥ 1, ATR widths > 0, ratios ≥ 0",
+          message: "breakout: rangeMinBars/compressionBars/holdBars/retestWindow ≥ 1, ATR widths > 0, ratios ≥ 0, dispBars/anchorNearAtr ≥ 0",
         });
       const candles = input.series?.candles ?? [];
       if (candles.length === 0)

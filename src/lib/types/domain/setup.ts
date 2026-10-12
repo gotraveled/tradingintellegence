@@ -41,6 +41,30 @@ export interface ScoreContribution {
   signalIds?: ID[];
 }
 
+/**
+ * Hard vetoes that suppress scoring entirely (docs/engine/15 §4) — a veto is not a score of 0.
+ * `unconfirmed`/`terminal` cover lifecycle state (spec 16: a plan — and its score — exists only
+ * while the setup is confirmed/active/partial_target); the rest are spec-named evidence gates.
+ */
+export type ScoreGate =
+  | "unconfirmed"
+  | "terminal"
+  | "insufficient_data"
+  | "countertrend"
+  | "zone_dead"
+  | "rr_below_min";
+
+/** Result of opportunity scoring (spec 15): either a scored breakdown or an authoritative gate. */
+export interface OpportunityScoreResult {
+  /** Present only when the setup was scored — gated results carry `gate` instead. */
+  score?: number;
+  /** Per-dimension explainable breakdown — mandatory when `score` is present. */
+  contributions?: ScoreContribution[];
+  gate?: ScoreGate;
+  /** The lifecycle state a veto emits instead of a score (spec 15: "developing/cancelled"). */
+  emittedStatus?: SetupStatus;
+}
+
 export type EvidenceCategory =
   | "market_structure"
   | "supply_demand"

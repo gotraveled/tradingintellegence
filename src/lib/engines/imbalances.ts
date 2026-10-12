@@ -169,6 +169,9 @@ export function analyzeImbalances(
       if (filled) {
         f.status = "filled";
         f.fillPct = 100;
+        // Bar-indexed stamp — lets setup engines reconstruct "open at bar t" causally
+        // (parity with metadata.expiredBar); the final status alone cannot answer that.
+        f.metadata = { ...(f.metadata ?? {}), filledBar: t };
         events.push({
           kind: "fvg_filled",
           refId: f.id,

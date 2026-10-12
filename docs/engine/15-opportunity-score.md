@@ -93,3 +93,55 @@ interface ScoreContribution {
 - Every contribution lists signalIds resolvable to real entities.
 - Gate fixtures: `countertrend` MTF â†’ no score; `rr < minRR` â†’ no score.
 - Property: weakening any single feature never increases the score.
+
+## Implementation notes (Phase 5)
+
+- **Entry points.** `scoreOpportunity({setup, atBar, atMs?, snap, config})` is the causal path —
+  callers pass the setup state and upstream objects legally visible at `atBar`. The contract
+  adapter `createOpportunityScoringEngine()` evaluates at the setup's stamped
+  `metadata.confirmBar` (spec 16: "evidence quality at confirmation"); a confirmed setup without
+  the stamp gates `insufficient_data` rather than guessing a bar.
+- **Gates (§4) ? `OpportunityScoreResult.gate`, never a score.** `unconfirmed` (developing) and
+  `terminal` (target_reached/invalidated/expired/cancelled) guard lifecycle — spec 16 bounds
+  plans/scores to confirmed/active/partial_target. `countertrend`, `zone_dead` (anchor zone
+  invalidated/expired at t), `rr_below_min`, `insufficient_data` are the spec-named vetoes.
+  `emittedStatus` records what the veto emits: the setup's own terminal state, `cancelled` for a
+  dead anchor zone (evidence basis gone), `developing` for the rest.
+- **RR** uses spec 16's formula: `(finalTarget - entryZone.mid)/(entryZone.mid - invalidation)`,
+  mirrored for shorts, where the zone mid is the setup's `entryBand` midpoint and `finalTarget`
+  is the last ordered target. `rr === minRR` passes (spec says `<`).
+- **Anchor resolution** reads the setup's recorded evidence only: `zoneIds[0]`/`zoneId`,
+  `poolId`/`anchorPoolId`/`liquidityEventIds[0]`, `fvgId`, `dispScore`. Nothing is re-derived
+  from candles. Continuation setups carry no liquidity evidence ? `liquidity` scores 0
+  (spec's `none` bucket); `t3PoolId` is a *target*, never fed to `liquidity`.
+- **FVG dimension**: the recorded `fvgId` resolves first; without one, reversal scans
+  `[sweepBar, t]` and breakout scans `[attemptBar, t]` for a direction-matching FVG — the
+  "confirming leg" per specs 12/13. Continuation does not scan: its qualifying FVG is the
+  recorded anchor, or there is none. `open`/`partially_filled` = 1.0, filled/other = 0.3, none = 0.
+- **Causality.** Pool/zone/FVG statuses at `t` come from bar-indexed stamps only
+  (`sweepConfirmedBar`, `brokenBar`, `invalidatedBar`, `expiredBar`, `createdBar`, `filledBar`,
+  `invalidatedAt` — via shared `poolStatusAt`/`imbStatusAt`/`zoneStatusAt`); a stamped future
+  transition restores the earlier status, an un-stamped terminal stays terminal. `zone.freshness`
+  and `zone.strength` are snapshot fields — on the contract path they read as final values;
+  historical runs should drive the causal join (`zoneStateAt`) for exact per-bar freshness.
+- **Regime modulation** (§3): factors `regimeMatrix[regime][setupType][dimension]`, validated
+  within [0.5, 1.5]. `RegimeLabel` (spec 19's 6 states) maps to the matrix's 4 family keys:
+  `trending_*`?trending, `ranging`?ranging, `high_volatility`?expanding,
+  `low_volatility`?compressing, `transition`/absent ? identity. Exact-label keys also work.
+  Effective weights renormalize so S max = 100.
+- **Structure `range`**: the table maps aligned/transition/opposing only — `range` reads as
+  `transition` (0.4, "no directional agreement"), the smallest consistent choice; breakout
+  setups are range-native so this matters.
+- **Missing data**: absent zone/pool/fvg/dispScore score their `none` bucket (0), absent
+  alignment reads `no_context` (0.2); missing `structure` or `momentum` gates
+  `insufficient_data`.
+- **Precision**: `weight`/`points` rounded to 4 dp; `score = clamp(0,100, Spoints)` rounded 4 dp —
+  contributions sum exactly to the score within float epsilon.
+- **Upstream additions (additive metadata only, no behavior change)**: `reversal.ts` and
+  `breakout.ts` now stamp `metadata.confirmBar` at confirmation (4J already did); `imbStatusAt`
+  is exported from `continuation.ts` as the shared causal FVG-status helper.
+- **Disjoint inputs (§2)** asserted — each entity id may appear in at most one contribution's
+  `signalIds` (the anchor zone id is reported under `zoneQuality` only; `freshness` derives from
+  the same entity without re-claiming the signal).
+- **Not implemented here**: `Opportunity`/TradePlan materialization (spec 16), outcome/historical
+  validation (spec 17), any weight fitting. The score is evidence quality, not a probability.

@@ -24,10 +24,10 @@ import type {
   MTFConfig,
   MultiTimeframeAlignment,
   Opportunity,
+  OpportunityScoreResult,
   RegimeConfig,
   RegimeLabel,
   ReversalConfig,
-  ScoreContribution,
   ScoringConfig,
   Setup,
   SetupOutcome,
@@ -183,7 +183,12 @@ export interface SetupDetectionEngine {
   }): EngineResult<Setup[]>;
 }
 
-/** 15 — Opportunity scoring. */
+/**
+ * 15 — Opportunity scoring. Consumes end-of-series snapshots per the contract; the scorer
+ * evaluates the setup AT its stamped `metadata.confirmBar` and reconstructs causal pool/zone/FVG
+ * status there from bar-indexed stamps — final end-of-series statuses are never used to answer
+ * historical questions. Hard vetoes (spec 15 §4) return `data.gate`, never a score.
+ */
 export interface OpportunityScoringEngine {
   score(input: {
     setup: Setup;
@@ -195,7 +200,7 @@ export interface OpportunityScoringEngine {
     alignment?: MultiTimeframeAlignment;
     regime?: RegimeLabel;
     config: ScoringConfig;
-  }): EngineResult<{ score: number; contributions: ScoreContribution[] }>;
+  }): EngineResult<OpportunityScoreResult>;
 }
 
 /** 17 — Outcome measurement over a historical window. */

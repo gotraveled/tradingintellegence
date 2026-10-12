@@ -391,7 +391,10 @@ export function detectReversals(input: {
           at: toISO(bar.time),
           metadata: { eventId: `${s.id}:developing:${t}`, family: "reversal", to: "developing", transitionReason: "evidence_forming" },
         });
-        if (allMet) transit(l, t, "confirmed", "all_required_met");
+        if (allMet) {
+          s.metadata = { ...(s.metadata ?? {}), confirmBar: t }; // spec 15 — score at confirmation
+          transit(l, t, "confirmed", "all_required_met");
+        }
       }
     }
 
@@ -427,6 +430,7 @@ export function detectReversals(input: {
       for (const [rid, met] of reEval) { const r = byId(rid); if (r && met && !r.met) r.met = true; }
       if (s.reasons.slice(0, 6).every((r) => r.met)) {
         l.confirmedBar = t;
+        s.metadata = { ...(s.metadata ?? {}), confirmBar: t }; // spec 15 — score at confirmation
         transit(l, t, "confirmed", "all_required_met");
       }
     }

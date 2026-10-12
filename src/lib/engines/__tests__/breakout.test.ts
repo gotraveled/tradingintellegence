@@ -29,9 +29,11 @@ const CFG = {
     compressionBars: 5,
     breakAtr: 0.15,
     dispMinScore: 60,
+    dispBars: 3,
     holdBars: 3,
     retestWindow: 8,
     volumeMinRatio: 1.3,
+    anchorNearAtr: 1,
   },
 };
 
@@ -389,6 +391,170 @@ describe("breakout — causality and determinism", () => {
     const base = run(BULL, mkAt()).setups.map((s) => s.status);
     expect(run(scaled(60000 / 100), at(60000 / 100)).setups.map((s) => s.status)).toEqual(base);
     expect(run(scaled(0.01), at(0.01)).setups.map((s) => s.status)).toEqual(base);
+  });
+});
+
+describe("breakout — reconciliation: displacement window (dispBars ≠ holdBars)", () => {
+  // dispBars=1, holdBars=8: displacement must land on the attempt bar or the next bar.
+  const cfg = { lifecycle: CFG.lifecycle, breakout: { ...CFG.breakout, dispBars: 1, holdBars: 8 } };
+  const runCfg = (candles: Candle[], at: (i: number) => BreakoutInput | null) =>
+    detectBreakouts({ candles, symbol: "T", timeframe: "1h", at, config: cfg });
+  const tail = [11, 12, 13, 14].map((i) => c(103, 103.4, 102.6, 103.2, i));
+
+  it("displacement at attempt+1 confirms (inside window)", () => {
+    const out = runCfg([...RANGE_BARS, ...BULL.slice(10, 11), ...tail], mkAt({ dispBar: 11 }));
+    const s = bull(out)!;
+    expect(s.status).not.toBe("expired");
+    expect(s.reasons.find((r) => r.id === "B5")?.met).toBe(true);
+  });
+
+  it("displacement at attempt+2 expires — holdBars window is irrelevant to confirmation", () => {
+    const out = runCfg([...RANGE_BARS, ...BULL.slice(10, 11), ...tail], mkAt({ dispBar: 12 }));
+    const s = bull(out)!;
+    expect(s.status).toBe("expired");
+    expect(s.reasons.find((r) => r.id === "B5")?.met).toBe(true); // score seen, but window closed
+  });
+});
+
+describe("breakout — reconciliation: acceptance boundary semantics", () => {
+  it("inside-close exactly at the acceptance bar → false_breakout, never active", () => {
+    const candles = [
+      ...BULL.slice(0, 12),
+      c(103.4, 103.6, 101.0, 101.4, 12), // re-time: attempt+2 close inside
+      c(101.4, 102.0, 100.8, 101.3, 13), // attempt+3 = acceptance bar — inside again
+    ];
+    // attempt at 10, inside-close at 12 already ends it; also verify the acceptance-bar inside-close path
+    const out = run(candles, mkAt());
+    const s = bull(out)!;
+    expect(s.status).toBe("invalidated");
+    const ev = out.events.filter((e) => e.refId === s.id).at(-1)!;
+    expect(ev.metadata?.transitionReason).toBe("false_breakout");
+    expect(ev.atBar).toBe(12); // invalidated at first inside-close — pre-acceptance
+  });
+
+  it("close exactly at the boundary is outside → acceptance fires on schedule", () => {
+    const candles = [
+      ...BULL.slice(0, 12),
+      c(103.4, 103.6, 102.8, 103.2, 12),
+      c(103.2, 103.4, 101.9, 102.1, 13), // close == resistance — not inside → clean acceptance bar
+    ];
+    const out = run(candles, mkAt());
+    const s = bull(out)!;
+    expect(s.status).toBe("active");
+    expect(out.events.filter((e) => e.refId === s.id).at(-1)?.metadata?.transitionReason).toBe("acceptance_held");
+  });
+
+  it("inside-close on the acceptance bar → false_breakout, never active", () => {
+    const candles = [
+      ...BULL.slice(0, 12),
+      c(103.4, 103.6, 102.8, 103.2, 12),
+      c(103.2, 103.4, 101.9, 102.05, 13), // close 102.05 < resistance on the acceptance bar
+    ];
+    const out = run(candles, mkAt());
+    const s = bull(out)!;
+    expect(s.status).toBe("invalidated");
+    expect(out.events.filter((e) => e.refId === s.id).at(-1)?.metadata?.transitionReason).toBe("false_breakout");
+  });
+
+  it("post-acceptance shallow inside-close does NOT invalidate (retest semantics)", () => {
+    const candles = [
+      ...BULL.slice(0, 14), // active at 13
+      c(103.9, 104.0, 101.95, 102.0, 14), // close 102.0 < resistance but > invalidation → stays active
+      c(102.0, 104.9, 101.8, 104.6, 15),
+      c(104.6, 106.6, 104.3, 106.3, 16),
+    ];
+    const out = run(candles, mkAt());
+    const s = bull(out)!;
+    expect(s.status).toBe("target_reached");
+    expect(out.events.every((e) => e.metadata?.transitionReason !== "close_through_invalidation")).toBe(true);
+  });
+
+  it("post-acceptance retest that holds keeps the setup active", () => {
+    const candles = [
+      ...BULL.slice(0, 14),
+      c(103.9, 104.0, 102.05, 102.7, 14), // dips to band, closes out — valid retest, still active
+      c(102.7, 106.6, 102.5, 106.2, 15),
+    ];
+    const out = run(candles, mkAt());
+    const s = bull(out)!;
+    expect(s.status).toBe("target_reached");
+    const seq = out.events.filter((e) => e.refId === s.id).map((e) => e.metadata?.to);
+    expect(seq).not.toContain("invalidated");
+  });
+
+  it("a later independent range creates a new setup after invalidation", () => {
+    const second: Candle[] = [
+      ...BULL.slice(0, 11),
+      c(102.9, 103.0, 101.2, 101.5, 11), // false breakout
+      // new compressing range bars 12-21
+      ...[12, 13, 14, 15, 16].map((i) => c(101.5, 103.0, 100.9, 102, i)),
+      ...[17, 18, 19, 20, 21].map((i) => c(102, 102.5, 101.5, 102, i)),
+      c(102, 104.0, 101.9, 103.7, 22), // second attempt beyond 103.0
+    ];
+    const hi2: LiquidityPool = { ...hiPool(), id: "p:rh:1", price: 103 };
+    const lo2: LiquidityPool = { ...loPool(), id: "p:rl:1", price: 100.9 };
+    const out = run(second, mkAt({ pools: [hiPool(), loPool(), hi2, lo2, t2Pool()], dispBar: 22 }));
+    const ids = out.setups.map((x) => x.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    const secondSetup = out.setups.find((x) => x.id === "bo:T:1h:bullish:p:rh:1");
+    expect(secondSetup).toBeDefined();
+    expect(secondSetup?.status === "confirmed" || secondSetup?.status === "active").toBe(true);
+  });
+});
+
+describe("breakout — reconciliation: boundary anchor tolerance", () => {
+  it("pool outside anchorNearAtr×ATR → no anchor (rng key), B3 unmet", () => {
+    const far: LiquidityPool = { ...hiPool(), id: "p:rh:far", price: 104.5 }; // ~1.5×ATR away
+    const out = run(BULL.slice(0, 10), mkAt({ pools: [far, loPool(), t2Pool()] }));
+    const s = bull(out)!;
+    expect(s.id).toBe("bo:T:1h:bullish:rng:0");
+    expect(s.reasons.find((r) => r.id === "B3")?.met).toBe(false);
+  });
+
+  it("nearest pool wins deterministically among in-tolerance candidates", () => {
+    const near: LiquidityPool = { ...hiPool(), id: "p:rh:near", price: 102.4 };
+    const out = run(BULL.slice(0, 10), mkAt({ pools: [near, hiPool(), loPool(), t2Pool()] }));
+    const s = bull(out)!;
+    expect(s.metadata?.anchorPoolId).toBe("p:rh:0"); // 102.1 exact vs 102.4 — nearest
+  });
+
+  it("configured tolerance controls matching — anchorNearAtr:0.2 rejects a 0.4-ATR pool", () => {
+    const cfg = { lifecycle: CFG.lifecycle, breakout: { ...CFG.breakout, anchorNearAtr: 0.2 } };
+    const off: LiquidityPool = { ...hiPool(), id: "p:rh:off", price: 102.8 }; // ~0.45×ATR
+    const out = detectBreakouts({
+      candles: BULL.slice(0, 10), symbol: "T", timeframe: "1h",
+      at: (i) => ({ ...mkAt({ pools: [off, loPool(), t2Pool()] })(i) }),
+      config: cfg,
+    });
+    const s = out.setups.find((x) => x.direction === "bullish")!;
+    expect(s.metadata?.anchorPoolId).toBeNull();
+    expect(s.id).toBe("bo:T:1h:bullish:rng:0");
+  });
+});
+
+describe("breakout — reconciliation: T2 target selection (spec: nearest opposing pool/zone)", () => {
+  it("zone nearer than pool → zone edge becomes T2", () => {
+    const z: Zone = { ...t2Zone(), lowerPrice: 105, upperPrice: 106 };
+    const out = run(BULL.slice(0, 10), mkAt({ zones: [z] }));
+    const tgts = (bull(out)!.metadata?.targets as string).split(",").map(Number);
+    expect(tgts[0]).toBeCloseTo(104.3, 4); // T1 measured move is nearer than 105
+    expect(tgts[1]).toBeCloseTo(105, 4); // zone edge beats the 106 pool
+  });
+
+  it("T2 == T1 level collapses — T2 is the single nearest opposing level", () => {
+    const z: Zone = { ...t2Zone(), lowerPrice: 104.3, upperPrice: 105.5 };
+    const out = run(BULL.slice(0, 10), mkAt({ zones: [z] }));
+    const tgts = (bull(out)!.metadata?.targets as string).split(",").map(Number);
+    // T2 = nearest opposing level = zone edge 104.3, identical to the measured move → deduped
+    expect(tgts).toHaveLength(1);
+    expect(tgts[0]).toBeCloseTo(104.3, 4);
+  });
+
+  it("no opposing pool/zone → targets hold only the measured move", () => {
+    const out = run(BULL.slice(0, 10), mkAt({ pools: [hiPool(), loPool()], zones: [] }));
+    const tgts = (bull(out)!.metadata?.targets as string).split(",").map(Number);
+    expect(tgts).toHaveLength(1);
+    expect(tgts[0]).toBeCloseTo(104.3, 4);
   });
 });
 
