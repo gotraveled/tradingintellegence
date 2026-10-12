@@ -1,4 +1,4 @@
-import type { Candle, Instrument, Quote, Timeframe } from "@/lib/types";
+import type { Asset, Candle, Market, Quote, Timeframe } from "@/lib/types";
 
 /**
  * Contract for market-data providers (REST/WebSocket vendors, internal APIs).
@@ -6,7 +6,8 @@ import type { Candle, Instrument, Quote, Timeframe } from "@/lib/types";
  */
 export interface MarketDataProvider {
   readonly id: string;
-  searchInstruments(query: string): Promise<Instrument[]>;
+  getMarkets(): Promise<Market[]>;
+  searchAssets(query: string): Promise<Asset[]>;
   getQuotes(symbols: string[]): Promise<Quote[]>;
   getCandles(params: {
     symbol: string;

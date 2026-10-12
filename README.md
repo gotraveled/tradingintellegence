@@ -46,7 +46,9 @@ src/
     dashboard/ scanner/ charts/ opportunities/ markets/ shared/
   lib/
     constants/               Site copy, navigation/routes, markets, evidence taxonomy
-    types/                   Domain types (market, analysis, status, navigation)
+    types/domain/            Central domain model (Asset, Market, Candle, MarketStructure, LiquidityEvent,
+                             Zone, Setup, Opportunity, Signal, Alert, BacktestResult, AnalysisSnapshot)
+    types/                   UI-only types (status tones, navigation)
     services/                Contracts for external systems + `intelligence.ts` data access layer
     mock/                    DEMO DATA ONLY — importable from `services/` alone (ESLint-enforced)
     utils/                   `cn`, number formatting
@@ -58,10 +60,16 @@ src/
   (`MarketDataProvider`, `AnalysisEngineClient`) and the types in `src/lib/types`. Detection
   logic will live in a separate service (planned: Python/FastAPI) and never inside components.
 - **Honest states.** Modules show real connection state and empty states until their backing
-  service exists. Demo values (dashboard regime cards, opportunities, developing setups) live in
-  `src/lib/mock/demo-data.ts`, are served through `src/lib/services/intelligence.ts` with
+  service exists. Demo values (regimes, opportunities, chart analysis) live in
+  `src/lib/mock/`, are served through `src/lib/services/intelligence.ts` with
   `source: "demo"`, and are always rendered with a visible **Demo** badge. Landing-page examples
   are labelled illustrative. To go live, replace the service function bodies; the UI is unchanged.
+- **Backend-shaped domain model.** `src/lib/types/domain` uses ID / ISO-timestamp fields and
+  optional engine-produced values (e.g. `Opportunity.entry`, `confidence`) so records can map
+  directly onto API/database rows. Extensible via `metadata` and discriminated unions.
+- **Pluggable chart.** `src/components/charts/price-chart.tsx` is the only place a candlestick
+  library needs to be integrated; it receives `PriceChartProps` (candles + library-agnostic
+  `ChartOverlay[]`), so the Chart Intelligence page does not change.
 - **Single source of truth for navigation.** `src/lib/constants/navigation.ts` drives the sidebar
   (including Markets/Scanner submenus), in-page sub-navigation, and page headers.
 

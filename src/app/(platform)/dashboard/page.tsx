@@ -4,18 +4,13 @@ import Link from "next/link";
 import { PageContainer, PageHeader } from "@/components/layout/page-header";
 import { MarketOverview } from "@/components/markets/market-overview";
 import { MarketRegimeCard } from "@/components/markets/market-regime-card";
-import { DevelopingSetupCard } from "@/components/opportunities/developing-setup-card";
 import { OpportunityCard } from "@/components/opportunities/opportunity-card";
 import { DemoNotice, SourceBadge } from "@/components/shared/demo";
 import { LocalDateTime } from "@/components/shared/local-date-time";
 import { Section } from "@/components/shared/section";
 import { buttonVariants } from "@/components/ui/button";
 import { getNavItem, ROUTES, scannerViewHref } from "@/lib/constants";
-import {
-  getDevelopingSetups,
-  getMarketRegimes,
-  getOpportunities,
-} from "@/lib/services/intelligence";
+import { getMarketRegimes, getOpportunities } from "@/lib/services/intelligence";
 
 export const metadata: Metadata = { title: "Dashboard" };
 
@@ -30,8 +25,8 @@ function ViewAll({ href, label }: { href: string; label: string }) {
 
 export default function DashboardPage() {
   const regimes = getMarketRegimes();
-  const opportunities = getOpportunities({ limit: 3 });
-  const developing = getDevelopingSetups({ limit: 3 });
+  const opportunities = getOpportunities({ status: "confirmed", limit: 3 });
+  const developing = getOpportunities({ status: "developing", limit: 3 });
   const isDemo = [regimes, opportunities, developing].some((payload) => payload.source === "demo");
 
   return (
@@ -88,8 +83,12 @@ export default function DashboardPage() {
         action={<ViewAll href={scannerViewHref("developing")} label="All developing" />}
       >
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {developing.data.map((setup) => (
-            <DevelopingSetupCard key={setup.id} setup={setup} demo={developing.source === "demo"} />
+          {developing.data.map((opportunity) => (
+            <OpportunityCard
+              key={opportunity.id}
+              opportunity={opportunity}
+              demo={developing.source === "demo"}
+            />
           ))}
         </div>
       </Section>

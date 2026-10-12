@@ -1,15 +1,11 @@
+import { DEMO_ANALYSIS, DEMO_MARKET_REGIMES, DEMO_OPPORTUNITIES } from "@/lib/mock";
+import type { AnalysisSnapshot, MarketRegimeSnapshot, Opportunity } from "@/lib/types";
 import {
-  DEMO_DEVELOPING_SETUPS,
-  DEMO_MARKET_REGIMES,
-  DEMO_OPPORTUNITIES,
-} from "@/lib/mock/demo-data";
-import type {
-  AssetClass,
-  DevelopingSetup,
-  MarketRegimeSnapshot,
-  OpportunitySummary,
-  SetupType,
-} from "@/lib/types";
+  filterOpportunities,
+  sortOpportunities,
+  type OpportunityFilter,
+  type OpportunitySortKey,
+} from "@/lib/utils/opportunity-filters";
 
 export type DataSource = "demo" | "live";
 
@@ -19,21 +15,9 @@ export interface DataEnvelope<T> {
   data: T;
 }
 
-interface SetupFilter {
-  setupType?: SetupType;
-  assetClass?: AssetClass;
+export interface OpportunityQuery extends OpportunityFilter {
+  sort?: OpportunitySortKey;
   limit?: number;
-}
-
-function applyFilter<T extends { setupType: SetupType; assetClass: AssetClass; score: number }>(
-  items: T[],
-  { setupType, assetClass, limit }: SetupFilter = {},
-) {
-  const filtered = items
-    .filter((item) => (setupType ? item.setupType === setupType : true))
-    .filter((item) => (assetClass ? item.assetClass === assetClass : true))
-    .sort((a, b) => b.score - a.score);
-  return typeof limit === "number" ? filtered.slice(0, limit) : filtered;
 }
 
 /*
@@ -45,10 +29,24 @@ export function getMarketRegimes(): DataEnvelope<MarketRegimeSnapshot[]> {
   return { source: "demo", data: DEMO_MARKET_REGIMES };
 }
 
-export function getOpportunities(filter?: SetupFilter): DataEnvelope<OpportunitySummary[]> {
-  return { source: "demo", data: applyFilter(DEMO_OPPORTUNITIES, filter) };
+export function getOpportunities(query: OpportunityQuery = {}): DataEnvelope<Opportunity[]> {
+  const { sort = "score", limit, ...filter } = query;
+  const sorted = sortOpportunities(filterOpportunities(DEMO_OPPORTUNITIES, filter), sort);
+  return { source: "demo", data: limit === undefined ? sorted : sorted.slice(0, limit) };
 }
 
-export function getDevelopingSetups(filter?: SetupFilter): DataEnvelope<DevelopingSetup[]> {
-  return { source: "demo", data: applyFilter(DEMO_DEVELOPING_SETUPS, filter) };
+export function getAnalysisSnapshot(symbol: string): DataEnvelope<AnalysisSnapshot | null> {
+  return { source: "demo", data: DEMO_ANALYSIS.find((item) => item.symbol === symbol) ?? null };
+}
+
+/** Snapshots keyed by symbol. Symbols without analysis are omitted. */
+export function getAnalysisSnapshots(
+  symbols: string[],
+): DataEnvelope<Record<string, AnalysisSnapshot>> {
+  const data: Record<string, AnalysisSnapshot> = {};
+  for (const symbol of symbols) {
+    const snapshot = DEMO_ANALYSIS.find((item) => item.symbol === symbol);
+    if (snapshot) data[symbol] = snapshot;
+  }
+  return { source: "demo", data };
 }

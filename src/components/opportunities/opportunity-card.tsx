@@ -2,72 +2,137 @@ import { BiasBadge } from "@/components/shared/bias-badge";
 import { DemoBadge } from "@/components/shared/demo";
 import { ScoreMeter } from "@/components/shared/score-meter";
 import { Badge } from "@/components/ui/badge";
-import { StatusBadge } from "@/components/ui/status";
 import {
   ASSET_CLASS_LABEL,
+  CONFIDENCE_LABEL,
+  describeSetup,
   SETUP_TYPE_LABEL,
-  STAGE_LABEL,
-  STAGE_TONE,
-  TIMEFRAMES,
+  timeframeLabel,
 } from "@/lib/constants";
-import type { OpportunitySummary } from "@/lib/types";
-import { cn, formatPrice } from "@/lib/utils";
+import type { Direction, Opportunity, OpportunityStatus } from "@/lib/types";
+import { cn, formatDateTimeUTC, lastUpdated } from "@/lib/utils";
+import { ReasonList } from "./reason-list";
+import { SetupStatusBadge } from "./status-badge";
+import { TradePlan } from "./trade-plan";
 
-interface OpportunityCardProps {
-  opportunity: OpportunitySummary;
+export interface OpportunityCardProps {
+  opportunity: Opportunity;
+  /** Marks the card as demo content. */
   demo?: boolean;
+  /** Show the conditions checklist. Defaults to true for developing setups. */
+  showReasons?: boolean;
+  /** Show entry / stop / targets / R:R. Defaults to true. */
+  showPlan?: boolean;
   className?: string;
 }
 
-function timeframeLabel(value: OpportunitySummary["timeframe"]) {
-  return TIMEFRAMES.find((tf) => tf.value === value)?.label ?? value;
+const DIRECTION_ACCENT: Record<Direction, string> = {
+  bullish: "before:bg-bullish",
+  bearish: "before:bg-bearish",
+};
+
+const SCORE_BAR: Record<OpportunityStatus, string> = {
+  developing: "bg-warning",
+  confirmed: "bg-info",
+  invalidated: "bg-inactive",
+  completed: "bg-inactive",
+};
+
+const SCORE_LABEL: Record<OpportunityStatus, string> = {
+  developing: "Developing score",
+  confirmed: "Quality score",
+  invalidated: "Quality score at detection",
+  completed: "Quality score at detection",
+};
+
+function statusNote(opportunity: Opportunity): string | null {
+  if (opportunity.status === "invalidated") {
+    return "Invalidated — price breached the invalidation level before the setup resolved.";
+  }
+  if (opportunity.status === "completed") {
+    const reached = opportunity.targets?.filter((target) => target.reached).length ?? 0;
+    const total = opportunity.targets?.length ?? 0;
+    return total && reached < total
+      ? `Completed — ${reached} of ${total} targets reached before exit.`
+      : "Completed — final target reached.";
+  }
+  return null;
 }
 
-function Field({ label, value, className }: { label: string; value: string; className?: string }) {
-  return (
-    <div className="space-y-0.5">
-      <dt className="text-[11px] text-subtle-foreground">{label}</dt>
-      <dd className={cn("numeric text-[13px] text-foreground", className)}>{value}</dd>
-    </div>
-  );
-}
-
-export function OpportunityCard({ opportunity, demo = false, className }: OpportunityCardProps) {
-  const { plan, pricePrecision } = opportunity;
-  const price = (value: number) => formatPrice(value, pricePrecision);
+export function OpportunityCard({
+  opportunity,
+  demo = false,
+  showReasons,
+  showPlan = true,
+  className,
+}: OpportunityCardProps) {
+  const reasons = opportunity.reasons ?? [];
+  const displayReasons = (showReasons ?? opportunity.status === "developing") && reasons.length > 0;
+  const inactive = opportunity.status === "invalidated" || opportunity.status === "completed";
+  const note = statusNote(opportunity);
 
   return (
     <article
       className={cn(
-        "flex flex-col rounded-lg border border-border bg-surface transition-colors hover:border-border-strong",
+        "relative flex flex-col overflow-hidden rounded-lg border border-border bg-surface transition-colors hover:border-border-strong",
+        "before:absolute before:inset-y-0 before:left-0 before:w-0.5",
+        DIRECTION_ACCENT[opportunity.direction],
+        inactive && "before:opacity-40",
         className,
       )}
-      aria-label={`${opportunity.symbol} ${SETUP_TYPE_LABEL[opportunity.setupType]} opportunity`}
+      aria-label={`${opportunity.symbol} ${describeSetup(opportunity.direction, opportunity.setupType, opportunity.status)}`}
     >
-      <header className="flex items-start justify-between gap-3 px-4 pt-4">
-        <div className="min-w-0 space-y-1">
-          <h3 className="truncate numeric text-[15px] font-semibold">{opportunity.symbol}</h3>
-          <p className="text-xs text-muted-foreground">
-            {ASSET_CLASS_LABEL[opportunity.assetClass]} · {timeframeLabel(opportunity.timeframe)}
-          </p>
+      <header className="space-y-3 px-4 pt-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 space-y-1">
+            <h3 className="truncate numeric text-[15px] font-semibold">{opportunity.symbol}</h3>
+            <p className="text-xs text-muted-foreground">
+              {ASSET_CLASS_LABEL[opportunity.assetClass]} · {timeframeLabel(opportunity.timeframe)}
+            </p>
+          </div>
+          {demo ? <DemoBadge /> : null}
         </div>
-        {demo ? <DemoBadge /> : null}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Badge>{SETUP_TYPE_LABEL[opportunity.setupType]}</Badge>
+          <BiasBadge bias={opportunity.direction} />
+          <SetupStatusBadge status={opportunity.status} />
+        </div>
+        <p className={cn("text-sm font-medium", inactive && "text-muted-foreground")}>
+          {describeSetup(opportunity.direction, opportunity.setupType, opportunity.status)}
+        </p>
       </header>
 
-      <div className="flex flex-wrap items-center gap-1.5 px-4 pt-3">
-        <Badge>{SETUP_TYPE_LABEL[opportunity.setupType]}</Badge>
-        <BiasBadge bias={opportunity.bias} />
-        <StatusBadge tone={STAGE_TONE[opportunity.stage]} label={STAGE_LABEL[opportunity.stage]} />
-      </div>
+      <ScoreMeter
+        value={opportunity.score}
+        label={SCORE_LABEL[opportunity.status]}
+        barClassName={SCORE_BAR[opportunity.status]}
+        className="px-4 pt-3"
+      />
 
-      <ScoreMeter value={opportunity.score} className="px-4 pt-4" />
+      {note ? <p className="px-4 pt-3 text-xs text-muted-foreground">{note}</p> : null}
 
-      <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-border px-4 py-3.5 sm:grid-cols-4">
-        <Field label="Entry" value={price(plan.entry)} />
-        <Field label="Invalidation" value={price(plan.invalidation)} className="text-bearish" />
-        <Field label="Target" value={price(plan.target)} className="text-bullish" />
-        <Field label="Risk / Reward" value={`${plan.riskReward.toFixed(1)}R`} />
-      </dl>
+      {displayReasons ? (
+        <ReasonList reasons={reasons} className="mt-4 border-t border-border px-4 py-3.5" />
+      ) : null}
+
+      {showPlan ? (
+        <TradePlan plan={opportunity} className="mt-4 border-t border-border px-4 py-3.5" />
+      ) : null}
+
+      <footer className="mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-border px-4 py-2.5 text-[11px] text-subtle-foreground">
+        <span>
+          Confidence:{" "}
+          <span className="text-muted-foreground">
+            {opportunity.confidence ? CONFIDENCE_LABEL[opportunity.confidence] : "Not assessed"}
+          </span>
+        </span>
+        <span>
+          Updated{" "}
+          <time dateTime={lastUpdated(opportunity)} className="numeric">
+            {formatDateTimeUTC(lastUpdated(opportunity))}
+          </time>
+        </span>
+      </footer>
     </article>
   );
 }

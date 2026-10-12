@@ -1,71 +1,113 @@
-import { CandlestickChart } from "lucide-react";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { EmptyState } from "@/components/ui/empty-state";
-import { StatusBadge } from "@/components/ui/status";
-import { DEFAULT_TIMEFRAME, TIMEFRAMES } from "@/lib/constants";
-import { cn } from "@/lib/utils";
+"use client";
 
-const ANALYSIS_LAYERS = [
-  { id: "structure", label: "Market structure", detail: "Swings, BOS, CHOCH" },
-  { id: "zones", label: "Supply & demand zones", detail: "Fresh and tested zones" },
-  { id: "liquidity", label: "Liquidity", detail: "Equal highs/lows, sweeps" },
-  { id: "imbalance", label: "Fair value gaps", detail: "Unmitigated imbalances" },
-  { id: "mtf", label: "Higher-timeframe context", detail: "HTF bias and key levels" },
-];
+import { ShieldAlert } from "lucide-react";
+import { useMemo, useState } from "react";
+import { TradePlan } from "@/components/opportunities/trade-plan";
+import { DemoBadge } from "@/components/shared/demo";
+import { FEATURED_INSTRUMENTS, getInstrument, timeframeLabel } from "@/lib/constants";
+import type { DataSource } from "@/lib/services/intelligence";
+import type { AnalysisSnapshot, Timeframe } from "@/lib/types";
+import { AnalysisPanel } from "./analysis-panel";
+import { toChartOverlays, type OverlayLayer } from "./chart-types";
+import { ChartToolbar, type ChartStyle } from "./chart-toolbar";
+import { PriceChart } from "./price-chart";
 
-export function ChartWorkspace() {
+interface ChartWorkspaceProps {
+  snapshots: Record<string, AnalysisSnapshot>;
+  source: DataSource;
+  initialSymbol?: string;
+}
+
+const DEFAULT_LAYERS: Record<OverlayLayer, boolean> = {
+  structure: true,
+  zones: true,
+  liquidity: true,
+  imbalance: false,
+};
+
+export function ChartWorkspace({
+  snapshots,
+  source,
+  initialSymbol = FEATURED_INSTRUMENTS[0].symbol,
+}: ChartWorkspaceProps) {
+  const [symbol, setSymbol] = useState(initialSymbol);
+  const [timeframe, setTimeframe] = useState<Timeframe>(
+    snapshots[initialSymbol]?.timeframe ?? "4h",
+  );
+  const [chartStyle, setChartStyle] = useState<ChartStyle>("candles");
+  const [layers, setLayers] = useState(DEFAULT_LAYERS);
+
+  const snapshot = snapshots[symbol];
+  const precision = getInstrument(symbol)?.pricePrecision ?? 2;
+  const demo = source === "demo";
+  const timeframeMismatch = snapshot && snapshot.timeframe !== timeframe;
+
+  const overlays = useMemo(
+    () => toChartOverlays(snapshot).filter((overlay) => layers[overlay.layer]),
+    [snapshot, layers],
+  );
+
+  const handleSymbolChange = (next: string) => {
+    setSymbol(next);
+    const nextSnapshot = snapshots[next];
+    if (nextSnapshot) setTimeframe(nextSnapshot.timeframe);
+  };
+
   return (
-    <div className="grid gap-6 xl:grid-cols-[1fr_300px]">
-      <Card className="flex min-h-[520px] flex-col overflow-hidden">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-2.5">
-          <div className="flex items-center gap-3">
-            <span className="numeric text-sm font-semibold text-subtle-foreground">No symbol</span>
-            <StatusBadge tone="inactive" label="No data" />
-          </div>
-          <div role="group" aria-label="Timeframe" className="flex items-center gap-0.5">
-            {TIMEFRAMES.map((timeframe) => (
-              <button
-                key={timeframe.value}
-                type="button"
-                disabled
-                aria-pressed={timeframe.value === DEFAULT_TIMEFRAME}
-                className={cn(
-                  "h-7 rounded px-2 numeric text-xs disabled:cursor-not-allowed",
-                  timeframe.value === DEFAULT_TIMEFRAME
-                    ? "bg-surface-hover text-foreground"
-                    : "text-subtle-foreground",
-                )}
-              >
-                {timeframe.label}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="relative flex flex-1 items-center justify-center bg-grid">
-          <EmptyState
-            icon={CandlestickChart}
-            title="Chart engine not connected"
-            description="Price data and analysis overlays will render here once a market-data provider and the analysis engine are connected."
-          />
-        </div>
-      </Card>
+    <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
+      <div className="flex min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-surface">
+        <ChartToolbar
+          symbol={symbol}
+          onSymbolChange={handleSymbolChange}
+          timeframe={timeframe}
+          onTimeframeChange={setTimeframe}
+          chartStyle={chartStyle}
+          onChartStyleChange={setChartStyle}
+          layers={layers}
+          onLayerToggle={(layer) => setLayers((prev) => ({ ...prev, [layer]: !prev[layer] }))}
+        />
+        <PriceChart
+          symbol={symbol}
+          timeframe={timeframe}
+          overlays={overlays}
+          chartStyle={chartStyle}
+          pricePrecision={precision}
+          className="min-h-[560px]"
+        />
+        {timeframeMismatch ? (
+          <p className="border-t border-border px-4 py-2 text-[11px] text-subtle-foreground">
+            Demo analysis for {symbol} is available on {timeframeLabel(snapshot.timeframe)} only;
+            overlays shown are from that timeframe.
+          </p>
+        ) : null}
+      </div>
 
-      <Card>
-        <CardHeader title="Analysis layers" description="Overlays rendered on the chart." />
-        <CardContent className="p-0">
-          <ul className="divide-y divide-border">
-            {ANALYSIS_LAYERS.map((layer) => (
-              <li key={layer.id} className="flex items-center justify-between gap-3 px-5 py-3">
-                <div className="min-w-0 space-y-0.5">
-                  <p className="text-sm font-medium">{layer.label}</p>
-                  <p className="truncate text-xs text-muted-foreground">{layer.detail}</p>
-                </div>
-                <StatusBadge tone="inactive" />
-              </li>
-            ))}
-          </ul>
-        </CardContent>
-      </Card>
+      <div className="space-y-6">
+        <AnalysisPanel snapshot={snapshot} symbol={symbol} demo={demo} pricePrecision={precision} />
+
+        <section aria-label="Trade plan" className="rounded-lg border border-border bg-surface">
+          <header className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
+            <h2 className="text-sm font-semibold">Trade plan</h2>
+            {demo && snapshot?.opportunity ? <DemoBadge /> : null}
+          </header>
+          <div className="space-y-3 p-4">
+            <TradePlan
+              layout="stack"
+              plan={
+                snapshot?.opportunity ?? {
+                  status: "developing",
+                  pricePrecision: precision,
+                }
+              }
+            />
+            <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-subtle-foreground">
+              <ShieldAlert className="mt-px size-3.5 shrink-0" aria-hidden="true" />
+              Levels describe where the setup would be invalidated or reach its objectives. They are
+              analysis, not instructions to trade.
+            </p>
+          </div>
+        </section>
+      </div>
     </div>
   );
 }
