@@ -1,0 +1,142 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/*
+ * Design tokens.
+ * Dark is the default theme. Light theme values live under [data-theme="light"]
+ * so a theme switcher can be added later without touching components.
+ */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --background: oklch(0.155 0.006 255);
+  --surface: oklch(0.185 0.007 255);
+  --surface-elevated: oklch(0.215 0.008 255);
+  --surface-hover: oklch(0.235 0.009 255);
+  --border: oklch(0.27 0.008 255);
+  --border-strong: oklch(0.34 0.01 255);
+
+  --foreground: oklch(0.95 0.004 255);
+  --muted-foreground: oklch(0.7 0.01 255);
+  --subtle-foreground: oklch(0.55 0.01 255);
+
+  --primary: oklch(0.68 0.12 250);
+  --primary-foreground: oklch(0.16 0.01 255);
+  --ring: oklch(0.68 0.12 250 / 0.55);
+
+  --bullish: oklch(0.72 0.13 155);
+  --bullish-muted: oklch(0.72 0.13 155 / 0.12);
+  --bearish: oklch(0.66 0.17 22);
+  --bearish-muted: oklch(0.66 0.17 22 / 0.12);
+  --warning: oklch(0.8 0.13 80);
+  --warning-muted: oklch(0.8 0.13 80 / 0.12);
+  --info: oklch(0.7 0.11 245);
+  --info-muted: oklch(0.7 0.11 245 / 0.12);
+  --inactive: oklch(0.6 0.01 255);
+  --inactive-muted: oklch(0.6 0.01 255 / 0.12);
+
+  --grid-line: oklch(1 0 0 / 0.035);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  --background: oklch(0.985 0.002 255);
+  --surface: oklch(1 0 0);
+  --surface-elevated: oklch(0.97 0.003 255);
+  --surface-hover: oklch(0.95 0.004 255);
+  --border: oklch(0.9 0.005 255);
+  --border-strong: oklch(0.82 0.008 255);
+
+  --foreground: oklch(0.2 0.01 255);
+  --muted-foreground: oklch(0.45 0.012 255);
+  --subtle-foreground: oklch(0.58 0.01 255);
+
+  --primary: oklch(0.5 0.14 252);
+  --primary-foreground: oklch(0.99 0 0);
+  --ring: oklch(0.5 0.14 252 / 0.45);
+
+  --bullish: oklch(0.52 0.13 155);
+  --bullish-muted: oklch(0.52 0.13 155 / 0.1);
+  --bearish: oklch(0.52 0.18 25);
+  --bearish-muted: oklch(0.52 0.18 25 / 0.1);
+  --warning: oklch(0.6 0.13 70);
+  --warning-muted: oklch(0.6 0.13 70 / 0.12);
+  --info: oklch(0.5 0.13 250);
+  --info-muted: oklch(0.5 0.13 250 / 0.1);
+  --inactive: oklch(0.55 0.01 255);
+  --inactive-muted: oklch(0.55 0.01 255 / 0.1);
+
+  --grid-line: oklch(0 0 0 / 0.04);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-elevated: var(--surface-elevated);
+  --color-surface-hover: var(--surface-hover);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+
+  --color-foreground: var(--foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle-foreground: var(--subtle-foreground);
+
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-ring: var(--ring);
+
+  --color-bullish: var(--bullish);
+  --color-bullish-muted: var(--bullish-muted);
+  --color-bearish: var(--bearish);
+  --color-bearish-muted: var(--bearish-muted);
+  --color-warning: var(--warning);
+  --color-warning-muted: var(--warning-muted);
+  --color-info: var(--info);
+  --color-info-muted: var(--info-muted);
+  --color-inactive: var(--inactive);
+  --color-inactive-muted: var(--inactive-muted);
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+    font-feature-settings: "cv11", "ss01";
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: var(--info-muted);
+  }
+}
+
+@utility bg-grid {
+  background-image:
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+@utility numeric {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
