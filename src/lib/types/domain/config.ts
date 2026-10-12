@@ -203,6 +203,26 @@ export interface RegimeConfig {
   minBars: number;
 }
 
+/** Statistical validation (24). */
+export interface StatsConfig {
+  /** Eligibility floor per cohort level — below it the estimate is insufficient_data. */
+  minSamples: number;
+  /** Ascending score-band edges within [0,100] — cohort axis boundaries (24). */
+  scoreBands: number[];
+  /** Methodology stamp: estimator + eligibility + cohort axes + ladder order. */
+  methodVersion: string;
+}
+
+/** Opportunity scanner (25). */
+export interface ScannerConfig {
+  /** Ranked-output bound — 0 = unbounded, still fully ranked (25). */
+  topK: number;
+  /** Surface developing setups in the unranked bucket (25). */
+  includeDeveloping: boolean;
+  /** Methodology stamp: provenance rules + eligibility + dedup + tie-breaks. */
+  methodVersion: string;
+}
+
 /** The complete engine parameter set — one object, versioned, reproducible. */
 export interface EngineConfig {
   version: string;
@@ -210,6 +230,8 @@ export interface EngineConfig {
   swing: SwingConfig;
   structure: StructureConfig;
   liquidity: LiquidityConfig;
+  stats?: StatsConfig;
+  scanner?: ScannerConfig;
   zone: ZoneConfig;
   fvg: FVGConfig;
   momentum: MomentumConfig;

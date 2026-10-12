@@ -71,6 +71,8 @@ Each arrow consumes only the outputs it declares — no engine re-detects upstre
 | Configuration              | `docs/engine/21-configuration.md`         |
 | Testing                    | `docs/engine/22-testing.md`               |
 | Contested definitions (v1) | `docs/engine/23-contested-definitions.md` |
+| Statistical validation     | `docs/engine/24-statistical-validation.md` |
+| Opportunity scanner        | `docs/engine/25-scanner-opportunity-discovery.md` |
 
 ## Explicitly out of scope (future phases)
 

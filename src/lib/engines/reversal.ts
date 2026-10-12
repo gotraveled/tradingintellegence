@@ -110,6 +110,7 @@ interface Live {
   invalidation: number;
   targets: number[]; // ordered evidence levels T1→T3
   targetsHit: number;
+  targetBars?: number[]; // bar index per hit, in order — spec 17 timeToTarget[]
   zoneIdx: number; // zone origin bar — zoneMaxAgeBars bookkeeping
 }
 
@@ -148,6 +149,17 @@ function reason(id: string, met: boolean, tf: Timeframe, signalIds?: string[]): 
   return { id, category: REASON_LABEL[id].category, label: REASON_LABEL[id].label, met, timeframe: tf, signalIds };
 }
 
+/** Post-confirmation lifecycle transitions → bar-indexed metadata stamps (spec 17 outcome
+ *  measurement — additive only; `developing`/`confirmed` already have candidateBar/confirmBar). */
+export const TRANSITION_BAR: Partial<Record<SetupStatus, string>> = {
+  active: "activeBar",
+  partial_target: "partialTargetBar",
+  target_reached: "targetReachedBar",
+  invalidated: "invalidatedBar",
+  expired: "expiredBar",
+  cancelled: "cancelledBar",
+};
+
 export function detectReversals(input: {
   candles: readonly Candle[];
   symbol: string;
@@ -168,7 +180,8 @@ export function detectReversals(input: {
     if (s.status === to && to !== "partial_target") return; // partial_target fires per-target
     s.status = to;
     s.updatedAt = toISO(candles[t].time);
-    s.metadata = { ...(s.metadata ?? {}), transitionReason: why };
+    const barKey = TRANSITION_BAR[to];
+    s.metadata = { ...(s.metadata ?? {}), transitionReason: why, ...(barKey ? { [barKey]: t } : {}) };
     events.push({
       kind: "setup_transition",
       refId: s.id,
@@ -206,9 +219,11 @@ export function detectReversals(input: {
         let hit = 0;
         while (l.targetsHit < l.targets.length && m.reaches(bar, l.targets[l.targetsHit])) {
           l.targetsHit++;
+          (l.targetBars ??= []).push(t);
           hit++;
         }
         if (hit > 0) {
+          s.metadata = { ...(s.metadata ?? {}), targetBars: (l.targetBars ?? []).join(",") };
           const final = l.targetsHit >= l.targets.length;
           transit(l, t, final ? "target_reached" : "partial_target", final ? "final_target" : `target_${l.targetsHit}`);
           if (final) { finish(l); continue; }

@@ -48,6 +48,9 @@ export interface SetupOutcome {
   barsToActive?: number | null;
   stopReached: boolean;
   expired: boolean;
+  /** True when the observation window closed with no terminal event (still open at series
+   *  end) — the spec-24 E1 eligibility gate; resolved rows leave it false/absent. */
+  unresolved?: boolean;
 
   /** Flattened normalized inputs at confirmedAt — the ML feature row. */
   featureVector?: FeatureVector;

@@ -45,7 +45,7 @@ import type {
   Zone,
 } from "@/lib/types";
 import type { EngineError, SetupDetectionEngine } from "@/lib/services/engine";
-import { atrAt, poolStatusAt } from "./reversal";
+import { atrAt, poolStatusAt, TRANSITION_BAR } from "./reversal";
 
 const toISO = (ms: number) => new Date(ms).toISOString();
 const num = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
@@ -90,6 +90,7 @@ interface Live {
   invalidation: number; // post-acceptance level — boundary ∓ invalidateAtr×ATR inside
   targets: number[]; // ordered evidence levels T1→T2
   targetsHit: number;
+  targetBars?: number[]; // bar index per hit, in order — spec 17 timeToTarget[]
 }
 
 const inside = (dir: Direction, close: number, b: number) => (dir === "bullish" ? close < b : close > b);
@@ -157,7 +158,8 @@ export function detectBreakouts(input: {
     if (s.status === to && to !== "partial_target") return; // partial_target fires per-target
     s.status = to;
     s.updatedAt = toISO(candles[t].time);
-    s.metadata = { ...(s.metadata ?? {}), transitionReason: why };
+    const barKey = TRANSITION_BAR[to];
+    s.metadata = { ...(s.metadata ?? {}), transitionReason: why, ...(barKey ? { [barKey]: t } : {}) };
     events.push({
       kind: "setup_transition",
       refId: s.id,
@@ -270,9 +272,11 @@ export function detectBreakouts(input: {
           const reached = l.dir === "bullish" ? bar.high >= l.targets[l.targetsHit] : bar.low <= l.targets[l.targetsHit];
           if (!reached) break;
           l.targetsHit++;
+          (l.targetBars ??= []).push(t);
           hit++;
         }
         if (hit > 0) {
+          s.metadata = { ...(s.metadata ?? {}), targetBars: (l.targetBars ?? []).join(",") };
           const final = l.targetsHit >= l.targets.length;
           transit(l, t, final ? "target_reached" : "partial_target", final ? "final_target" : `target_${l.targetsHit}`);
           if (final) { finish(l); continue; }

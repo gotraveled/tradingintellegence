@@ -295,6 +295,28 @@ describe("reversal — causality and determinism", () => {
     expect(JSON.stringify(prefix.events)).toBe(JSON.stringify(full.events.filter((e) => e.atBar <= cut - 1)));
   });
 
+  it("lifecycle stamps are causal — prefix replay reproduces every stamp known by bar T", () => {
+    // BULL timeline: candidate 5 → confirmed 8 → active 10 → T1 12, T2 14, T3 16 (target_reached).
+    const full = run(BULL, bullAt()).setups[0];
+    const STAMP = ["candidateBar", "confirmBar", "activeBar",
+      "partialTargetBar", "targetReachedBar", "invalidatedBar", "expiredBar", "cancelledBar"] as const;
+    for (const cut of [9, 11, 13, 15, 17, 19]) {
+      const sP = run(BULL.slice(0, cut), bullAt()).setups[0];
+      for (const k of STAMP) {
+        const fv = full.metadata?.[k] as number | undefined;
+        const pv = sP.metadata?.[k] as number | undefined;
+        // every stamp whose bar < cut must appear in the prefix, identical
+        if (fv !== undefined && fv < cut) expect(pv, `${k}@${cut}`).toBe(fv);
+        // nothing stamped strictly after T may leak into the prefix
+        if (pv !== undefined) expect(pv, `${k}@${cut}`).toBeLessThan(cut);
+      }
+      // targetBars CSV = ordered hit bars; prefix keeps exactly the hits known by cut
+      const fT = String(full.metadata?.targetBars ?? "").split(",").filter(Boolean).map(Number);
+      const pT = String(sP.metadata?.targetBars ?? "").split(",").filter(Boolean).map(Number);
+      expect(pT).toEqual(fT.filter((b) => b < cut));
+    }
+  });
+
   it("forming-bar FVG does not satisfy C7 early", () => {
     const out = run(BULL.slice(0, 9), bullAt({ fvgBar: 8 }));
     const s = out.setups[0];

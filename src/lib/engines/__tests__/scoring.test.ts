@@ -79,6 +79,7 @@ const align = (state: MultiTimeframeAlignment["state"] = "aligned_bull"): MultiT
 });
 
 const SNAP: ScoringSnapshot = {
+  provenance: "at_bar", // fixtures simulate the causal historical path
   structure: structure(),
   pools: [pool()],
   zones: [zone()],
@@ -122,6 +123,7 @@ describe("scoring — spec 15 model", () => {
 
   it("score is always in [0,100] and never negative", () => {
     const res = score(mkSetup(), {
+      provenance: "at_bar",
       structure: structure("downtrend"), pools: [], zones: [], imbalances: [],
       momentum: momentum({ state: "weakening", displacementScore: 0 }),
       alignment: align("no_context"),
@@ -328,6 +330,7 @@ describe("scoring — regime modulation (spec 15 §3)", () => {
     expect(wSum).toBeCloseTo(100, 3);
     // all-1 features still score 100 regardless of modulation
     const maxed = score(mkSetup(), {
+      provenance: "at_bar",
       structure: structure(), pools: [pool()], zones: [zone({ strength: 100 })],
       imbalances: [fvg()], momentum: momentum({ displacementScore: 100 }),
       alignment: align(), regime: "trending_bullish" as RegimeLabel,
@@ -439,6 +442,90 @@ describe("scoring — determinism, monotonicity, config", () => {
     expect(b.data?.score).toBeCloseTo(75.5, 4);
     expect(score(mkSetup(), { ...SNAP, alignment: align("no_context") }).data?.score)
       .toBeCloseTo(83.5, 4);
+  });
+});
+
+describe("scoring — reconciliation: RR directionality (Issue 1)", () => {
+  // Spec 16: rr = (finalTarget − entryZone.mid)/(entryZone.mid − invalidation), mirrored for
+  // shorts. Engine implements sign cancellation — identical mirror.
+  const diagRR = (s: Setup) => score(s).meta.diagnostics?.rr as number;
+
+  it("LONG: rr = (finalTarget − mid)/(mid − invalidation) — 3.0", () => {
+    const s = mkSetup(); // mid 100, inv 98 → risk 2; final 106 → reward 6
+    expect(diagRR(s)).toBeCloseTo(3, 4);
+    expect(score(s).data?.score).toBeDefined();
+  });
+
+  it("SHORT: mirrored — risk = inv − mid, reward = mid − finalTarget — identical magnitude", () => {
+    const s = mkSetup({
+      metadata: { entryBandLow: 99, entryBandHigh: 101, invalidation: 102, targets: "98,96,94" },
+    });
+    const b = { ...s, direction: "bearish" as const };
+    // mid 100, inv 102 → risk 2; final (bearish-deepest) 94 → reward 6 → rr 3.0
+    expect(diagRR(b)).toBeCloseTo(3, 4);
+    expect(score(b).data?.score).toBeDefined();
+  });
+
+  it("exact minRR boundary passes (spec: dropped when rr < minRR)", () => {
+    const s = mkSetup({ metadata: { targets: "102,102.5,103" } }); // reward 3, risk 2 → 1.5
+    expect(diagRR(s)).toBeCloseTo(1.5, 4);
+    expect(score(s).data?.score).toBeDefined();
+  });
+
+  it("below minRR gates rr_below_min — LONG and SHORT", () => {
+    expect(score(mkSetup({ metadata: { targets: "102,102.5,102.9" } })).data?.gate).toBe("rr_below_min");
+    const b = { ...mkSetup({ metadata: { invalidation: 102, targets: "98.9,98.5,98" } }), direction: "bearish" as const };
+    expect(score(b).data?.gate).toBe("rr_below_min"); // reward 2 / risk 2 = 1.0
+  });
+
+  it("zero or negative risk denominator → insufficient_data, never a score", () => {
+    const zero = mkSetup({ metadata: { invalidation: 100 } }); // inv == mid → risk 0
+    expect(score(zero).data?.gate).toBe("insufficient_data");
+    const invSide = mkSetup({ metadata: { invalidation: 104 } }); // long inv above mid → risk < 0
+    expect(score(invSide).data?.gate).toBe("insufficient_data");
+    const bNeg = { ...mkSetup({ metadata: { invalidation: 96 } }), direction: "bearish" as const };
+    expect(score(bNeg).data?.gate).toBe("insufficient_data"); // short inv below mid → risk < 0
+  });
+
+  it("deterministic: repeated scoring yields identical rr and score", () => {
+    const a = score(mkSetup());
+    const b = score(mkSetup());
+    expect(a.meta.diagnostics?.rr).toBe(b.meta.diagnostics?.rr);
+    expect(JSON.stringify(a.data)).toBe(JSON.stringify(b.data));
+  });
+});
+
+describe("scoring — reconciliation: path separation (Issue 2)", () => {
+  it("every result records which path produced it — at_bar vs snapshot", () => {
+    const hist = score(mkSetup(), SNAP);
+    expect(hist.meta.diagnostics?.path).toBe("at_bar");
+    const conv = score(mkSetup(), { ...SNAP, provenance: "snapshot" });
+    expect(conv.meta.diagnostics?.path).toBe("snapshot");
+  });
+
+  it("contract adapter always reports path snapshot (convenience, not authoritative)", () => {
+    const engine = createOpportunityScoringEngine();
+    const res = engine.score({
+      setup: mkSetup(), structure: structure(), pools: [pool()], zones: [zone()],
+      imbalances: [fvg()], momentum: momentum(), alignment: align(), config: CFG,
+    });
+    expect(res.meta.diagnostics?.path).toBe("snapshot");
+  });
+
+  it("non-stamped snapshot fields (freshness/momentum/structure) read verbatim — a changed", () => {
+    // final value WOULD change a snapshot-path score → proves the two paths diverge honestly
+    // when data differs; stamps keep status fields causal on both.
+    const lateMomentum: ScoringSnapshot = { ...SNAP, provenance: "snapshot", momentum: momentum({ state: "weakening" }) };
+    const conv = score(mkSetup(), lateMomentum);
+    expect(contrib(conv, "momentum")?.points).toBe(0); // final weakening read verbatim
+    const hist = score(mkSetup(), SNAP); // at_bar momentum: strengthening
+    expect(contrib(hist, "momentum")?.points).toBe(10);
+    // ...while stamped statuses stay causal even on the snapshot path:
+    const stamped: ScoringSnapshot = {
+      ...SNAP, provenance: "snapshot",
+      imbalances: [fvg({ status: "filled", metadata: { createdBar: 6, filledBar: 10 } })],
+    };
+    expect(contrib(score(mkSetup(), stamped), "fvg")?.feature).toBe(1); // open at t=8 though filled@10
   });
 });
 

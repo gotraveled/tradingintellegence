@@ -46,6 +46,8 @@ Every engine returns `EngineResult<T>` (`src/lib/services/engine.ts`):
 | `OpportunityScoringEngine` | 15    | `setup` + evidence             | `score` + `contributions`       |
 | `OutcomeEngine`            | 17    | `setup`/`opportunity` + series | `SetupOutcome`                  |
 | `BacktestEngine`           | 11–17 | series + `EngineConfig`        | `setups` + `outcomes`           |
+| `StatisticalValidationEngine` | 24 | decision view + `SetupOutcome[]` | `ProbabilityEstimate`         |
+| `ScannerEngine`            | 25    | PIT candidates + universe + filters | `ScanResult`              |
 
 ## Rules
 

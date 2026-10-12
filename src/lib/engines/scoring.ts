@@ -58,6 +58,16 @@ const REGIME_FAMILY: Record<RegimeLabel, MarketRegime | undefined> = {
  *  per-bar joined frame; the contract adapter passes end-of-series snapshots and the scorer
  *  reconstructs time-varying statuses from bar-indexed stamps. */
 export interface ScoringSnapshot {
+  /**
+   * REQUIRED declaration of where these objects came from — the path is never ambiguous:
+   * - `"at_bar"`   — per-bar causal providers (4G join / `*StateAt`): the authoritative
+   *   historical path. Every field, stamped or not, is point-in-time at `atBar`.
+   * - `"snapshot"` — end-of-series/convenience objects: bar-indexed stamps still reconstruct
+   *   causal statuses, but non-stamped fields (zone freshness/strength, momentum, structure,
+   *   alignment) read final values — NOT authoritative for historical validation.
+   * The value is recorded in `meta.diagnostics.path` on every result.
+   */
+  provenance: "at_bar" | "snapshot";
   structure?: MarketStructure;
   pools?: readonly LiquidityPool[];
   zones?: readonly Zone[];
@@ -106,7 +116,7 @@ export function scoreOpportunity(input: {
     ok: true,
     data: { gate, emittedStatus },
     errors: [],
-    meta: { ...meta, diagnostics: { gate, emittedStatus } },
+    meta: { ...meta, diagnostics: { gate, emittedStatus, path: snap.provenance } },
   });
 
   // ---- Config validation (spec 21: invalid_config must be loud). ----
@@ -298,6 +308,7 @@ export function scoreOpportunity(input: {
     meta: {
       ...meta,
       diagnostics: {
+        path: snap.provenance,
         regime: snap.regime ?? "none",
         regimeFamily: family ?? "none",
         rr: Number(rr.toFixed(4)),
@@ -327,7 +338,7 @@ export function createOpportunityScoringEngine(): OpportunityScoringEngine {
           meta: {
             stage: "opportunity-score", paramsVersion: "1",
             barsConsumed: { from: -1, to: -1 }, events: [],
-            diagnostics: { gate: "confirmBar_missing" },
+            diagnostics: { gate: "confirmBar_missing", path: "snapshot" },
           },
         };
       }
@@ -335,6 +346,7 @@ export function createOpportunityScoringEngine(): OpportunityScoringEngine {
         setup: input.setup,
         atBar: t,
         snap: {
+          provenance: "snapshot", // contract path — convenience, NOT authoritative historical
           structure: input.structure,
           momentum: input.momentum,
           pools: input.pools,

@@ -18,6 +18,8 @@ Magic numbers inside engine logic are forbidden: a threshold that isn't a named 
 | `ReversalConfig` / `BreakoutConfig` / `ContinuationConfig` | 12–14 | all per-setup thresholds                                                                      |
 | `ScoringConfig`                                            | 15    | `minRR`, dimension `weights`, `regimeMatrix`                                                  |
 | `RegimeConfig`                                             | 19    | `expandAtrTrend`, `compressAtrTrend`, `minBars`                                               |
+| `StatsConfig`                                              | 24    | `minSamples`, `scoreBands`, `methodVersion`                                                 |
+| `ScannerConfig`                                            | 25    | `topK`, `includeDeveloping`                                                                 |
 | `EngineConfig`                                             | —     | The whole set + `version` — the unit of reproducibility                                       |
 
 ## Rules

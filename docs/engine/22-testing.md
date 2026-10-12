@@ -51,6 +51,8 @@ Every engine must have fixtures covering each applicable category:
 | `OpportunityScoringEngine` | scored setup + contribution list; every gate (countertrend, low RR, insufficient data)           | contributions sum to score; weakening any feature never raises score; scores only comparable within `paramsVersion` |
 | `OutcomeEngine`            | activated→T3, invalidated at stop, expired unactivated, partial target                           | outcome rows never use bars before `confirmedAt + 1`; unactivated rows still emitted                                |
 | `BacktestEngine`           | full-history run vs manual stage replay                                                          | pipeline result == stage-by-stage composition; identical across machines/platforms                                  |
+| `StatisticalValidationEngine` | all-success / all-failure / mixed cohorts, min-sample boundary, fallback ladder, unresolved excluded | `pTarget` monotone; probabilities ∈ [0,1]; future-resolved rows never alter earlier estimates; permuted input → identical output |
+| `ScannerEngine`            | eligibility per lifecycle state, gated/unrankable, all filter dims, dedup winner, provenance violations, developing bucket | score-desc ranking with total tie-break; permuted candidates → bit-identical result; topK slices after ranking |
 
 ## Reproducibility rules
 

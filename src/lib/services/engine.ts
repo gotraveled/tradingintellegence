@@ -28,13 +28,22 @@ import type {
   RegimeConfig,
   RegimeLabel,
   ReversalConfig,
+  ScanCandidate,
+  ScanFilters,
+  ScanResult,
+  ScanUniverse,
+  ScannerConfig,
   ScoringConfig,
   Setup,
   SetupOutcome,
+  StatisticalDecision,
+  StatsConfig,
+  ProbabilityEstimate,
   StructureConfig,
   SwingConfig,
   SwingPoint,
   Timeframe,
+  UnixMs,
   Zone,
   ZoneConfig,
 } from "@/lib/types";
@@ -210,6 +219,11 @@ export interface OutcomeEngine {
     opportunity: Opportunity;
     series: CandleSeries;
     regime?: RegimeLabel;
+    /** Score when the setup first became `developing` (spec 17 `scoreAtDetection`) —
+     *  caller computes at `candidateBar` on the causal scoring path. */
+    scoreAtDetection?: number;
+    /** Params version stamped on the row — comparability boundary (spec 17/23). */
+    paramsVersion?: string;
   }): EngineResult<SetupOutcome>;
 }
 
@@ -219,4 +233,31 @@ export interface BacktestEngine {
     series: CandleSeries;
     config: EngineConfig;
   }): EngineResult<{ setups: Setup[]; outcomes: SetupOutcome[] }>;
+}
+
+/** 24 — Statistical validation: empirical outcome frequencies over a comparable cohort. */
+export interface StatisticalValidationEngine {
+  estimate(input: {
+    /** The decision view — only what was knowable at the setup's confirmBar. */
+    decision: StatisticalDecision;
+    /** The Phase 6 dataset — authoritative rows; the engine never re-measures. */
+    outcomes: SetupOutcome[];
+    config: StatsConfig;
+  }): EngineResult<ProbabilityEstimate>;
+}
+
+/** 25 — Scanner: opportunity discovery & ranking over caller-produced PIT artifacts.
+ *  Never receives candles; never detects, scores, estimates, or measures. */
+export interface ScannerEngine {
+  scan(input: {
+    /** The point-in-time anchor — candidates are validated against this, not re-evaluated. */
+    asOf: UnixMs;
+    /** Declared scan extent — the caller owns universe population. */
+    universe: ScanUniverse;
+    /** Caller-produced PIT artifacts — input order is irrelevant by contract. */
+    candidates: ScanCandidate[];
+    /** Narrowing dims (the `ScanRequest` filter surface) — absent = unconstrained. */
+    filters?: ScanFilters;
+    config: ScannerConfig;
+  }): EngineResult<ScanResult>;
 }

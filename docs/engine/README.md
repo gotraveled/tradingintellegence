@@ -38,6 +38,8 @@ Frontend → API → Market Intelligence Engine → Market Data → Database
 | [21-configuration.md](21-configuration.md)                 | Named config objects — no magic numbers, versioned parameter sets                                   | Draft  |
 | [22-testing.md](22-testing.md)                             | 14-category fixture matrix + per-engine required tests                                              | Draft  |
 | [23-contested-definitions.md](23-contested-definitions.md) | V1 vs alternative definitions — no overfitting, parameters decide by backtest                       | Draft  |
+| [24-statistical-validation.md](24-statistical-validation.md) | Empirical outcome probabilities over the spec-17 dataset — expanding walk-forward history, cohorts, labels | Draft  |
+| [25-scanner-opportunity-discovery.md](25-scanner-opportunity-discovery.md) | Opportunity discovery & ranking over caller-produced PIT candidates — eligibility, filters, deterministic ordering | Draft  |
 
 ## Spec coverage
 
