@@ -85,3 +85,29 @@ MomentumState (existing domain type):
   swing-vs-momentum fixture.
 - Properties: scores in [0,100]; secondary features provably do not alter primary outputs;
   momentum state is identical when run on truncated series (no look-ahead).
+
+## Implementation notes (Phase 4F — `src/lib/engines/momentum.ts`)
+
+- **Config additions.** `momentum.trendShift` (ATR baseline shift, spec "20 bars ago"),
+  `momentum.vol { fast, slow }` (5/20 volume means), and `momentum.state { strengthMoveAtr,
+  strengthBodyAtr, weakenFactor, biasMoveAtr }` were added — spec constants with no typed
+  fields, caller-injected like prior phases. ROC `n` uses `lookback` (spec default 10 = 10).
+- **Leg anchor.** The `MomentumEngine` contract is `{ series, config }` — no zones/sweeps/
+  breaks — so Part A evaluates the **trailing `disp.bars` window** ending at each bar as the
+  candidate leg (direction = sign of window move). Event-anchored legs (zone departures,
+  reclaims) are downstream consumers' concern; the score formula is unchanged.
+- **`f_struct` is capped at 0.5** — the price-only "minor" proxy (leg-end close through the
+  pre-leg `lookback` extreme). 1.0 requires a BOS/CHOCH input the contract lacks. The weight
+  is not redistributed — a measurable proxy exists.
+- **`displacement` DetectionEventKind added** — events fire on the **rising edge** of
+  `score ≥ threshold` (one per qualifying episode, not per qualifying bar). refId =
+  `disp:{symbol}:{tf}:{direction}:{barTime}`; `momentum.displacementScore` reports the last
+  leg's score regardless of threshold.
+- **State precedence** — `diverging > weakening > strengthening > neutral` (the spec lists
+  states but not precedence; divergence is the setup-relevant signal). `weakening` needs ≥2
+  `directionalMove` observations; `diverging` needs a `lookback` history of it.
+- **Warm-up.** Features stay `undefined` until their window is fully populated — no
+  fabricated values. `consecDirection` is computable from bar 1; `rsi14` (Wilder) from
+  `atrLength`; zero-range bars yield `closeLoc = 0.5`, never NaN.
+- **`featuresByBar`/`scoreByBar`** are exposed on the internal `MomentumResult` for replay
+  tests and downstream stages; the contract's `data` is the end-of-series snapshot only.

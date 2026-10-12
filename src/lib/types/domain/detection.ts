@@ -22,6 +22,7 @@ export type DetectionEventKind =
   | "zone_retested"
   | "zone_consumed"
   | "zone_invalidated"
+  | "displacement" // leg scored ≥ momentum.disp.threshold — see metadata
   | "setup_transition";
 
 export interface DetectionEvent {

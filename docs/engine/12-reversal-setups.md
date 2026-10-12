@@ -78,3 +78,38 @@ complete before structure breaks, so no look-ahead exists. The sweep (C3) may be
   `countertrend_bull` MTF state → `cancelled`.
 - Property: a confirmed reversal's evidence chain (`zoneId`, `poolId`, `sweepEventId`, `breakId`,
   optional `fvgId`) is populated — the setup is always explainable.
+
+## Implementation notes (Phase 4H)
+
+- **Canonical consumption.** `detectReversals({ candles, at(idx) })` walks closed bars
+  chronologically; `at(idx)` supplies the per-bar `*StateAt` snapshots (structure/momentum/
+  liquidity/zones/FVG) and the 4G `causalAlignAt` alignment — the engine never scans raw
+  history itself and cannot see a bar it wasn't given. `createReversalSetupEngine()` satisfies
+  the `SetupDetectionEngine` contract for callers holding end-of-series snapshots; bar-indexed
+  pool/zone lifecycle metadata (`sweepConfirmedBar`, `invalidatedBar`) still reconstructs what
+  each bar may see. Historical backtests should prefer the provider path.
+- **Developing sweeps.** Pools retain only *confirmed* sweeps (`sweepConfirmedBar`); C3's
+  "developing" leg reads `sweep_developing` events carried on `FrameSnapshot.events`.
+  `sweepConfirmedBar` is gated `≤ t` everywhere — a future confirmation is never knowable.
+- **C4 = reclaim.** Spec 04 confirms a sweep only on reclaim, so `sweepConfirmedBar` present ⇒
+  C4 met; a developing-only sweep satisfies C3 while C4 stays unmet.
+- **Zone freshness.** Spec's "active/tested" maps to `status === "active"` (freshness is a
+  property of an active zone; `mitigated`/`invalidated`/`expired` are rejected outright,
+  `invalidatedBar` restores pre-invalidation state when reconstructing per-bar).
+- **Expiry.** Developing with no confirmed sweep: `lifecycle.expiryBars` from creation.
+  Sweep anchored but unconfirmed: `sweepMaxAgeBars` from `sweepBar` (C3's "stay live" window).
+  Confirmed/active: `lifecycle.expiryBars` from the anchor transition (spec 11).
+- **Cancelled.** Confirmed opposing-direction break after the sweep anchor, or `countertrend_*`
+  MTF state — both only reachable from `developing`/`confirmed` per spec 11.
+- **Entry band / targets / invalidation** are stored in `metadata` (`entryBandLow/High`,
+  `targets`, `invalidation`) because the lifecycle's `active`/`partial_target`/`target_reached`
+  states require them (spec 11) — they are evidence levels, not a trade plan (doc 16).
+- **`score: 0`** is a contract placeholder, not a quality claim — spec 15 scoring is a later
+  phase; `scoreContributions` is left absent.
+- **ATR** for C2's 1×ATR distal band and `invalidateAtr` uses a local mean-TR(14) helper
+  (`atrAt`) — 14 is the spec-wide ATR convention; no reversal-specific window exists.
+- **Setup id** `rev:{symbol}:{tf}:{dir}:{zoneId}:{sweepAnchor}` — deterministic; a zone re-arms
+  only on a new sweep anchor; one live setup per (zone, direction).
+- **Transitions emit `setup_transition` events** (`atBar`/`transitionReason`) — bar-close only.
+- **Excluded (later phases):** breakout/continuation families, scoring, trade plans, outcomes,
+  alerts, live data.

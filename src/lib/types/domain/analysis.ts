@@ -63,6 +63,8 @@ export interface MultiTimeframeAlignment {
   /** The timeframe set, e.g. { htf: "4h", itf: "1h", etf: "15m" }. */
   timeframes: { htf: Timeframe; itf: Timeframe; etf: Timeframe };
   votes: { htf: MtfVote; itf: MtfVote; etf: MtfVote };
+  /** Which stage supplied each non-zero vote — "the stage that defined it" (spec 10). */
+  sources?: { htf?: "structure" | "momentum"; itf?: "structure" | "momentum"; etf?: "structure" | "momentum" };
   /** 0.5·htf + 0.3·itf + 0.2·etf, in [−1, 1]. */
   alignmentScore: number;
   state: MtfAlignmentState;

@@ -1,5 +1,9 @@
 # 08 — FVG / Imbalance Engine
 
+> **This is the canonical FVG/Imbalance definition for the platform.** `src/lib/engines/imbalances.ts`
+> is the only authoritative implementation — other engines must not re-implement FVG detection;
+> they reference canonical `Imbalance` entities via the deterministic `fvgId` format.
+
 A fair value gap is a 3-candle displacement pattern that leaves an unfilled price range — evidence
 of urgency. Not every 3-candle gap matters: size relative to volatility is the filter.
 
@@ -86,3 +90,31 @@ recorded in ATR units (`gapAtr`).
 - Property: `gap ≥ minGapAtr × ATR` holds for every emitted FVG — no exceptions.
 - Property: `fillPct` monotonic while `open`/`partially_filled`.
 - Property: mirroring bullish fixtures produces identical bearish lifecycle.
+
+## Implementation notes (Phase 4E — `src/lib/engines/imbalances.ts`)
+
+- **Config gap resolved.** The spec's `ATR[i+1]` thresholds presuppose an ATR series but no
+  window parameter existed in `FVGConfig` — added `fvg.atrLength` (typed; caller-injected,
+  same convention as `liquidity.range.lookbackBars` and `zone.leg`). `ATR[i+1]` = mean TR of
+  the `atrLength` bars ending at the middle candle; frozen at formation and reused for the
+  `invalidateAtr` margin.
+- **Events.** `fvg_created` at candle C's close; `fvg_filled` at the wick-through bar.
+  `partially_filled`, `invalidated`, `expired` have no `DetectionEventKind` — status +
+  diagnostics only, consistent with pool/zone conventions.
+- **Expiry reference.** "No fill progress" = `fillPct` has not increased since
+  `lastProgressBar` (creation or latest deeper dip). A shallower dip is not progress.
+- **Invalidation wins over fill** — a close through the far boundary is the stronger signal
+  (spec 08: close rules). `fillPct` is recorded as 100 on both terminal states.
+- **`Imbalance.metadata` added** — the spec requires `spansSession` and relationship hints
+  "recorded in metadata for setup scoring"; the field was absent from the domain type.
+- **Sweep/structure relationships.** The `ImbalanceEngine` contract is `{ series, config }`
+  only — no pools or structure input — so sweep/BOS/CHOCH associations are left to
+  downstream consumers (they hold all upstream outputs). `spansSession` is computed from
+  `candle.sessionId` when present.
+- **Phase 4D compatibility.** `zones.ts` now imports the canonical `fvgId` (identical string
+  format — pure de-duplication of the ID template). The zone-side **link heuristic** is the
+  literal spec-05 three-bar predicate — a superset match with no ATR thresholds, since
+  `FVGConfig` is not in the `ZoneEngine` contract. A `zone.fvgId` is therefore a *candidate*
+  link: consumers must verify membership against the canonical `Imbalance[]` output — a
+  linked id may not exist there if the gap fails `minGapAtr`/`minMidBodyAtr`. Documented,
+  not silently reconciled (per Phase 4E §0).

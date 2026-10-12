@@ -11,6 +11,7 @@ import type {
   ZoneType,
 } from "@/lib/types";
 import type { EngineError, ZoneEngine } from "@/lib/services/engine";
+import { fvgId } from "./imbalances";
 
 /**
  * Demand/Supply Zone Engine (docs/engine/05-07).
@@ -251,7 +252,7 @@ export function analyzeZones(
 
     // FVG on the departure leg — spec-05 literal predicate (no FVGConfig here; the full
     // engine is a later phase). Leftmost 3-bar gap inside [j+1, d] with a directional middle.
-    let fvgId: string | undefined;
+    let gapId: string | undefined;
     for (let k = j + 1; k + 2 <= d; k += 1) {
       const a = candles[k];
       const m = candles[k + 1];
@@ -259,7 +260,9 @@ export function analyzeZones(
       const bull = b.low > a.high && m.close > m.open;
       const bear = b.high < a.low && m.close < m.open;
       if ((demand && bull) || (!demand && bear)) {
-        fvgId = `fvg:${symbol}:${timeframe}:${demand ? "bullish" : "bearish"}:${a.time}`;
+        // Canonical ID format (4E) — the literal 05 predicate is a link heuristic;
+        // consumers resolve membership against the canonical Imbalance[] output.
+        gapId = fvgId(symbol, timeframe, demand ? "bullish" : "bearish", a.time);
         break;
       }
     }
@@ -275,7 +278,7 @@ export function analyzeZones(
       { w: w.structureBreak, f: structureImpact === "strong" ? 1 : structureImpact === "minor" ? 0.5 : 0 },
       { w: w.liquidityInteraction, f: liquidityContext === "formed_on_sweep" ? 1 : liquidityContext === "departure_through_pool" ? 0.5 : 0 },
       { w: w.freshness, f: 1 }, // fresh at creation
-      { w: w.fvgAssociation, f: fvgId !== undefined ? 1 : 0 },
+      { w: w.fvgAssociation, f: gapId !== undefined ? 1 : 0 },
       // htfConfluence: no HTF input in the contract — redistributed (documented).
       { w: w.zoneWidth, f: 1 - Math.min(1, widthAtr / 1.5) },
     ];
@@ -300,7 +303,7 @@ export function analyzeZones(
       status: "active",
       structureImpact,
       liquidityContext,
-      fvgId,
+      fvgId: gapId,
       originAt: toISO(candles[i].time),
       createdAt: toISO(candles[d].time),
       metadata: {

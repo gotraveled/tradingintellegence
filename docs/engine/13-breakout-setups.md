@@ -72,3 +72,38 @@ HTF — never auto-confirmed.
   (nothing emitted); retest at bar 7 that holds (active via retest); measured-move target hit.
 - Property: no `developing` state before a range qualifies (`rangeMinBars` + width + compression).
 - Property: a setup can never reach `confirmed` on a wick.
+
+## Implementation notes (Phase 4I)
+
+- **Canonical consumption.** `detectBreakouts({ candles, at(idx) })` walks closed bars
+  chronologically; `at(idx)` supplies per-bar `*StateAt` snapshots (structure/pools/zones/
+  momentum) plus the 4G `causalAlignAt` alignment and `FrameSnapshot.events`. The range itself
+  is measured on candles per this spec's definition — it is a setup-level entity, not an
+  upstream one. `createBreakoutSetupEngine()` satisfies the `SetupDetectionEngine` contract.
+- **Developing is emitted as a pair.** Direction is unknowable pre-break, so a qualifying range
+  creates a bullish (resistance-anchored) and a bearish (support-anchored) `developing` setup.
+  The untaken side expires (`range_lost`/`stalled`) or is cancelled by an opposing CHOCH —
+  it can never "confirm" from the opposite direction's evidence.
+- **Anchors.** The boundary pool (`sources` includes `range_high`/`range_low`, matching side)
+  is the anchor within 1×ATR; id `bo:{symbol}:{tf}:{dir}:{anchorPoolId|rng:rangeStart}`.
+  A missing pool is explicit (`B3` unmet, `anchorPoolId: null`), never fabricated.
+- **Sweep classification wins.** An attempt is disqualified when the boundary pool is
+  sweep-tagged (`poolStatusAt === "swept"` or a knowable `sweep_*`/`false_breakout` event on
+  the anchor). Post-attempt, that classification invalidates the setup (`boundary_*` reason).
+- **False breakout.** Any inside-close before acceptance → `invalidated` (`false_breakout`);
+  after `active`, only a close past `boundary ∓ lifecycle.invalidateAtr×ATR` invalidates
+  (`close_through_invalidation`). Wicks never trigger either — close-only throughout.
+- **`dispBars` window.** Spec 13's "next `dispBars` bars" maps to `breakout.holdBars` — the
+  momentum-stage window (`momentum.disp.bars`) is unreachable through the setup contract.
+- **Volume.** Evaluated once at the attempt bar; `median(20)` needs 20 volume-carrying bars —
+  otherwise skipped (spec: "skipped with redistribution otherwise"), `B6` marked accordingly.
+- **Retest/entry band constants.** The `0.1×ATR` retest touch and `0.25×ATR` entry band are
+  spec-literal constants (same convention as spec 04's `approachAtr`), not config.
+- **MTF.** `htfBias` = `votes.htf` sign (state-label fallback); a fighting HTF blocks
+  `confirmed` while it persists — "never auto-confirmed". Missing alignment is explicit
+  (`B7` unmet) but not a veto.
+- **`expired` paths.** `range_lost` (range ceases to qualify / suffix start shifts),
+  `stalled` (`lifecycle.expiryBars`), `attempt_unconfirmed` (disp window elapsed),
+  `retest_window` (spec's named expiry for confirmed setups).
+- **`score: 0`** placeholder — spec 15; targets/entry band in `metadata` are lifecycle
+  evidence, not a trade plan (doc 16).

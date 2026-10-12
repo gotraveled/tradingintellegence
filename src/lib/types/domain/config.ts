@@ -91,12 +91,29 @@ export interface FVGConfig {
   partialFillPct: number;
   invalidateAtr: number;
   expiryBars: number;
+  /** Bars in the ATR window ending at the middle candle — spec 08's `ATR[i+1]`. */
+  atrLength: number;
 }
 
 /** Displacement + momentum features (09). */
 export interface MomentumConfig {
   lookback: number;
   atrLength: number;
+  /** Bars back for the atrTrend baseline (spec 09: "ATR(14) 20 bars ago"). */
+  trendShift: number;
+  /** Volume mean windows for volumeRatio (spec 09: 5-bar ÷ 20-bar). */
+  vol: { fast: number; slow: number };
+  /** Derived-state thresholds (spec 09 Part B). */
+  state: {
+    /** |directionalMove| ≥ this for `strengthening`. */
+    strengthMoveAtr: number;
+    /** bodyStrength ≥ this for `strengthening`. */
+    strengthBodyAtr: number;
+    /** weakening when |directionalMove| < this × its lookback mean. */
+    weakenFactor: number;
+    /** bias threshold on directionalMove, signed. */
+    biasMoveAtr: number;
+  };
   disp: {
     bars: number;
     threshold: number;

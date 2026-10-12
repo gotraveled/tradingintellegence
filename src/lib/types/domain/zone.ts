@@ -65,4 +65,6 @@ export interface Imbalance {
   status: ImbalanceStatus;
   createdAt: ISODateTime;
   invalidatedAt?: ISODateTime;
+  /** Session/zone/sweep relationship hints per spec 08 (setup scoring reads these). */
+  metadata?: Metadata;
 }

@@ -176,9 +176,12 @@ Interpretations recorded where the spec left room — not silent changes:
   `departure_through_pool` = departure close clears a pool that was still resting at `d`
   (`formedAt ≤ d`, no `sweptAt`/`brokenAt`/`expiredAt` ≤ d — `brokenAt` added in 4C).
 - **FVG link.** Spec-05 literal predicate only: leftmost 3-bar gap in the departure leg with
-  a directional middle candle → `fvgId` recorded + `fvgAssociation` feature. The full FVG
-  engine (min gap/body ATR, fill tracking) is Phase 4E+ — `FVGConfig` is not in this
-  engine's contract.
+  a directional middle candle → `fvgId` recorded + `fvgAssociation` feature. `FVGConfig` is
+  not in this engine's contract, so the predicate has no ATR thresholds — `zone.fvgId` is a
+  **candidate link**: the canonical Phase-4E `ImbalanceEngine` (spec 08) owns FVG detection,
+  and consumers must verify the id exists in its output (a linked gap may fail
+  `minGapAtr`/`minMidBodyAtr`). The id format is shared — `zones.ts` imports `fvgId` from
+  `imbalances.ts`.
 - **HTF confluence.** No HTF input in the `ZoneEngine` contract — the feature is treated as
   unavailable and its weight redistributed pro-rata, same as missing volume. `htfAligned`
   stays unset.
