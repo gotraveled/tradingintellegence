@@ -3,10 +3,43 @@ import type { Direction, ID, Metadata, Score, Timeframe, Timestamps } from "./co
 export type SetupType = "reversal" | "breakout" | "continuation";
 
 /**
- * Lifecycle of a setup.
- * developing → confirmed → completed, or → invalidated / expired at any point.
+ * Universal setup lifecycle (docs/engine/11). A state machine, not scattered booleans:
+ * developing → confirmed → active → partial_target → target_reached,
+ * or → invalidated (close through invalidation) / expired (stale) / cancelled (premise disproved).
+ * Terminal states are immutable.
  */
-export type SetupStatus = "developing" | "confirmed" | "invalidated" | "completed" | "expired";
+export type SetupStatus =
+  | "developing"
+  | "confirmed"
+  | "active"
+  | "partial_target"
+  | "target_reached"
+  | "invalidated"
+  | "expired"
+  | "cancelled";
+
+/** Per-dimension explainable contribution to the 0–100 score (docs/engine/15). */
+export interface ScoreContribution {
+  dimension:
+    | "structure"
+    | "liquidity"
+    | "zoneQuality"
+    | "displacement"
+    | "momentum"
+    | "htfAlignment"
+    | "freshness"
+    | "fvg";
+  /** Max points for this dimension after regime modulation. */
+  weight: number;
+  /** Normalized feature value fᵢ in [0,1]. */
+  feature: number;
+  /** weight × feature — summed to produce the score. */
+  points: number;
+  /** Human-readable label of what the evidence is. */
+  label: string;
+  /** Engine entities that produced this contribution. */
+  signalIds?: ID[];
+}
 
 export type EvidenceCategory =
   | "market_structure"
@@ -39,6 +72,8 @@ export interface Setup extends Timestamps {
   direction: Direction;
   /** Quality score, 0–100. Describes evidence quality, not probability of profit. */
   score: Score;
+  /** Per-dimension breakdown — mandatory: a score without contributions is an engine error. */
+  scoreContributions?: ScoreContribution[];
   status: SetupStatus;
   reasons: SetupReason[];
   zoneIds?: ID[];

@@ -52,17 +52,23 @@ export const REGIME_LABEL: Record<MarketRegime, string> = {
 export const SETUP_STATUS_LABEL: Record<SetupStatus, string> = {
   developing: "Developing",
   confirmed: "Confirmed",
+  active: "Active",
+  partial_target: "Partial target",
+  target_reached: "Target reached",
   invalidated: "Invalidated",
-  completed: "Completed",
   expired: "Expired",
+  cancelled: "Cancelled",
 };
 
 export const SETUP_STATUS_TONE: Record<SetupStatus, Tone> = {
   developing: "developing",
   confirmed: "neutral",
+  active: "bullish",
+  partial_target: "neutral",
+  target_reached: "inactive",
   invalidated: "bearish",
-  completed: "inactive",
   expired: "inactive",
+  cancelled: "inactive",
 };
 
 export const NO_SETUP_LABEL = "No active setup";
@@ -70,8 +76,12 @@ export const NO_SETUP_LABEL = "No active setup";
 export const OPPORTUNITY_STATUSES: OpportunityStatus[] = [
   "developing",
   "confirmed",
+  "active",
+  "partial_target",
+  "target_reached",
   "invalidated",
-  "completed",
+  "expired",
+  "cancelled",
 ];
 
 export const CONFIDENCE_LABEL: Record<ConfidenceLevel, string> = {

@@ -34,27 +34,44 @@ const DIRECTION_ACCENT: Record<Direction, string> = {
 const SCORE_BAR: Record<OpportunityStatus, string> = {
   developing: "bg-warning",
   confirmed: "bg-info",
+  active: "bg-info",
+  partial_target: "bg-info",
+  target_reached: "bg-inactive",
   invalidated: "bg-inactive",
-  completed: "bg-inactive",
+  expired: "bg-inactive",
+  cancelled: "bg-inactive",
 };
 
 const SCORE_LABEL: Record<OpportunityStatus, string> = {
   developing: "Developing score",
   confirmed: "Quality score",
+  active: "Quality score",
+  partial_target: "Quality score",
+  target_reached: "Quality score at detection",
   invalidated: "Quality score at detection",
-  completed: "Quality score at detection",
+  expired: "Quality score at detection",
+  cancelled: "Quality score at detection",
 };
+
+const TERMINAL: OpportunityStatus[] = ["target_reached", "invalidated", "expired", "cancelled"];
 
 function statusNote(opportunity: Opportunity): string | null {
   if (opportunity.status === "invalidated") {
     return "Invalidated — price breached the invalidation level before the setup resolved.";
   }
-  if (opportunity.status === "completed") {
+  if (opportunity.status === "target_reached") {
+    return "Target reached — final target hit.";
+  }
+  if (opportunity.status === "partial_target") {
     const reached = opportunity.targets?.filter((target) => target.reached).length ?? 0;
     const total = opportunity.targets?.length ?? 0;
-    return total && reached < total
-      ? `Completed — ${reached} of ${total} targets reached before exit.`
-      : "Completed — final target reached.";
+    return `Partial target — ${reached} of ${total} targets reached so far.`;
+  }
+  if (opportunity.status === "expired") {
+    return "Expired — the setup went stale before resolving.";
+  }
+  if (opportunity.status === "cancelled") {
+    return "Cancelled — the setup's premise was disproved before it confirmed.";
   }
   return null;
 }
@@ -68,7 +85,7 @@ export function OpportunityCard({
 }: OpportunityCardProps) {
   const reasons = opportunity.reasons ?? [];
   const displayReasons = (showReasons ?? opportunity.status === "developing") && reasons.length > 0;
-  const inactive = opportunity.status === "invalidated" || opportunity.status === "completed";
+  const inactive = TERMINAL.includes(opportunity.status);
   const note = statusNote(opportunity);
 
   return (

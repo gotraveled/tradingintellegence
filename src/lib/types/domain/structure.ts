@@ -1,13 +1,41 @@
-import type { Bias, Direction, ISODateTime, Price, Score, Timeframe } from "./common";
+import type { Bias, Direction, ID, ISODateTime, Metadata, Price, Score, Timeframe } from "./common";
 import type { AssetClass } from "./market";
 
-/** HH = higher high, HL = higher low, LH = lower high, LL = lower low. */
-export type SwingType = "HH" | "HL" | "LH" | "LL";
+/**
+ * HH = higher high, HL = higher low, LH = lower high, LL = lower low.
+ * EH/EL = equal high/low (within classifyToleranceAtr) — liquidity cluster, not trend info.
+ */
+export type SwingType = "HH" | "HL" | "LH" | "LL" | "EH" | "EL";
+
+export type SwingKind = "high" | "low";
+
+/**
+ * Lifecycle per docs/engine/02-swing-detection.md:
+ * developing (candidate, unconfirmed) → confirmed → invalidated.
+ * "superseded" candidates are diagnostics only and are never emitted as swings.
+ */
+export type SwingStatus = "developing" | "confirmed" | "superseded" | "invalidated";
 
 export interface SwingPoint {
-  type: SwingType;
+  id?: ID;
+  /** Whether the pivot is a high or a low — intrinsic. */
+  kind: SwingKind;
+  /**
+   * HH/HL/LH/LL relative to the previous confirmed swing of the same kind.
+   * Assigned by structure detection; absent until classified.
+   */
+  classification?: SwingType;
   price: Price;
-  time: ISODateTime;
+  /** Bar index of the extreme in the source series. */
+  pivotIndex?: number;
+  /** Open time of the pivot bar. */
+  pivotAt: ISODateTime;
+  /** First bar index at which the swing was knowable (no look-ahead). */
+  confirmedIndex?: number;
+  confirmedAt?: ISODateTime;
+  status?: SwingStatus;
+  invalidatedAt?: ISODateTime;
+  metadata?: Metadata;
 }
 
 /** BOS = break of structure (continuation), CHOCH = change of character (potential reversal). */
@@ -20,6 +48,12 @@ export interface StructureBreak {
   time: ISODateTime;
   /** Whether the break was confirmed by a candle close beyond the level. */
   confirmed: boolean;
+  /**
+   * Price closed back inside the broken level within `structure.failedBreakBars`.
+   * The break still happened — `failed` marks its assessment, not the event (spec 03).
+   */
+  failed?: boolean;
+  failedAt?: ISODateTime;
 }
 
 export type TrendState = "uptrend" | "downtrend" | "range" | "transition";
@@ -35,6 +69,18 @@ export interface MarketStructure {
   keyLevels?: { label: string; price: Price }[];
   updatedAt: ISODateTime;
 }
+
+/**
+ * Engine regime label (docs/engine/19) — direction + volatility collapsed to one state by
+ * precedence. Distinct from `MarketRegime` (the UI's snapshot taxonomy, unchanged).
+ */
+export type RegimeLabel =
+  | "trending_bullish"
+  | "trending_bearish"
+  | "ranging"
+  | "high_volatility"
+  | "low_volatility"
+  | "transition";
 
 export type MarketRegime = "trending" | "ranging" | "compressing" | "expanding";
 

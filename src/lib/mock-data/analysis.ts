@@ -1,5 +1,5 @@
 /**
- * DEMO DATA — NOT REAL MARKET DATA. See ./index.ts.
+ * DEMO DATA â€” NOT REAL MARKET DATA. See ./index.ts.
  */
 import type { AnalysisSnapshot, Opportunity, Setup } from "@/lib/types";
 import { DEMO_OPPORTUNITIES } from "./opportunities";
@@ -42,8 +42,20 @@ export const DEMO_ANALYSIS: AnalysisSnapshot[] = [
         trend: "downtrend",
         bias: "bearish",
         swings: [
-          { type: "LH", price: 64900, time: "2026-10-09T12:00:00Z" },
-          { type: "LL", price: 60950, time: "2026-10-11T16:00:00Z" },
+          {
+            kind: "high",
+            classification: "LH",
+            price: 64900,
+            pivotAt: "2026-10-09T12:00:00Z",
+            status: "confirmed",
+          },
+          {
+            kind: "low",
+            classification: "LL",
+            price: 60950,
+            pivotAt: "2026-10-11T16:00:00Z",
+            status: "confirmed",
+          },
         ],
         lastBreak: {
           type: "BOS",
@@ -136,8 +148,20 @@ export const DEMO_ANALYSIS: AnalysisSnapshot[] = [
         trend: "uptrend",
         bias: "bullish",
         swings: [
-          { type: "HL", price: 2329.4, time: "2026-10-11T14:00:00Z" },
-          { type: "HH", price: 2356.8, time: "2026-10-12T02:00:00Z" },
+          {
+            kind: "low",
+            classification: "HL",
+            price: 2329.4,
+            pivotAt: "2026-10-11T14:00:00Z",
+            status: "confirmed",
+          },
+          {
+            kind: "high",
+            classification: "HH",
+            price: 2356.8,
+            pivotAt: "2026-10-12T02:00:00Z",
+            status: "confirmed",
+          },
         ],
         lastBreak: {
           type: "BOS",

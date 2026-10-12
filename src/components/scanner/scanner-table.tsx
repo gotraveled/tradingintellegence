@@ -30,8 +30,12 @@ interface ScannerTableProps {
 const SCORE_BAR: Record<OpportunityStatus, string> = {
   developing: "bg-warning",
   confirmed: "bg-info",
+  active: "bg-info",
+  partial_target: "bg-info",
+  target_reached: "bg-inactive",
   invalidated: "bg-inactive",
-  completed: "bg-inactive",
+  expired: "bg-inactive",
+  cancelled: "bg-inactive",
 };
 
 function SortHeader({
@@ -128,8 +132,9 @@ export function ScannerTable({ opportunities, sort, onSortChange }: ScannerTable
           {opportunities.map((opportunity) => {
             const isOpen = expanded === opportunity.id;
             const detailId = `scanner-detail-${opportunity.id}`;
-            const inactive =
-              opportunity.status === "invalidated" || opportunity.status === "completed";
+            const inactive = ["target_reached", "invalidated", "expired", "cancelled"].includes(
+              opportunity.status,
+            );
             const segment = opportunity.market ? getMarketSegment(opportunity.market) : undefined;
             const toggle = () => setExpanded(isOpen ? null : opportunity.id);
 

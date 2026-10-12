@@ -8,8 +8,12 @@ momentum, multi-timeframe confirmation, and historical validation — explains w
 qualifies, and states what would invalidate it. The product is market analysis software: it never
 implies guaranteed profits or predictions.
 
-**Phase 1 (current):** application foundation and product shell only. No trading algorithms,
-signals, prediction models, broker integrations, or automated trading.
+**Phase 1:** application foundation and product shell — complete.
+**Phase 2 (current):** engine specification only. Deterministic, testable contracts for the Market
+Intelligence Engine live in [`docs/engine/`](docs/engine/README.md) — overview and pipeline, market
+data contract, and swing detection are drafted; structure, liquidity, zones, momentum, setups,
+scoring, and outcome measurement are planned. No trading algorithms, signals, prediction models,
+broker integrations, or automated trading are implemented.
 
 ## Technology stack
 
@@ -94,6 +98,10 @@ Market Data
   ↓
 Database
 ```
+
+The deterministic contracts for that
+service are specified in `docs/engine/`; every rule is parameterised, versioned, and
+look-ahead-free so it can be objectively backtested.
 
 - **Engine independence.** The UI depends only on the interfaces in `src/lib/services`
   (`MarketDataProvider`, `AnalysisEngineClient`) and the types in `src/lib/types`. Detection logic

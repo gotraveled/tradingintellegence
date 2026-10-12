@@ -1,4 +1,4 @@
-import type { ID, ISODateTime, Price, Timeframe, UnixMs } from "./common";
+import type { EngineParams, ID, ISODateTime, Price, Timeframe, UnixMs } from "./common";
 
 export type AssetClass = "equities" | "indices" | "forex" | "crypto" | "commodities" | "futures";
 
@@ -42,6 +42,10 @@ export interface Asset {
   isActive?: boolean;
 }
 
+/**
+ * Normalized candle (docs/engine/01-market-data-contract.md). Optional fields may be omitted by
+ * the feed; rules that need them must declare a fallback.
+ */
 export interface Candle {
   /** Bar open time. */
   time: UnixMs;
@@ -50,12 +54,28 @@ export interface Candle {
   low: Price;
   close: Price;
   volume?: number;
+  tradeCount?: number;
+  vwap?: number;
+  /** Resolved session label (e.g. "london", "nse_regular"); opaque to the engine. */
+  sessionId?: string;
+  /** Producing venue when a feed aggregates per-candle. */
+  exchange?: string;
+  /** Present on aggregated feeds where the asset class varies per candle. */
+  assetClass?: AssetClass;
 }
 
 export interface CandleSeries {
   symbol: string;
   timeframe: Timeframe;
+  /** Strictly ascending by `time`, no duplicates. */
   candles: Candle[];
+  exchange?: string;
+  assetClass?: AssetClass;
+  /** IANA timezone used for session/day boundaries (from the Market record). */
+  timezone?: string;
+  sessions?: MarketSession[];
+  /** Parameter set + version stamp so outputs can be reproduced exactly. */
+  params?: EngineParams;
 }
 
 export interface Quote {
@@ -64,4 +84,149 @@ export interface Quote {
   change: number;
   changePercent: number;
   updatedAt: ISODateTime;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — historical market-data layer (docs/market-data).
+
+/** Minimal identity for requesting data about a tradable instrument. */
+export interface AssetIdentifier {
+  symbol: string;
+  assetClass?: AssetClass;
+  /** Producing venue when known (e.g. "BINANCE", "NSE"). */
+  exchange?: string;
+  /** Links to the Market record for session/day-boundary rules. */
+  marketId?: ID;
+}
+
+/** Where candles come from — a provider implementation, never a raw vendor name in output. */
+export interface MarketDataSource {
+  id: string;
+  kind: "fixture" | "file" | "rest" | "websocket" | "database";
+  label: string;
+}
+
+/**
+ * Candle as a provider feed might emit it — untyped, unvalidated.
+ * Fields are loosely typed on purpose: normalization converts to `Candle` and reports issues.
+ */
+export interface RawCandle {
+  /** Any timestamp representation a feed might send (ms, seconds, ISO string). */
+  time?: number | string;
+  open?: number | string;
+  high?: number | string;
+  low?: number | string;
+  close?: number | string;
+  volume?: number | string;
+  [key: string]: unknown;
+}
+
+/**
+ * Fully normalized candle — `Candle` fields plus the identity the spec requires on each bar.
+ * Timestamp convention: **`time` is the bar OPEN time in Unix epoch ms, UTC.** Day/session
+ * alignment is UTC-based; local-timezone rendering is a presentation concern.
+ */
+export interface NormalizedCandle extends Candle {
+  id: ID;
+  symbol: string;
+  timeframe: Timeframe;
+  assetClass?: AssetClass;
+  /** Which provider emitted this bar (audit trail). */
+  source?: string;
+  /** Provider's own timestamp when it differs from the bar-open convention. */
+  sourceTimestamp?: UnixMs;
+}
+
+/** Normalized request shape every provider must accept. */
+export interface MarketDataRequest {
+  asset: AssetIdentifier;
+  timeframe: Timeframe;
+  /** Inclusive bar-open time range. */
+  start: UnixMs;
+  /** Exclusive end — bars with time >= end are excluded. */
+  end: UnixMs;
+  limit?: number;
+}
+
+/** Structured provider failure codes (spec 16). */
+export type MarketDataErrorCode =
+  | "invalid_request"
+  | "unsupported_symbol"
+  | "unsupported_timeframe"
+  | "data_not_available"
+  | "provider_error"
+  | "rate_limited"
+  | "invalid_data"
+  | "incomplete_data";
+
+export interface MarketDataError {
+  code: MarketDataErrorCode;
+  message: string;
+  /** Provider-specific detail for debugging — never drives control flow. */
+  detail?: string;
+}
+
+export type ValidationSeverity = "error" | "warning" | "info";
+
+export type ValidationIssueCode =
+  | "missing_timestamp"
+  | "invalid_timestamp"
+  | "non_finite_ohlc"
+  | "invalid_ohlc_relationship"
+  | "negative_volume"
+  | "misaligned_interval"
+  | "out_of_order"
+  | "duplicate_timestamp"
+  | "overlapping_candle"
+  | "gap_expected"
+  | "gap_unexpected"
+  | "gap_unknown"
+  | "missing_candle";
+
+export interface DataValidationIssue {
+  code: ValidationIssueCode;
+  severity: ValidationSeverity;
+  /** Bar index in the validated array, when the issue is bar-specific. */
+  index?: number;
+  /** Bar-open time involved, when known. */
+  timestamp?: UnixMs;
+  message: string;
+}
+
+export type DataGapKind = "expected" | "unexpected" | "unknown";
+
+/** A stretch of missing bars between two observed timestamps. */
+export interface DataGap {
+  kind: DataGapKind;
+  /** Time of the last observed bar before the gap. */
+  afterTime: UnixMs;
+  /** Time of the first observed bar after the gap. */
+  beforeTime: UnixMs;
+  /** Number of interval-length bars absent in between. */
+  missingBars: number;
+}
+
+export type DataQualityStatus = "valid" | "valid_with_warnings" | "invalid";
+
+/** Deterministic data-quality summary (spec 5) — every metric defined, none invented. */
+export interface DataQualityReport {
+  symbol: string;
+  timeframe: Timeframe;
+  startTimestamp?: UnixMs;
+  endTimestamp?: UnixMs;
+  barCount: number;
+  /** Computable only for calendars that can count trading intervals (e.g. 24/7). */
+  expectedBarCount?: number;
+  missingBarCount: number;
+  duplicateCount: number;
+  invalidBarCount: number;
+  outOfOrderCount: number;
+  gaps: DataGap[];
+  /** valid bars / expected bars × 100; absent when expectedBarCount is undefined. */
+  coveragePct?: number;
+  warnings: DataValidationIssue[];
+  errors: DataValidationIssue[];
+  /** Informational findings (e.g. expected weekend gap) — never downgrade status. */
+  info: DataValidationIssue[];
+  status: DataQualityStatus;
 }

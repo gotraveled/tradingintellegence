@@ -18,7 +18,12 @@ export type Price = number;
 /** Normalised score in the range 0–100. */
 export type Score = number;
 
-export type Timeframe = "1m" | "5m" | "15m" | "1h" | "4h" | "1D" | "1W" | "1M";
+/**
+ * Canonical timeframe set (docs/market-data + docs/engine/01).
+ * Minute/hour timeframes have a deterministic duration; "1M" is calendar-based (variable length).
+ */
+export type Timeframe =
+  "1m" | "3m" | "5m" | "15m" | "30m" | "1h" | "2h" | "4h" | "6h" | "12h" | "1D" | "1W" | "1M";
 
 /** Directional bias of a setup or signal. */
 export type Direction = "bullish" | "bearish";
@@ -33,3 +38,12 @@ export interface Timestamps {
 
 /** Free-form, engine-specific attributes. Keeps records extensible without schema churn. */
 export type Metadata = Record<string, string | number | boolean | null>;
+
+/**
+ * Named, versioned engine parameter set (docs/engine). Flat keys such as "swing.leftBars".
+ * Engine outputs record the parameter set used so results are reproducible and comparable.
+ */
+export interface EngineParams {
+  version: string;
+  values: Record<string, number | string | boolean>;
+}

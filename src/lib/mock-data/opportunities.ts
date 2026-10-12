@@ -329,7 +329,7 @@ const RAW: Opportunity[] = [
     direction: "bullish",
     score: 73,
     timeframe: "1D",
-    status: "completed",
+    status: "target_reached",
     entry: 412.0,
     stopLoss: 401.5,
     targets: [
@@ -355,7 +355,7 @@ const RAW: Opportunity[] = [
     direction: "bearish",
     score: 66,
     timeframe: "4h",
-    status: "completed",
+    status: "partial_target",
     entry: 78.4,
     stopLoss: 79.6,
     targets: [

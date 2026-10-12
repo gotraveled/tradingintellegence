@@ -1,8 +1,9 @@
 import type { Direction, ID, Metadata, Price, Score, Timeframe, Timestamps } from "./common";
 import type { AssetClass, MarketSegmentId } from "./market";
-import type { SetupReason, SetupType } from "./setup";
+import type { ScoreContribution, SetupReason, SetupStatus, SetupType } from "./setup";
 
-export type OpportunityStatus = "developing" | "confirmed" | "invalidated" | "completed";
+/** An Opportunity shares the setup lifecycle (docs/engine/11). */
+export type OpportunityStatus = SetupStatus;
 
 /** How certain the engine is in its detection. Not a probability of profit. */
 export type ConfidenceLevel = "low" | "medium" | "high";
@@ -28,6 +29,8 @@ export interface Opportunity extends Timestamps {
   direction: Direction;
   /** Quality score, 0–100. Describes evidence quality, not probability of profit. */
   score: Score;
+  /** Per-dimension breakdown (docs/engine/15) — the score is always explainable. */
+  scoreContributions?: ScoreContribution[];
   timeframe: Timeframe;
   status: OpportunityStatus;
   entry?: Price;
