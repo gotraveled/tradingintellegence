@@ -1,6 +1,7 @@
 export * from "./alert";
 export * from "./analysis";
 export * from "./backtest";
+export * from "./backtest-system";
 export * from "./common";
 export * from "./config";
 export * from "./detection";

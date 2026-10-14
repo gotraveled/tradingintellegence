@@ -40,6 +40,7 @@ Frontend → API → Market Intelligence Engine → Market Data → Database
 | [23-contested-definitions.md](23-contested-definitions.md) | V1 vs alternative definitions — no overfitting, parameters decide by backtest                       | Draft  |
 | [24-statistical-validation.md](24-statistical-validation.md) | Empirical outcome probabilities over the spec-17 dataset — expanding walk-forward history, cohorts, labels | Draft  |
 | [25-scanner-opportunity-discovery.md](25-scanner-opportunity-discovery.md) | Opportunity discovery & ranking over caller-produced PIT candidates — eligibility, filters, deterministic ordering | Draft  |
+| [26-system-backtesting.md](26-system-backtesting.md) | System-level historical backtesting — orchestration, frozen records, Model-B outcome pass, aggregation | Draft  |
 
 ## Spec coverage
 

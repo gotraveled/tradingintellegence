@@ -20,6 +20,7 @@ Magic numbers inside engine logic are forbidden: a threshold that isn't a named 
 | `RegimeConfig`                                             | 19    | `expandAtrTrend`, `compressAtrTrend`, `minBars`                                               |
 | `StatsConfig`                                              | 24    | `minSamples`, `scoreBands`, `methodVersion`                                                 |
 | `ScannerConfig`                                            | 25    | `topK`, `includeDeveloping`                                                                 |
+| `BacktestConfig`                                           | 26    | `methodVersion`                                                                             |
 | `EngineConfig`                                             | —     | The whole set + `version` — the unit of reproducibility                                       |
 
 ## Rules

@@ -213,6 +213,12 @@ export interface StatsConfig {
   methodVersion: string;
 }
 
+/** System backtest (26) — methodology stamp only; selection lives on the run input. */
+export interface BacktestConfig {
+  /** Orchestration + record + aggregation methodology version. */
+  methodVersion: string;
+}
+
 /** Opportunity scanner (25). */
 export interface ScannerConfig {
   /** Ranked-output bound — 0 = unbounded, still fully ranked (25). */
@@ -232,6 +238,7 @@ export interface EngineConfig {
   liquidity: LiquidityConfig;
   stats?: StatsConfig;
   scanner?: ScannerConfig;
+  backtest?: BacktestConfig;
   zone: ZoneConfig;
   fvg: FVGConfig;
   momentum: MomentumConfig;

@@ -13,6 +13,7 @@ import type {
   DetectionEvent,
   EngineConfig,
   FVGConfig,
+  ID,
   Imbalance,
   LifecycleConfig,
   LiquidityConfig,
@@ -36,6 +37,7 @@ import type {
   ScoringConfig,
   Setup,
   SetupOutcome,
+  SystemBacktestResult,
   StatisticalDecision,
   StatsConfig,
   ProbabilityEstimate,
@@ -227,12 +229,21 @@ export interface OutcomeEngine {
   }): EngineResult<SetupOutcome>;
 }
 
-/** Full-history backtest over the deterministic pipeline — not live trading. */
+/** 26 — System backtest: deterministic re-evaluation over a cell grid + evaluation window.
+ *  Orchestration + recording + aggregation only — never trades, positions, or equity. */
 export interface BacktestEngine {
   run(input: {
-    series: CandleSeries;
+    /** Cell grid — caller supplies the data; the engine never fetches. Order irrelevant. */
+    cells: { symbol: string; timeframe: Timeframe; series: CandleSeries }[];
+    /** Evaluation window (spec-18 index semantics) — bounds observation generation only;
+     *  spec-17 outcome measurement may consume candles through each series' end. */
+    window?: { startIndex?: number; endIndex?: number };
+    /** Analytical marking only — never removes records. */
+    selection?: { filters?: ScanFilters; topK?: number };
+    /** Caller-supplied label only — never derived. */
+    runId?: ID;
     config: EngineConfig;
-  }): EngineResult<{ setups: Setup[]; outcomes: SetupOutcome[] }>;
+  }): EngineResult<SystemBacktestResult>;
 }
 
 /** 24 — Statistical validation: empirical outcome frequencies over a comparable cohort. */
