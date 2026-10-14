@@ -5,8 +5,10 @@
  * composes the existing causal machinery end-to-end:
  *
  *   batch-detected upstream artifacts → per-bar `*StateAt` providers → three detectors
- *   → status-at-T from `setup_transition` events → PIT scoring → spec-25 scanner at
- *   `asOf = candle.time[t]` → frozen records → post-window spec-17 `measureOutcome`
+ *   → post-window spec-17 `measureOutcome` + spec-24 decision views (phase A)
+ *   → status-at-T from `setup_transition` events → PIT scoring → spec-28 plan →
+ *   spec-30 statistical evidence (confirmBar-anchored, resolution-gated) →
+ *   spec-25 scanner at `asOf = candle.time[t]` → frozen records (phase B)
  *   → outcomeRef attachment → aggregation.
  *
  * Model B: the evaluation window bounds observation generation; outcome measurement may
@@ -22,13 +24,17 @@ import type {
   BacktestWindow,
   Direction,
   EngineConfig,
+  RegimeLabel,
   ScanCandidate,
   ScanFilters,
+  ScanPlan,
   ScoreContribution,
   Setup,
   SetupOutcome,
   SetupStatus,
   SetupType,
+  StatisticalDecision,
+  StatisticalEvidence,
   SystemBacktestResult,
   Timeframe,
 } from "@/lib/types";
@@ -43,8 +49,11 @@ import { momentumStateAt } from "./momentum";
 import { detectReversals } from "./reversal";
 import { detectBreakouts } from "./breakout";
 import { detectContinuations } from "./continuation";
+import { regimeStateAt } from "./regime";
 import { scoreOpportunity } from "./scoring";
 import { measureOutcome } from "./outcomes";
+import { planStateAt, toScanPlan } from "./trade-plan";
+import { estimateProbability } from "./statistics";
 import { scanUniverse } from "./scanner";
 
 /** Canonical `Timeframe` declaration order — mirrors spec-25's ordering. */
@@ -90,6 +99,8 @@ export function runBacktest(input: {
   const { cells, window, selection, runId, config } = input;
   const methodVersion = config.backtest?.methodVersion ?? "";
   const scannerCfg = config.scanner ?? { topK: 0, includeDeveloping: false, methodVersion: "v1-scan" };
+  /** Spec-24 documented defaults when `stats` is absent — mirrors the scanner fallback. */
+  const statsCfg = config.stats ?? { minSamples: 30, scoreBands: [0, 50, 70, 85], methodVersion: "v1-empirical" };
   /** Approved grammar — scanner-owned params only. */
   const paramsVersion = `sel${selection?.filters ? "f" : "nof"}|tk${selection?.topK ?? "*"}`;
 
@@ -115,20 +126,53 @@ export function runBacktest(input: {
   let evaluationsSkipped = 0;
   let evaluationsEmpty = 0;
   let scoreFailures = 0;
+  let statsFailures = 0;
+  /** Spec-30: spec-24 decision views collected in phase A — one per confirmed setup,
+   *  anchored at `confirmBar` (`decisionTime = candles[confirmBar].time`). */
+  const decisionById = new Map<string, StatisticalDecision>();
+  /** Memoized per-setup evidence — a fixed fact once the decision view exists. */
+  const evidenceById = new Map<string, StatisticalEvidence | undefined>();
+
+  /** Spec-30: estimate each setup's evidence once over the GLOBAL resolved-outcome
+   *  dataset (spec-24 history is symbol/timeframe-agnostic; global input is required for
+   *  cell-order determinism). E1/E2 inside `estimateProbability` do the temporal gating —
+   *  rows resolving at/after `decisionTime` (incl. the setup's own) can never enter the
+   *  cohort. `insufficient_data` maps to the type-native `unavailable` marker; any other
+   *  failure is an honest absence plus a diagnostics count — never fabricated. */
+  const evidenceFor = (setupId: string): StatisticalEvidence | undefined => {
+    if (evidenceById.has(setupId)) return evidenceById.get(setupId);
+    const dec = decisionById.get(setupId);
+    let ev: StatisticalEvidence | undefined;
+    if (dec !== undefined) {
+      const r = estimateProbability({ decision: dec, outcomes, config: statsCfg });
+      if (r.ok && r.data !== undefined) ev = { decisionTime: dec.decisionTime, estimate: r.data };
+      else if (r.errors.some((e) => e.code === "insufficient_data"))
+        ev = { decisionTime: dec.decisionTime, unavailable: "insufficient_data" };
+      else statsFailures++; // invalid_config / invalid_input — loud diagnostics, honest absence
+    }
+    evidenceById.set(setupId, ev);
+    return ev;
+  };
 
   // ---- Cells: canonical order symbol ASC → timeframe canonical. ----
   const orderedCells = [...cells].sort(
     (a, b) => a.symbol.localeCompare(b.symbol) || TF_ORDER[a.timeframe] - TF_ORDER[b.timeframe],
   );
 
-  for (const cell of orderedCells) {
+  // ---- PHASE A — causal preparation + Model-B outcome measurement (spec 30). Runs
+  //      strictly before the evaluation pass so each setup's spec-24 decision view
+  //      (confirmBar-anchored) and the resolved-outcome dataset exist when frozen
+  //      candidates are emitted (spec-26 freeze rule). E2 (`resolvedAt < τ`) inside the
+  //      estimator is the temporal gate — full-series measurement cannot leak future
+  //      outcomes into an earlier decision. ----
+  const prepareCell = (cell: BacktestCell) => {
     const { symbol, timeframe, series } = cell;
     const candles = series.candles;
     const key = `${symbol}:${timeframe}`;
 
     // Series validation — spec-01 conventions; malformed → cell skipped, run continues.
     const issues = validateBars([...candles], timeframe).filter((i) => i.severity === "error");
-    if (candles.length === 0 || issues.length > 0) { cellsSkipped.push(key); continue; }
+    if (candles.length === 0 || issues.length > 0) { cellsSkipped.push(key); return undefined; }
     const n = candles.length;
 
     // Batch upstream artifacts once — `*StateAt(t)` reconstructs PIT views from them.
@@ -142,15 +186,23 @@ export function runBacktest(input: {
       ...zonesRes.events, ...imbsRes.events,
     ];
 
-    /** The causal join — every field strictly at closed bar `t`. */
-    const at = (t: number) => ({
-      structure: structureStateAt(candles, swingsRes.swings, symbol, timeframe, config.structure, pv, t),
-      pools: liquidityStateAt(candles, structureRes.structure, symbol, timeframe, config.liquidity, pv, t),
-      zones: zoneStateAt(candles, structureRes.structure, poolsRes.pools, symbol, timeframe, config.zone, pv, t),
-      imbalances: imbalanceStateAt(candles, symbol, timeframe, config.fvg, pv, t),
-      momentum: momentumStateAt(candles, symbol, timeframe, config.momentum, pv, t),
-      events: upstreamEvents.filter((e) => e.atBar <= t),
-    });
+    /** The causal join — every field strictly at closed bar `t`. Spec-29: `regime` is
+     *  part of the join (spec 27 producer over the t-snapshots) — it flows into
+     *  `ScoringSnapshot.regime` via the `...at(t)` spread and into `SetupOutcome.regime`
+     *  at `confirmBar`. */
+    const at = (t: number) => {
+      const structure = structureStateAt(candles, swingsRes.swings, symbol, timeframe, config.structure, pv, t);
+      const momentum = momentumStateAt(candles, symbol, timeframe, config.momentum, pv, t);
+      return {
+        structure,
+        pools: liquidityStateAt(candles, structureRes.structure, symbol, timeframe, config.liquidity, pv, t),
+        zones: zoneStateAt(candles, structureRes.structure, poolsRes.pools, symbol, timeframe, config.zone, pv, t),
+        imbalances: imbalanceStateAt(candles, symbol, timeframe, config.fvg, pv, t),
+        momentum,
+        regime: regimeStateAt(structure, momentum.features, config.regime),
+        events: upstreamEvents.filter((e) => e.atBar <= t),
+      };
+    };
 
     // Detection — three families over the full cell series; causality is internal via `at`.
     const detInputs = { candles, symbol, timeframe, at };
@@ -190,9 +242,80 @@ export function runBacktest(input: {
     // ---- Evaluation window (spec-18 clamping semantics). ----
     const t0 = Math.max(0, window?.startIndex ?? 0);
     const t1 = Math.min(n - 1, window?.endIndex ?? n - 1);
-    if (t0 > t1) { cellsSkipped.push(key); continue; }
+    if (t0 > t1) { cellsSkipped.push(key); return undefined; }
 
-    // ---- EVALUATION PASS — records frozen per t; nothing later may touch them. ----
+    for (const s of setups) {
+      if (existsAt(s, Math.min(t1, n - 1))) observedSetupIds.add(s.id);
+      measuredSetupById.set(s.id, s);
+    }
+
+    // ---- OUTCOME PASS (Model B) — full-series measurement; spec-17 eligibility is
+    //      measureOutcome's own gate: never-confirmed → not-ok → no row, no fabrication.
+    //      The spec-24 decision view is collected alongside — same confirmBar anchors
+    //      spec-29 already established, nothing recomputed. ----
+    for (const s of setups) {
+      if (!observedSetupIds.has(s.id)) continue; // only setups the system actually observed
+      const cb = num(s.metadata?.confirmBar);
+      const db = num(s.metadata?.candidateBar);
+      let scoreAtConfirmation: number | undefined;
+      let contributions: ScoreContribution[] | undefined;
+      let confirmedRegime: RegimeLabel | undefined;
+      let scoreAtDetection: number | undefined;
+      if (cb !== undefined && cb >= 0 && cb < n) {
+        const r = scoreOpportunity({
+          setup: { ...s, status: "confirmed" }, atBar: cb, atMs: candles[cb].time,
+          snap: { provenance: "at_bar", ...at(cb) },
+          config: config.scoring,
+        });
+        if (r.ok && r.data !== undefined) { scoreAtConfirmation = r.data.score; contributions = r.data.contributions; }
+        confirmedRegime = at(cb).regime; // outcome row anchors regime at confirmBar (spec 29)
+      }
+      if (db !== undefined && db >= 0 && db < n) {
+        // spec-17 `scoreAtDetection`: the causal scoring path at candidateBar — same
+        // scoreable-status convention as scoreAtConfirmation; a gate → undefined.
+        const r = scoreOpportunity({
+          setup: { ...s, status: "confirmed" }, atBar: db, atMs: candles[db].time,
+          snap: { provenance: "at_bar", ...at(db) },
+          config: config.scoring,
+        });
+        if (r.ok && r.data !== undefined) scoreAtDetection = r.data.score;
+      }
+      // Spec-30 decision view — what was knowable at confirmBar; a gated confirmation
+      // score leaves the view incomplete → no decision → evidence stays honestly absent.
+      if (cb !== undefined && cb >= 0 && cb < n && scoreAtConfirmation !== undefined) {
+        decisionById.set(s.id, {
+          setupType: s.type,
+          direction: s.direction,
+          regime: confirmedRegime,
+          scoreAtConfirmation,
+          decisionTime: candles[cb].time,
+          paramsVersion: pv,
+        });
+      }
+      const res = measureOutcome({
+        setup: s,
+        candles, // unbounded below endIndex — full historical outcome (Model B)
+        scoreAtConfirmation,
+        scoreAtDetection,
+        contributions,
+        regime: confirmedRegime,
+        paramsVersion: pv,
+      });
+      if (!res.ok || res.data === undefined) continue; // spec-17 declined → no row
+      outcomes.push(res.data);
+    }
+    return { symbol, timeframe, candles, setups, at, existsAt, statusAt, t0, t1 };
+  };
+
+  const cellCtxs: NonNullable<ReturnType<typeof prepareCell>>[] = [];
+  for (const cell of orderedCells) {
+    const ctx = prepareCell(cell);
+    if (ctx !== undefined) cellCtxs.push(ctx); // skipped cells produce no context at all
+  }
+
+  // ---- PHASE B — EVALUATION PASS: records frozen per t; nothing later may touch them. ----
+  for (const ctx of cellCtxs) {
+    const { symbol, timeframe, candles, setups, at, existsAt, statusAt, t0, t1 } = ctx;
     for (let t = t0; t <= t1; t++) {
       const asOf = candles[t].time; // asOf = Candle.time[t] — UnixMs, never the index
       const candidates: ScanCandidate[] = [];
@@ -201,17 +324,28 @@ export function runBacktest(input: {
         const st = statusAt(s, t);
         const setupAtT: Setup = { ...s, status: st };
         let score = {};
+        let plan: ScanPlan | undefined;
         if (SCOREABLE.has(st)) {
           const r = scoreOpportunity({
             setup: setupAtT, atBar: t, atMs: asOf,
             snap: { provenance: "at_bar", ...at(t) },
             config: config.scoring,
           });
-          if (r.ok && r.data !== undefined) score = r.data; else scoreFailures++;
+          if (r.ok && r.data !== undefined) {
+            score = r.data;
+            // Spec-16 plan exists only for scoreable statuses; a gated/empty score
+            // degrades to absent — the scanner receives it as a pass-through artifact.
+            const tp = planStateAt(setupAtT, r.data, t, config.lifecycle);
+            if (tp !== undefined) plan = toScanPlan(tp);
+          } else scoreFailures++;
         }
         candidates.push({
           setup: setupAtT,
           score,
+          plan,
+          // Spec-30: confirmBar-anchored evidence — only meaningful for scoreable
+          // statuses (developing candidates carry no decision view).
+          statisticalEvidence: SCOREABLE.has(st) ? evidenceFor(s.id) : undefined,
           cell: { symbol, timeframe },
           provenance: { evaluatedAt: asOf, evaluatedBar: t },
         });
@@ -262,39 +396,13 @@ export function runBacktest(input: {
         });
       }
     }
-    for (const s of setups) {
-      if (existsAt(s, Math.min(t1, n - 1))) observedSetupIds.add(s.id);
-      measuredSetupById.set(s.id, s);
-    }
+  }
 
-    // ---- OUTCOME PASS (Model B) — strictly after evaluation; spec-17 eligibility is
-    //      measureOutcome's own gate: never-confirmed → not-ok → no row, no fabrication. ----
-    for (const s of setups) {
-      if (!observedSetupIds.has(s.id)) continue; // only setups the system actually observed
-      const cb = num(s.metadata?.confirmBar);
-      let scoreAtConfirmation: number | undefined;
-      let contributions: ScoreContribution[] | undefined;
-      if (cb !== undefined && cb >= 0 && cb < n) {
-        const r = scoreOpportunity({
-          setup: { ...s, status: "confirmed" }, atBar: cb, atMs: candles[cb].time,
-          snap: { provenance: "at_bar", ...at(cb) },
-          config: config.scoring,
-        });
-        if (r.ok && r.data !== undefined) { scoreAtConfirmation = r.data.score; contributions = r.data.contributions; }
-      }
-      const res = measureOutcome({
-        setup: s,
-        candles, // unbounded below endIndex — full historical outcome (Model B)
-        scoreAtConfirmation,
-        contributions,
-        paramsVersion: pv,
-      });
-      if (!res.ok || res.data === undefined) continue; // spec-17 declined → no row
-      outcomes.push(res.data);
-      const ref = res.data.setupId;
-      for (const o of opportunities) if (o.setupId === s.id) o.outcomeRef = ref;
-      for (const d of developing) if (d.setupId === s.id) d.outcomeRef = ref;
-    }
+  // ---- outcomeRef — the ONLY post-emit field (spec 26); rows were measured in phase A,
+  //      records in phase B, so the join stamps afterwards. Identical observable result. ----
+  for (const row of outcomes) {
+    for (const o of opportunities) if (o.setupId === row.setupId) o.outcomeRef = row.setupId;
+    for (const d of developing) if (d.setupId === row.setupId) d.outcomeRef = row.setupId;
   }
 
   // ---- Canonical record ordering: (symbol, timeframe, evaluatedIndex, rank / setupId). ----
@@ -402,6 +510,7 @@ export function runBacktest(input: {
         evaluationsSkipped,
         evaluationsEmpty,
         scoreFailures,
+        statsFailures,
         opportunities: opportunities.length,
         developing: developing.length,
         outcomes: outcomes.length,

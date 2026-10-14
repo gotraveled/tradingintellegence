@@ -26,6 +26,8 @@ export interface TradePlan {
   conditionsPending?: SetupReason[];
   /** Bars after which the plan stales (setup.expiryBars). */
   expiryBars: number;
+  /** `true` when the setup resolved terminally — the frozen plan outcome measurement scores (16). */
+  final?: boolean;
   createdAt: ISODateTime;
   /** EngineParams version that produced it — comparability boundary. */
   paramsVersion: string;

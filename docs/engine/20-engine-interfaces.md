@@ -44,6 +44,7 @@ Every engine returns `EngineResult<T>` (`src/lib/services/engine.ts`):
 | `MarketRegimeEngine`       | 19    | `structure` + `features`       | `RegimeLabel`                   |
 | `SetupDetectionEngine`     | 11–14 | all stage outputs              | `Setup[]`                       |
 | `OpportunityScoringEngine` | 15    | `setup` + evidence             | `score` + `contributions`       |
+| `TradePlanEngine`          | 16    | `setup` + `score` + `atIndex`  | `TradePlan`                     |
 | `OutcomeEngine`            | 17    | `setup`/`opportunity` + series | `SetupOutcome`                  |
 | `BacktestEngine`           | 26    | `cells` + `window` + `selection` + `EngineConfig` | `SystemBacktestResult` |
 | `StatisticalValidationEngine` | 24 | decision view + `SetupOutcome[]` | `ProbabilityEstimate`         |

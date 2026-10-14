@@ -41,6 +41,10 @@ Frontend → API → Market Intelligence Engine → Market Data → Database
 | [24-statistical-validation.md](24-statistical-validation.md) | Empirical outcome probabilities over the spec-17 dataset — expanding walk-forward history, cohorts, labels | Draft  |
 | [25-scanner-opportunity-discovery.md](25-scanner-opportunity-discovery.md) | Opportunity discovery & ranking over caller-produced PIT candidates — eligibility, filters, deterministic ordering | Draft  |
 | [26-system-backtesting.md](26-system-backtesting.md) | System-level historical backtesting — orchestration, frozen records, Model-B outcome pass, aggregation | Draft  |
+| [27-market-regime-engine.md](27-market-regime-engine.md) | Market regime engine — implementation closure of the spec-19 6-state `RegimeLabel` model (spec 19 remains the behavioral authority) | Draft  |
+| [28-trade-plan-engine.md](28-trade-plan-engine.md)       | Trade plan engine — implementation closure of the spec-16 `TradePlan` model; pure snapshot assembler over stamped setup evidence + spec-15 score | Draft  |
+| [29-pipeline-composition.md](29-pipeline-composition.md) | Pipeline composition — wires spec-27 regime into `at(t)`/`ScoringSnapshot.regime`, spec-28 plans into `ScanCandidate.plan`, outcome `regime`/`scoreAtDetection` anchors | Draft  |
+| [30-statistical-evidence-composition.md](30-statistical-evidence-composition.md) | Statistical evidence composition — wires spec-24 `estimateProbability` into `runBacktest`, populating `ScanCandidate`/`BacktestOpportunity.statisticalEvidence` at the `confirmBar` decision anchor | Draft  |
 
 ## Spec coverage
 

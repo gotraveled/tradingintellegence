@@ -74,6 +74,10 @@ Each arrow consumes only the outputs it declares — no engine re-detects upstre
 | Statistical validation     | `docs/engine/24-statistical-validation.md` |
 | Opportunity scanner        | `docs/engine/25-scanner-opportunity-discovery.md` |
 | System backtesting         | `docs/engine/26-system-backtesting.md` |
+| Market regime engine       | `docs/engine/27-market-regime-engine.md` |
+| Trade plan engine          | `docs/engine/28-trade-plan-engine.md`    |
+| Pipeline composition       | `docs/engine/29-pipeline-composition.md` |
+| Statistical evidence composition | `docs/engine/30-statistical-evidence-composition.md` |
 
 ## Explicitly out of scope (future phases)
 

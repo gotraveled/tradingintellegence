@@ -42,6 +42,7 @@ import type {
   StatsConfig,
   ProbabilityEstimate,
   StructureConfig,
+  TradePlan,
   SwingConfig,
   SwingPoint,
   Timeframe,
@@ -212,6 +213,25 @@ export interface OpportunityScoringEngine {
     regime?: RegimeLabel;
     config: ScoringConfig;
   }): EngineResult<OpportunityScoreResult>;
+}
+
+/**
+ * 16 — Trade plan assembly (implementation closure: spec 28). Pure snapshot assembler over
+ * the setup's stamped evidence (`entryBand*`/`invalidation`/`targets` written by specs 12–14),
+ * the spec-15 `OpportunityScoreResult`, and lifecycle stamps filtered at `atIndex`. The engine
+ * never re-derives levels, never scores, and never touches candles — causality comes entirely
+ * from `stamp <= atIndex` filtering. Gated scoring → `unavailable`, never a fabricated plan.
+ */
+export interface TradePlanEngine {
+  build(input: {
+    setup: Setup;
+    score: OpportunityScoreResult;
+    /** Evaluation bar — the point-in-time anchor every stamped field is filtered against. */
+    atIndex: number;
+    /** Evaluation bar's wall-clock — the plan's `createdAt`; absent → `setup.createdAt`. */
+    atMs?: UnixMs;
+    config: LifecycleConfig;
+  }): EngineResult<{ plan: TradePlan }>;
 }
 
 /** 17 — Outcome measurement over a historical window. */
