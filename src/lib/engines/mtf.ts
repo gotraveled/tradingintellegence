@@ -177,8 +177,28 @@ export function causalAlignAt(
   const h = snapshotVote(joined.htf?.snapshot ?? null);
   const i = snapshotVote(joined.itf?.snapshot ?? null);
   const e = snapshotVote(joined.etf?.snapshot ?? null);
-  const state = classifyVotes(h.vote, i.vote, e.vote);
+  let state = classifyVotes(h.vote, i.vote, e.vote);
   const alignmentScore = weights.htf * h.vote + weights.itf * i.vote + weights.etf * e.vote;
+
+  // Spec-10 "HTF elements consumed" — htfProtectedHigh/htfProtectedLow (spec-33): the HTF
+  // frame's `keyLevels.protected` (last HL in uptrend / last LH in downtrend — the level
+  // whose loss is an HTF CHOCH) bounds the trade context. An ITF break through it ends the
+  // aligned state immediately — successor `countertrend_*` (HTF bias intact but challenged).
+  // Causal by construction: both snapshots are closedIndexAt-bounded; nothing latches — the
+  // rule re-evaluates the CURRENT protected level against the ITF's confirmed breaks, so a
+  // newly-confirmed HTF protected level re-enables alignment naturally.
+  let protectedBroken = false;
+  if (state === "aligned_bull" || state === "aligned_bear" ||
+      state === "pullback_in_trend_bull" || state === "pullback_in_trend_bear") {
+    const prot = joined.htf?.snapshot.structure?.keyLevels?.find((k) => k.label === "protected")?.price;
+    if (prot !== undefined) {
+      const bull = state.endsWith("bull");
+      protectedBroken = (joined.itf?.snapshot.structure?.breaks ?? []).some(
+        (b) => bull ? (b.direction === "bearish" && (b.refPrice ?? b.price) <= prot)
+                    : (b.direction === "bullish" && (b.refPrice ?? b.price) >= prot));
+      if (protectedBroken) state = bull ? "countertrend_bear" : "countertrend_bull";
+    }
+  }
   const computedAt =
     [joined.htf, joined.itf, joined.etf]
       .map((f) => f?.snapshot.structure?.updatedAt)
@@ -208,6 +228,7 @@ export function causalAlignAt(
       framesAvailable: available,
       barIndex: `${joined.htf?.barIndex ?? -1},${joined.itf?.barIndex ?? -1},${joined.etf?.barIndex ?? -1}`,
       conflict: state.startsWith("countertrend") || state.startsWith("realigning") || state.startsWith("pullback"),
+      htfProtectedBroken: protectedBroken,
     },
   };
 }

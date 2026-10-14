@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Spec 26 — System-Level Historical Backtesting & Validation domain types.
  *
  * Orchestration + recording + aggregation only: the engine reuses every upstream semantic
@@ -7,6 +7,7 @@
  * onto the authoritative `SetupOutcome` — never a redefinition, never fabricated.
  */
 import type { Direction, ID, Score, Timeframe, UnixMs } from "./common";
+import type { MultiTimeframeAlignment } from "./analysis";
 import type { CandleSeries } from "./market";
 import type { FrameRole } from "../../engines/mtf"; // spec-10 canonical role union (type-only)
 import type { SetupOutcome } from "./outcome";
@@ -84,7 +85,11 @@ export interface BacktestOpportunity {
   plan?: BacktestPlan;
   /** Caller-attached, passes through verbatim; `decisionTime <= evaluatedAt` enforced. */
   statisticalEvidence?: StatisticalEvidence;
-  /** Post-window join → `SetupOutcome.setupId` — absent iff spec 17 produced no row. */
+  /** Spec-34: frozen PIT observation of the causal join's `at(t).alignment` AT this
+   *  evaluation bar - the spec-10 object verbatim, never recomputed or persisted as
+   *  authoritative state. Absent when no frames were supplied (unframed parity). */
+  alignment?: MultiTimeframeAlignment;
+  /** Post-window join - `SetupOutcome.setupId`; absent iff spec 17 produced no row. */
   outcomeRef?: ID;
 }
 
@@ -99,6 +104,9 @@ export interface BacktestDeveloping {
   evaluatedIndex: number;
   /** Unmet reasons only — "what's missing" (spec-25 SetupRef semantics). */
   reasons?: SetupReason[];
+  /** Spec-34: frozen PIT alignment observation — same semantics as
+   *  `BacktestOpportunity.alignment`; auditable evidence for the spec-32 gate. */
+  alignment?: MultiTimeframeAlignment;
   outcomeRef?: ID;
 }
 

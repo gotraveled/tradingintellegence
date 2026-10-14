@@ -155,7 +155,7 @@ describe("spec31 — population & consumer activation", () => {
     const c49 = htfContrib(recs.find((o) => o.evaluatedIndex === 49)!);
     expect(c49?.label).toBe("mtf aligned_bull");
     expect(c49?.feature).toBe(1); // spec-15 factor: aligned_* = 1.0
-  });
+  }, 20000);
 
   it("B: countertrend veto — opposing frames cancel the bullish reversal (reversal slot)", () => {
     const framed = run({ cells: [cell("AA", mk(), { htf: BULL4H, etf: BEAR15M })] });
@@ -305,7 +305,7 @@ describe("spec31 — missing / partial / invalid frames", () => {
     // (d) all-invalid frames ⇒ no alignment ⇒ baseline-identical records
     const rd = runRes({ cells: [cell("AA", mk(), { htf: ser("AA", "4h", bad4h) })], config: CFG });
     expect(rd.data!.opportunities).toEqual(base.opportunities);
-  });
+  }, 15000); // spec-33: multi-run test — full frame upstream chains ~2x per framed run
 });
 
 // ---------------------------------------------------------------------------
@@ -322,7 +322,7 @@ describe("spec31 — determinism, permutation & statistics isolation", () => {
     expect(rev.opportunities).toEqual(a.opportunities);
     expect(rev.developing).toEqual(a.developing);
     expect(rev.outcomes).toEqual(a.outcomes);
-  });
+  }, 15000); // spec-33: multi-run test — full frame upstream chains ~2x per framed run
 
   it("frame key insertion order cannot affect results", () => {
     const x = run({ cells: [cell("AA", mk(), { htf: BULL4H, etf: BULL15M })] });

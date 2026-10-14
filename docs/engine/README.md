@@ -47,6 +47,30 @@ Frontend → API → Market Intelligence Engine → Market Data → Database
 | [30-statistical-evidence-composition.md](30-statistical-evidence-composition.md) | Statistical evidence composition — wires spec-24 `estimateProbability` into `runBacktest`, populating `ScanCandidate`/`BacktestOpportunity.statisticalEvidence` at the `confirmBar` decision anchor | Draft  |
 | [31-mtf-alignment-composition.md](31-mtf-alignment-composition.md) | MTF alignment composition — wires spec-10 `causalAlignAt` into the `at(t)` join via additive `BacktestCell.frames`, populating the dormant detector-input and `ScoringSnapshot.alignment` slots | Draft  |
 | [32-mtf-confirmation-gate.md](32-mtf-confirmation-gate.md) | MTF confirmation gate — enforces spec-10's direction-signed `alignmentScore ≥ 0.8` rule at `developing → confirmed` in all three lifecycle detectors; unmet `C10`/`B9`/`N8` `multi_timeframe` reason while blocked | Draft  |
+| [33-mtf-frame-element-composition.md](33-mtf-frame-element-composition.md) | MTF frame-element composition — populates the declared `FrameSnapshot` transport slots (`liquidity`/`zones`/`imbalances`/`events`) and activates spec-10's "HTF elements consumed" consumers (`htfAligned`, `htfConflict`, `liquidityContext`, `htfProtected*`) | Draft  |
+| [34-mtf-record-evidence.md](34-mtf-record-evidence.md) | MTF record evidence — freezes the causal join's `at(t).alignment` onto `BacktestOpportunity`/`BacktestDeveloping` at emit time; absent (never null) on unframed runs | Draft  |
+| [35-outcome-feature-vector.md](35-outcome-feature-vector.md) | Outcome feature-vector completion — closes spec-17's declared `featureVector` breadth (`swing.*`/`zone.*`/`disp.score`/`momentum.*`/`mtf.*`/`regime.*` + `score.*`), all anchored at the existing `at(confirmBar)` join | Draft  |
+
+## Series status
+
+**The canonical engine specification series is closed at spec 35.** Spec-36 discovery (specs
+00–35 inventoried; deferred surfaces reassessed) found no candidate satisfying the activation
+rule — every canonical contract with a production consumer is closed. Spec 36 is therefore not
+an implementation specification.
+
+Deferred surfaces stay deferred and must not be silently activated — including spec-24's MTF
+cohort axis, confidence intervals, smoothing/decay/rolling windows, and censoring correction;
+spec-19's `regime.minBars` hysteresis slot and display-only `MarketRegimeSnapshot.strength`;
+`FrameSnapshot.events` detector consumption; `zone.metadata.htfConflict` scoring consumption;
+`ScanCandidate.alignment`; and `SetupOutcome.market` population. Dataset persistence,
+calibration, and out-of-sample methodology remain product/methodology concerns, not engine
+contracts.
+
+**Future activation rule:** a new specification may be created only when a concrete production
+consumer creates a genuine dependency on a deferred capability — identify the consumer, the
+exact missing contract, and why existing contracts cannot satisfy it. Causal/PIT guarantees
+must be preserved; closed specs are not reopened unless the new requirement demonstrably
+changes an existing canonical contract.
 
 ## Spec coverage
 

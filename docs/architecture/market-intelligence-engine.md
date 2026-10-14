@@ -80,6 +80,9 @@ Each arrow consumes only the outputs it declares — no engine re-detects upstre
 | Statistical evidence composition | `docs/engine/30-statistical-evidence-composition.md` |
 | MTF alignment composition    | `docs/engine/31-mtf-alignment-composition.md` |
 | MTF confirmation gate        | `docs/engine/32-mtf-confirmation-gate.md` |
+| MTF frame-element composition | `docs/engine/33-mtf-frame-element-composition.md` |
+| MTF record evidence            | `docs/engine/34-mtf-record-evidence.md` |
+| Outcome feature vector         | `docs/engine/35-outcome-feature-vector.md` |
 
 ## Explicitly out of scope (future phases)
 

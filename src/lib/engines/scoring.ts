@@ -34,6 +34,7 @@ import type {
   Zone,
 } from "@/lib/types";
 import type { EngineError, EngineResult, OpportunityScoringEngine } from "@/lib/services/engine";
+import type { FrameRole, JoinedFrame } from "./mtf";
 import { poolStatusAt } from "./reversal";
 import { imbStatusAt } from "./continuation";
 
@@ -74,6 +75,13 @@ export interface ScoringSnapshot {
   imbalances?: readonly Imbalance[];
   momentum?: Momentum;
   alignment?: MultiTimeframeAlignment;
+  /**
+   * Spec-33 (spec-10 "HTF elements consumed"): the causalFramesAt join at the same
+   * closed-bar `asOf` — per-role joined snapshots carrying frame pools/zones/imbalances/
+   * events. `null` entries = honest absence (missing/insufficient frame). Scoring reads
+   * HTF pools for the `liquidityContext` upgrade only; presence is caller-supplied.
+   */
+  frames?: Record<FrameRole, JoinedFrame | null>;
   regime?: RegimeLabel;
 }
 
@@ -194,7 +202,19 @@ export function scoreOpportunity(input: {
     if (pool === undefined) return 0;
     const st = poolStatusAt(pool, t);
     if (st === "swept") return 1; // confirmed sweep — sweepConfirmedBar ≤ t by construction
-    if (st === "resting" || st === "approaching") return 0.5; // developing sweep / pool proximity
+    if (st === "resting" || st === "approaching") {
+      // Spec-33 (spec-10 "HTF elements consumed" — liquidityContext): an ETF sweep/proximity
+      // against an HTF-ROLE pool is stronger evidence than a cell-local level — the anchor
+      // pool's price band overlapping an HTF frame pool's band upgrades 0.5 → 1.0 (the only
+      // higher tier spec-15's table offers). Joined frames are already causal at `t`.
+      const htfPools = snap.frames?.htf?.snapshot.liquidity ?? [];
+      const lo = pool.lowerPrice ?? pool.price;
+      const hi = pool.upperPrice ?? pool.price;
+      const htfBacked = htfPools.some(
+        (p) => (p.lowerPrice ?? p.price) <= hi && (p.upperPrice ?? p.price) >= lo,
+      );
+      return htfBacked ? 1 : 0.5;
+    }
     return 0; // broken/expired pool contributes no fuel evidence
   })();
 

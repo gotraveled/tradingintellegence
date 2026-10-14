@@ -12,6 +12,7 @@ import type {
 } from "@/lib/types";
 import type { EngineError, ZoneEngine } from "@/lib/services/engine";
 import { fvgId } from "./imbalances";
+import { barCloseTime } from "./mtf";
 
 /**
  * Demand/Supply Zone Engine (docs/engine/05-07).
@@ -108,6 +109,19 @@ export interface ZoneResult {
   diagnostics: Record<string, number | string | boolean>;
 }
 
+/**
+ * Spec-33 (spec-10 "HTF elements consumed" / spec-05 HTF-confluence feature): optional
+ * composition-supplied provider resolving the HTF frame's causal zone/structure state at an
+ * `asOf` timestamp (the zone's creation close). `undefined` return = HTF context unavailable
+ * at that time → the confluence feature redistributes pro-rata (spec-05 unavailable rule).
+ * The zone engine never computes the HTF join itself — composition supplies it.
+ */
+export interface ZoneHtfContext {
+  zones?: readonly Zone[];
+  structure?: MarketStructure;
+}
+export type ZoneHtfProvider = (asOfMs: number) => ZoneHtfContext | undefined;
+
 // ---------------------------------------------------------------------------
 
 export function analyzeZones(
@@ -119,6 +133,7 @@ export function analyzeZones(
   cfg: ZoneConfig,
   paramsVersion: string,
   upToIndex?: number,
+  htfAt?: ZoneHtfProvider,
 ): ZoneResult {
   const n = candles.length;
   const end = upToIndex === undefined ? n - 1 : Math.min(upToIndex, n - 1);
@@ -250,6 +265,41 @@ export function analyzeZones(
     });
     const liquidityContext = formedOnSweep ? "formed_on_sweep" : throughPool ? "departure_through_pool" : "none";
 
+    // HTF confluence (spec-05 weight `htfConfluence`; spec-10 "HTF elements consumed",
+    // spec-33). Evaluated against the HTF frame's state at THIS zone's creation close —
+    // the provider resolves closedIndexAt internally, so no future HTF element is visible.
+    //   inside same-type HTF zone OR at an HTF swing (low for demand / high for supply) = 1.0
+    //   near  = partial overlap with, or within 1 ATR of, a same-type HTF zone edge   = 0.5
+    //   opposing = inside an opposite-type HTF zone                                 = 0   (+htfConflict)
+    // `htfF` stays undefined when the provider is absent or has no context → redistribute.
+    let htfAligned: boolean | undefined;
+    let htfConflict = false;
+    let htfF: number | undefined;
+    if (htfAt !== undefined) {
+      const ctx = htfAt(barCloseTime(candles[d], timeframe));
+      if (ctx !== undefined && (ctx.zones !== undefined || ctx.structure !== undefined)) {
+        const live = (ctx.zones ?? []).filter(
+          (z) => z.status !== "invalidated" && z.status !== "expired" && z.status !== "forming",
+        );
+        const same = demand ? "demand" : "supply";
+        const opp = demand ? "supply" : "demand";
+        const insideSame = live.some((z) => z.type === same && lower >= z.lowerPrice && upper <= z.upperPrice);
+        const nearSame =
+          !insideSame &&
+          live.some((z) => z.type === same && lower <= z.upperPrice + atr && upper >= z.lowerPrice - atr);
+        const atSwing = (ctx.structure?.swings ?? []).some(
+          (s) =>
+            s.confirmedIndex !== undefined && s.status !== "invalidated" && s.status !== "superseded" &&
+            s.kind === (demand ? "low" : "high") &&
+            Math.abs(s.price - (demand ? lower : upper)) <= atr,
+        );
+        const opposing = live.some((z) => z.type === opp && lower >= z.lowerPrice && upper <= z.upperPrice);
+        htfF = insideSame || atSwing ? 1 : nearSame ? 0.5 : 0;
+        htfAligned = insideSame || atSwing;
+        htfConflict = opposing;
+      }
+    }
+
     // FVG on the departure leg — spec-05 literal predicate (no FVGConfig here; the full
     // engine is a later phase). Leftmost 3-bar gap inside [j+1, d] with a directional middle.
     let gapId: string | undefined;
@@ -279,9 +329,9 @@ export function analyzeZones(
       { w: w.liquidityInteraction, f: liquidityContext === "formed_on_sweep" ? 1 : liquidityContext === "departure_through_pool" ? 0.5 : 0 },
       { w: w.freshness, f: 1 }, // fresh at creation
       { w: w.fvgAssociation, f: gapId !== undefined ? 1 : 0 },
-      // htfConfluence: no HTF input in the contract — redistributed (documented).
       { w: w.zoneWidth, f: 1 - Math.min(1, widthAtr / 1.5) },
     ];
+    if (htfF !== undefined) feats.push({ w: w.htfConfluence, f: htfF }); // spec-33 activation
     if (hasVolume) feats.push({ w: w.volumeExpansion, f: Math.min(1, depVol / (2 * baseVol)) });
     const wSum = feats.reduce((s2, f) => s2 + f.w, 0);
     const strength = wSum > 0 ? Math.round((100 * feats.reduce((s2, f) => s2 + f.w * f.f, 0)) / wSum) : 0;
@@ -303,10 +353,12 @@ export function analyzeZones(
       status: "active",
       structureImpact,
       liquidityContext,
+      htfAligned,
       fvgId: gapId,
       originAt: toISO(candles[i].time),
       createdAt: toISO(candles[d].time),
       metadata: {
+        ...(htfConflict ? { htfConflict: true } : {}), // spec-10 htfConflict mark
         baseStart: i,
         baseEnd: j,
         createdBar: d,
@@ -523,8 +575,9 @@ export function zoneStateAt(
   cfg: ZoneConfig,
   paramsVersion: string,
   atIndex: number,
+  htfAt?: ZoneHtfProvider,
 ): Zone[] {
-  return analyzeZones(candles, structure, pools, symbol, timeframe, cfg, paramsVersion, atIndex).zones;
+  return analyzeZones(candles, structure, pools, symbol, timeframe, cfg, paramsVersion, atIndex, htfAt).zones;
 }
 
 // ---------------------------------------------------------------------------
