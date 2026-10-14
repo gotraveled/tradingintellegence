@@ -4,7 +4,9 @@
  * A thin orchestration + recording + aggregation layer — NOT a trade simulator. Per cell it
  * composes the existing causal machinery end-to-end:
  *
- *   batch-detected upstream artifacts → per-bar `*StateAt` providers → three detectors
+ *   batch-detected upstream artifacts → per-bar `*StateAt` providers (+ spec-31
+ *   MTF frame providers → `causalAlignAt` at `barCloseTime(t)` when a cell
+ *   supplies `frames`) → three detectors
  *   → post-window spec-17 `measureOutcome` + spec-24 decision views (phase A)
  *   → status-at-T from `setup_transition` events → PIT scoring → spec-28 plan →
  *   spec-30 statistical evidence (confirmBar-anchored, resolution-gated) →
@@ -50,6 +52,7 @@ import { detectReversals } from "./reversal";
 import { detectBreakouts } from "./breakout";
 import { detectContinuations } from "./continuation";
 import { regimeStateAt } from "./regime";
+import { barCloseTime, causalAlignAt, type FrameRole, type FrameSource } from "./mtf";
 import { scoreOpportunity } from "./scoring";
 import { measureOutcome } from "./outcomes";
 import { planStateAt, toScanPlan } from "./trade-plan";
@@ -63,6 +66,9 @@ const TF_ORDER: Record<Timeframe, number> = {
 };
 
 const SCOREABLE: ReadonlySet<SetupStatus> = new Set(["confirmed", "active", "partial_target"]);
+
+/** Spec-10 role order — fixed iteration, no reliance on caller key order (spec 31 §8). */
+const FRAME_ROLES = ["htf", "itf", "etf"] as const satisfies readonly FrameRole[];
 
 const num = (v: unknown): number | undefined =>
   typeof v === "number" && Number.isFinite(v) ? v : undefined;
@@ -123,6 +129,8 @@ export function runBacktest(input: {
   const observedSetupIds = new Set<string>();
   /** Diagnostics counters. */
   const cellsSkipped: string[] = [];
+  /** Spec-31: aux frames rejected by validation/timetrame-contract — counted, never fabricated. */
+  const mtfFramesSkipped: string[] = [];
   let evaluationsSkipped = 0;
   let evaluationsEmpty = 0;
   let scoreFailures = 0;
@@ -186,10 +194,68 @@ export function runBacktest(input: {
       ...zonesRes.events, ...imbsRes.events,
     ];
 
+    // Spec-31 — MTF frame providers. The cell's own series serves the role whose
+    // configured timeframe (`config.mtf.set`) equals `cell.timeframe`; other roles come
+    // from `cell.frames`. `cellFrameAt` deliberately does NOT reuse `at` — the composite
+    // join calls `causalAlignAt`, which calls `FrameSource.at`; reusing `at` would
+    // recurse. The frame slice is exactly what `snapshotVote` consumes: structure +
+    // momentum PIT providers (spec-31 §4 — no frame zones/liquidity expansion).
+    const cellFrameAt = (idx: number) => ({
+      structure: structureStateAt(candles, swingsRes.swings, symbol, timeframe, config.structure, pv, idx),
+      momentum: momentumStateAt(candles, symbol, timeframe, config.momentum, pv, idx),
+    });
+    const emptyFrame = (tf: Timeframe): FrameSource => ({ timeframe: tf, candles: [], at: () => null });
+    const mtfRoles = (() => {
+      const roles = {} as Record<FrameRole, FrameSource>;
+      let valid = 0;
+      for (const role of FRAME_ROLES) {
+        const roleTf = config.mtf.set[role] as Timeframe;
+        if (!(roleTf in TF_ORDER)) {
+          mtfFramesSkipped.push(`${key}:${role}`); // unknown timeframe in config.mtf.set
+          roles[role] = emptyFrame(roleTf);
+          continue;
+        }
+        if (roleTf === timeframe) {
+          // The cell's own series is authoritative for its role — a frame supplied for
+          // the same role is a caller error (spec-31 R2): ignored with a diagnostic.
+          if (cell.frames?.[role] !== undefined) mtfFramesSkipped.push(`${key}:${role}`);
+          roles[role] = { timeframe, candles, at: cellFrameAt };
+          continue;
+        }
+        const f = cell.frames?.[role];
+        if (f === undefined) { roles[role] = emptyFrame(roleTf); continue; }
+        // Frame contract: declared timeframe must match the role's configured timeframe
+        // and the series must pass spec-01 validation — else skipped + counted.
+        const bad =
+          f.timeframe !== roleTf ||
+          f.candles.length === 0 ||
+          validateBars([...f.candles], roleTf).some((i) => i.severity === "error");
+        if (bad) { mtfFramesSkipped.push(`${key}:${role}`); roles[role] = emptyFrame(roleTf); continue; }
+        // Per-frame upstream batch — full series, causality enforced by `closedIndexAt`
+        // inside `causalAlignAt` (spec-10 closed-bar rule), never by truncation.
+        const fSwings = detectSwings(f.candles, symbol, roleTf, config.swing, pv);
+        roles[role] = {
+          timeframe: roleTf,
+          candles: f.candles,
+          at: (idx) => ({
+            structure: structureStateAt(f.candles, fSwings.swings, symbol, roleTf, config.structure, pv, idx),
+            momentum: momentumStateAt(f.candles, symbol, roleTf, config.momentum, pv, idx),
+          }),
+        };
+        valid++;
+      }
+      // No valid supplied frame ⇒ no alignment at all — absent `frames` must be
+      // bit-identical to baseline (spec-31 §8); a missing role inside a composed run
+      // degrades through the producer's honest vote-0 path instead.
+      return valid > 0 ? roles : undefined;
+    })();
+
     /** The causal join — every field strictly at closed bar `t`. Spec-29: `regime` is
      *  part of the join (spec 27 producer over the t-snapshots) — it flows into
      *  `ScoringSnapshot.regime` via the `...at(t)` spread and into `SetupOutcome.regime`
-     *  at `confirmBar`. */
+     *  at `confirmBar`. Spec-31: `alignment` is the spec-10 producer over per-role
+     *  causal providers, anchored at `barCloseTime(candles[t])` — it flows into the
+     *  declared detector-input and `ScoringSnapshot` slots via the same spread. */
     const at = (t: number) => {
       const structure = structureStateAt(candles, swingsRes.swings, symbol, timeframe, config.structure, pv, t);
       const momentum = momentumStateAt(candles, symbol, timeframe, config.momentum, pv, t);
@@ -201,6 +267,9 @@ export function runBacktest(input: {
         momentum,
         regime: regimeStateAt(structure, momentum.features, config.regime),
         events: upstreamEvents.filter((e) => e.atBar <= t),
+        ...(mtfRoles !== undefined
+          ? { alignment: causalAlignAt(symbol, mtfRoles, config.mtf.weights, barCloseTime(candles[t], timeframe)).alignment }
+          : {}),
       };
     };
 
@@ -507,6 +576,7 @@ export function runBacktest(input: {
       diagnostics: {
         cellsIn: cells.length,
         cellsSkipped: cellsSkipped.join(","),
+        mtfFramesSkipped: mtfFramesSkipped.join(","),
         evaluationsSkipped,
         evaluationsEmpty,
         scoreFailures,

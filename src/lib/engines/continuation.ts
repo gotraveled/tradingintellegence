@@ -92,6 +92,12 @@ interface Live {
 const inside = (dir: Direction, close: number, level: number) => (dir === "bullish" ? close < level : close > level);
 const sign = (dir: Direction) => (dir === "bullish" ? 1 : -1);
 
+/** Spec-32 confirmation gate — direction-signed `alignmentScore >= 0.8` (spec 10's
+ *  canonical rule). Inactive when no alignment is composed: unframed runs stay
+ *  bit-identical to the spec-31 baseline. Evaluated per bar — never latched. */
+const mtfConfirmable = (a: MultiTimeframeAlignment | undefined, dir: Direction): boolean =>
+  a === undefined || a.alignmentScore * (dir === "bullish" ? 1 : -1) >= 0.8;
+
 const REASON_LABEL: Record<string, { category: SetupReason["category"]; label: string }> = {
   N1: { category: "market_structure", label: "Established trend — trend=u/d + ≥minTrendSwings confirmed + ≥1 HH·HL / LH·LL in order" },
   N2: { category: "market_structure", label: "Impulse — last HL→HH (LH→LL) travel ≥ impulseMinAtr×ATR within impulseMaxBars" },
@@ -99,6 +105,7 @@ const REASON_LABEL: Record<string, { category: SetupReason["category"]; label: s
   N4: { category: "supply_demand", label: "Zone/FVG interaction — pullback extreme inside zone/proximal edge or ≥50% into impulse-leg FVG" },
   N5: { category: "momentum", label: "Pullback quality — overlap/displacement/volume composite ≥ 0.5" },
   N6: { category: "momentum", label: "Momentum recovery — strengthening or directionalMove flip + recovery body bar" },
+  N8: { category: "multi_timeframe", label: "MTF confirmation threshold — direction-signed alignmentScore ≥ 0.8 (specs 10/32)" },
   N7: { category: "market_structure", label: "Continuation confirmation — close beyond last countertrend swing by confirmCloseAtr×ATR" },
 };
 
@@ -348,12 +355,17 @@ export function detectContinuations(input: {
         const confirmClose =
           l.counterLevel !== undefined &&
           beyond2(l.dir, bar.close, l.counterLevel, cc.confirmCloseAtr * atr);
+        // Spec 32 — numeric confirmation gate tracks the CURRENT bar's signed score
+        // (not latched); N8 reports the verdict honestly while developing.
+        const r8 = s.reasons.find((r) => r.id === "N8");
+        if (r8) r8.met = mtfConfirmable(snap?.alignment, l.dir);
         const r7 = s.reasons.find((r) => r.id === "N7");
         if (r7) {
           r7.met = confirmClose === true;
           if (cs && !r7.signalIds?.includes(cs.id ?? "")) r7.signalIds = [...(r7.signalIds ?? []), cs.id ?? `${cs.pivotIndex}`];
         }
-        if (q !== null && q >= QUALITY_MIN && l.recoverySeen && confirmClose) {
+        if (q !== null && q >= QUALITY_MIN && l.recoverySeen && confirmClose &&
+            mtfConfirmable(snap?.alignment, l.dir)) {
           l.confirmBar = t;
           const pbLow = l.extreme;
           const rec = l.recoveryClose ?? bar.close;
@@ -437,6 +449,11 @@ export function detectContinuations(input: {
             reason("N5", false, timeframe),
             reason("N6", false, timeframe),
             reason("N7", false, timeframe),
+            // Spec 32 — the gate reason exists only when alignment is composed; absent
+            // alignment emits nothing so unframed records stay identical to baseline.
+            ...(snap.alignment !== undefined
+              ? [reason("N8", mtfConfirmable(snap.alignment, dir), timeframe)]
+              : []),
           ],
           zoneIds: it.zoneId ? [it.zoneId] : undefined,
           contextTimeframe: snap.alignment?.timeframes.htf,

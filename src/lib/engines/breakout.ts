@@ -111,6 +111,12 @@ function htfBias(a?: MultiTimeframeAlignment): Direction | "neutral" | undefined
   return "neutral";
 }
 
+/** Spec-32 confirmation gate — direction-signed `alignmentScore >= 0.8` (spec 10's
+ *  canonical rule). Inactive when no alignment is composed: unframed runs stay
+ *  bit-identical to the spec-31 baseline. Evaluated per bar — never latched. */
+const mtfConfirmable = (a: MultiTimeframeAlignment | undefined, dir: Direction): boolean =>
+  a === undefined || a.alignmentScore * (dir === "bullish" ? 1 : -1) >= 0.8;
+
 const REASON_LABEL: Record<string, { category: SetupReason["category"]; label: string }> = {
   B1: { category: "market_structure", label: "Range identified — structure trend range, span ≥ rangeMinBars, width ≤ rangeMaxWidthAtr×ATR" },
   B2: { category: "market_structure", label: "Compression — mean bar-range of tail ÷ range ≤ compressionRatio" },
@@ -120,6 +126,7 @@ const REASON_LABEL: Record<string, { category: SetupReason["category"]; label: s
   B6: { category: "liquidity", label: "Volume — breakout-bar volume ≥ volumeMinRatio × median(20) (skipped when absent)" },
   B7: { category: "multi_timeframe", label: "HTF context does not fight the break direction (never auto-confirmed)" },
   B8: { category: "market_structure", label: "No opposing CHOCH before confirmation" },
+  B9: { category: "multi_timeframe", label: "MTF confirmation threshold — direction-signed alignmentScore ≥ 0.8 (specs 10/32)" },
 };
 
 const reason = (id: string, met: boolean, tf: Timeframe, signalIds?: string[]): SetupReason =>
@@ -307,13 +314,18 @@ export function detectBreakouts(input: {
           htfBias(snap.alignment) !== "neutral" && htfBias(snap.alignment) !== l.dir;
         const r7 = s.reasons.find((r) => r.id === "B7");
         if (r7) r7.met = snap?.alignment !== undefined && !fighting;
+        // Spec 32 — numeric confirmation gate tracks the CURRENT bar's signed score
+        // (not latched); B9 reports the verdict honestly while developing.
+        const gateOk = mtfConfirmable(snap?.alignment, l.dir);
+        const r9 = s.reasons.find((r) => r.id === "B9");
+        if (r9) r9.met = gateOk;
         // dispBars window is [attemptBar, attemptBar+dispBars] — expiry precedes confirm so a
         // late displacement can never confirm outside the spec window.
         if (t - l.attemptBar > bc.dispBars) {
           transit(l, t, "expired", "attempt_unconfirmed"); // displacement window elapsed
           finish(l);
           continue;
-        } else if (dispMet && l.volumeOk !== false && !fighting) {
+        } else if (dispMet && l.volumeOk !== false && !fighting && gateOk) {
           l.confirmedBar = t;
           s.metadata = { ...(s.metadata ?? {}), confirmBar: t, dispScore: snap?.momentum?.displacementScore ?? null };
           transit(l, t, "confirmed", "attempt_disp_confirmed");
@@ -405,6 +417,11 @@ export function detectBreakouts(input: {
             reason("B6", false, timeframe),
             reason("B7", false, timeframe),
             reason("B8", true, timeframe),
+            // Spec 32 — the gate reason exists only when alignment is composed; absent
+            // alignment emits nothing so unframed records stay identical to baseline.
+            ...(snap?.alignment !== undefined
+              ? [reason("B9", mtfConfirmable(snap.alignment, dir), timeframe)]
+              : []),
           ],
           zoneIds: undefined,
           liquidityEventIds: anchor ? [anchor.id] : undefined,

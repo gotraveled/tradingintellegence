@@ -134,6 +134,12 @@ function mirror(dir: Direction) {
   };
 }
 
+/** Spec-32 confirmation gate — direction-signed `alignmentScore >= 0.8` (spec 10's
+ *  canonical rule). Inactive when no alignment is composed: unframed runs stay
+ *  bit-identical to the spec-31 baseline. Evaluated per bar — never latched. */
+const mtfConfirmable = (a: MultiTimeframeAlignment | undefined, dir: Direction): boolean =>
+  a === undefined || a.alignmentScore * (dir === "bullish" ? 1 : -1) >= 0.8;
+
 const REASON_LABEL: Record<string, { category: SetupReason["category"]; label: string }> = {
   C1: { category: "supply_demand", label: "Price entered significant zone (active, strength/age within limits)" },
   C2: { category: "liquidity", label: "Opposing-side pool near the zone's distal edge" },
@@ -143,6 +149,7 @@ const REASON_LABEL: Record<string, { category: SetupReason["category"]; label: s
   C6: { category: "market_structure", label: "Confirmed structure break (CHOCH/BOS) against prior move" },
   C7: { category: "imbalance", label: "Departure-leg FVG open/partially_filled (optional)" },
   C8: { category: "multi_timeframe", label: "MTF context acceptable (optional; countertrend = veto)" },
+  C10: { category: "multi_timeframe", label: "MTF confirmation threshold — direction-signed alignmentScore ≥ 0.8 (specs 10/32)" },
 };
 
 function reason(id: string, met: boolean, tf: Timeframe, signalIds?: string[]): SetupReason {
@@ -305,7 +312,8 @@ export function detectReversals(input: {
         if (live.has(key)) continue;
         if (zoneIdx >= 0 && zoneIdx > t) continue; // zone not knowable yet (defensive)
 
-        // ---- Condition table C1–C8 (C9 is the active trigger, evaluated in lifecycle). ----
+        // ---- Condition table C1–C8 (C9 is the active trigger, evaluated in lifecycle;
+        //      C10 is the spec-32 MTF confirmation gate — alignment-present only). ----
         const reasons: SetupReason[] = [];
         const c1met = c1;
         reasons.push(reason("C1", c1met, timeframe, [zone.id]));
@@ -333,6 +341,10 @@ export function detectReversals(input: {
         reasons.push(reason("C7", fvg !== undefined, timeframe, fvg ? [fvg.id] : undefined));
         const mtfState = alignment?.state;
         reasons.push(reason("C8", mtfState !== undefined && m.acceptable(mtfState), timeframe));
+        // Spec 32 — the gate reason exists only when alignment is composed; absent
+        // alignment emits nothing so unframed records stay identical to baseline.
+        const gateOk = mtfConfirmable(alignment, dir);
+        if (alignment !== undefined) reasons.push(reason("C10", gateOk, timeframe));
 
         const [entryLow, entryHigh] = m.entryBand(zone, rc.entryZoneDepth);
         const fvgBand = fvg && fvg.upperPrice - fvg.lowerPrice < entryHigh - entryLow
@@ -364,7 +376,8 @@ export function detectReversals(input: {
           .sort((a, b) => (dir === "bullish" ? a - b : b - a));
 
         const id = `rev:${symbol}:${timeframe}:${dir}:${key}`;
-        const allMet = reasons.slice(0, 6).every((r) => r.met);
+        // spec-32: MTF gate is an additional required condition at confirmation.
+        const allMet = reasons.slice(0, 6).every((r) => r.met) && gateOk;
         const s: Setup = {
           id,
           symbol,
@@ -443,7 +456,11 @@ export function detectReversals(input: {
         ["C8", snap.alignment !== undefined && m.acceptable(snap.alignment.state)],
       ] as const;
       for (const [rid, met] of reEval) { const r = byId(rid); if (r && met && !r.met) r.met = true; }
-      if (s.reasons.slice(0, 6).every((r) => r.met)) {
+      // Spec 32 — the gate tracks the CURRENT bar's score both ways (not latched).
+      const gateOkNow = mtfConfirmable(snap.alignment, l.dir);
+      const r10 = byId("C10");
+      if (r10) r10.met = gateOkNow;
+      if (s.reasons.slice(0, 6).every((r) => r.met) && gateOkNow) {
         l.confirmedBar = t;
         s.metadata = { ...(s.metadata ?? {}), confirmBar: t }; // spec 15 — score at confirmation
         transit(l, t, "confirmed", "all_required_met");

@@ -8,6 +8,7 @@
  */
 import type { Direction, ID, Score, Timeframe, UnixMs } from "./common";
 import type { CandleSeries } from "./market";
+import type { FrameRole } from "../../engines/mtf"; // spec-10 canonical role union (type-only)
 import type { SetupOutcome } from "./outcome";
 import type { PriceTarget } from "./opportunity";
 import type { ScanFilters, StatisticalEvidence } from "./scanner";
@@ -23,6 +24,14 @@ export interface BacktestCell {
   symbol: string;
   timeframe: Timeframe;
   series: CandleSeries;
+  /**
+   * Spec-31 auxiliary MTF series, keyed by role (`config.mtf.set` assigns
+   * timeframe→role). The role whose configured timeframe equals `timeframe` is
+   * served by `series` — a frame supplied for that role is a caller error
+   * (diagnostic, ignored). Absent/empty ⇒ no `alignment` on the causal join —
+   * baseline behavior preserved bit-for-bit.
+   */
+  frames?: Partial<Record<FrameRole, CandleSeries>>;
 }
 
 /**

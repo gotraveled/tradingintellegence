@@ -45,6 +45,8 @@ Frontend → API → Market Intelligence Engine → Market Data → Database
 | [28-trade-plan-engine.md](28-trade-plan-engine.md)       | Trade plan engine — implementation closure of the spec-16 `TradePlan` model; pure snapshot assembler over stamped setup evidence + spec-15 score | Draft  |
 | [29-pipeline-composition.md](29-pipeline-composition.md) | Pipeline composition — wires spec-27 regime into `at(t)`/`ScoringSnapshot.regime`, spec-28 plans into `ScanCandidate.plan`, outcome `regime`/`scoreAtDetection` anchors | Draft  |
 | [30-statistical-evidence-composition.md](30-statistical-evidence-composition.md) | Statistical evidence composition — wires spec-24 `estimateProbability` into `runBacktest`, populating `ScanCandidate`/`BacktestOpportunity.statisticalEvidence` at the `confirmBar` decision anchor | Draft  |
+| [31-mtf-alignment-composition.md](31-mtf-alignment-composition.md) | MTF alignment composition — wires spec-10 `causalAlignAt` into the `at(t)` join via additive `BacktestCell.frames`, populating the dormant detector-input and `ScoringSnapshot.alignment` slots | Draft  |
+| [32-mtf-confirmation-gate.md](32-mtf-confirmation-gate.md) | MTF confirmation gate — enforces spec-10's direction-signed `alignmentScore ≥ 0.8` rule at `developing → confirmed` in all three lifecycle detectors; unmet `C10`/`B9`/`N8` `multi_timeframe` reason while blocked | Draft  |
 
 ## Spec coverage
 

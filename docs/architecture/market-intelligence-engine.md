@@ -78,6 +78,8 @@ Each arrow consumes only the outputs it declares — no engine re-detects upstre
 | Trade plan engine          | `docs/engine/28-trade-plan-engine.md`    |
 | Pipeline composition       | `docs/engine/29-pipeline-composition.md` |
 | Statistical evidence composition | `docs/engine/30-statistical-evidence-composition.md` |
+| MTF alignment composition    | `docs/engine/31-mtf-alignment-composition.md` |
+| MTF confirmation gate        | `docs/engine/32-mtf-confirmation-gate.md` |
 
 ## Explicitly out of scope (future phases)
 
