@@ -1,14 +1,14 @@
 "use client";
 
 import { FlaskConical, RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Notice } from "@/components/ui/notice";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { ScannerView } from "@/lib/constants";
+import { SCAN_REQUEST, type ScannerView } from "@/lib/constants";
 import { runAnalysis, toOpportunities } from "@/lib/services/analysis-runner";
 import { ServiceUnavailableError } from "@/lib/services/types";
-import type { AnalysisRequest, AnalysisResult, Opportunity } from "@/lib/types";
+import type { AnalysisResult, Opportunity } from "@/lib/types";
 import { ScannerResults } from "./scanner-results";
 
 type LiveState =
@@ -22,31 +22,27 @@ interface ScannerLiveProps {
   view?: ScannerView;
 }
 
-// The scanner's live surface is the catalog universe at the default 4h frame —
-// the same symbols and timeframe the UI's featured set advertises. Catalog-only
-// by contract: symbols the provider cannot serve land in `skipped`, never
-// silently substituted.
-const SCAN_REQUEST: AnalysisRequest = {
-  symbols: ["BTCUSDT", "ETHUSDT", "XAUUSD", "EURUSD", "GBPUSD", "NAS100", "AAPL"],
-  timeframe: "4h",
-};
-
-/** Fetch adapter — module-level so the effect body contains no setState call. */
+/**
+ * Fetch adapter — module-level so the effect body contains no setState call.
+ * `signal` aborts the underlying request; `onDone` is expected to ignore calls
+ * whose signal has fired (stale-result protection lives in the caller).
+ */
 function fetchScan(
-  onSuccess: (state: LiveState) => void,
-  onError: (state: LiveState) => void,
+  onDone: (state: LiveState) => void,
+  signal: AbortSignal,
 ): void {
-  runAnalysis({ ...SCAN_REQUEST })
+  runAnalysis({ ...SCAN_REQUEST }, { signal })
     .then((result) =>
-      onSuccess({ status: "success", result, opportunities: toOpportunities(result) }),
+      onDone({ status: "success", result, opportunities: toOpportunities(result) }),
     )
-    .catch((error: unknown) =>
-      onError({
+    .catch((error: unknown) => {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      onDone({
         status: "error",
         message: error instanceof Error ? error.message : "Unexpected error.",
         unavailable: error instanceof ServiceUnavailableError,
-      }),
-    );
+      });
+    });
 }
 
 /**
@@ -58,21 +54,28 @@ function fetchScan(
 export function ScannerLive({ demo, view }: ScannerLiveProps) {
   const [state, setState] = useState<LiveState>({ status: "loading" });
   const [demoPreview, setDemoPreview] = useState(false);
+  /** In-flight scan's abort handle — cleanup aborts whichever fetch is current. */
+  const scanAbort = useRef<AbortController | undefined>(undefined);
 
   // Fetch on mount; setState runs only inside async callbacks, never synchronously
-  // in the effect body.
+  // in the effect body. The signal both aborts the request and gates setState.
   useEffect(() => {
-    let cancelled = false;
-    const ok = (s: LiveState) => { if (!cancelled) setState(s); };
-    fetchScan(ok, ok);
-    return () => {
-      cancelled = true;
-    };
+    const controller = new AbortController();
+    scanAbort.current = controller;
+    fetchScan((s) => {
+      if (!controller.signal.aborted) setState(s);
+    }, controller.signal);
+    return () => scanAbort.current?.abort();
   }, []);
 
   const retry = () => {
+    scanAbort.current?.abort();
+    const controller = new AbortController();
+    scanAbort.current = controller;
     setState({ status: "loading" });
-    fetchScan(setState, setState);
+    fetchScan((s) => {
+      if (!controller.signal.aborted) setState(s);
+    }, controller.signal);
   };
 
   const live = state.status === "success" ? state.opportunities : null;

@@ -8,9 +8,9 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
-    // Threads pool: the heavy spec-30+ engine tests are synchronous CPU work that starves
-    // the forks pool's IPC channel, producing intermittent `onTaskUpdate` RPC timeouts
-    // (exit 1 with a green suite). Worker threads keep the channel responsive.
-    pool: "threads",
+    // Vitest 4 pool: `threads` was removed upstream; `forks` (tinyexec-based) is the
+    // supported stable pool. The tinypool-era RPC timeouts this config once avoided
+    // are obsolete — the engine was rewritten. Re-evaluate only if the flake returns.
+    pool: "forks",
   },
 });

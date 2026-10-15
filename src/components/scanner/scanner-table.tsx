@@ -1,6 +1,7 @@
 "use client";
 
-import { ArrowDown, ArrowUp, ChevronRight } from "lucide-react";
+import { ArrowDown, ArrowUp, CandlestickChart, ChevronRight } from "lucide-react";
+import Link from "next/link";
 import { Fragment, useState } from "react";
 import { ReasonList } from "@/components/opportunities/reason-list";
 import { SetupStatusBadge } from "@/components/opportunities/status-badge";
@@ -14,7 +15,13 @@ import {
   timeframeLabel,
 } from "@/lib/constants";
 import type { Opportunity, OpportunityStatus } from "@/lib/types";
-import { cn, formatDateTimeUTC, lastUpdated, type OpportunitySortKey } from "@/lib/utils";
+import {
+  chartHref,
+  cn,
+  formatDateTimeUTC,
+  lastUpdated,
+  type OpportunitySortKey,
+} from "@/lib/utils";
 
 export interface SortState {
   key: OpportunitySortKey;
@@ -126,6 +133,7 @@ export function ScannerTable({ opportunities, sort, onSortChange }: ScannerTable
               onSortChange={onSortChange}
               align="right"
             />
+            <PlainHeader label="Chart" className="text-right" />
           </tr>
         </thead>
         <tbody>
@@ -137,6 +145,9 @@ export function ScannerTable({ opportunities, sort, onSortChange }: ScannerTable
             );
             const segment = opportunity.market ? getMarketSegment(opportunity.market) : undefined;
             const toggle = () => setExpanded(isOpen ? null : opportunity.id);
+            // Guarded destination — undefined when the engine emitted a symbol or
+            // timeframe the chart catalog does not support. Never substitutes.
+            const href = chartHref(opportunity.symbol, opportunity.timeframe);
 
             return (
               <Fragment key={opportunity.id}>
@@ -224,11 +235,31 @@ export function ScannerTable({ opportunities, sort, onSortChange }: ScannerTable
                       {formatDateTimeUTC(lastUpdated(opportunity))}
                     </time>
                   </td>
+                  <td className="px-3 py-3 text-right">
+                    {href ? (
+                      <Link
+                        href={href}
+                        onClick={(event) => event.stopPropagation()}
+                        aria-label={`View ${opportunity.symbol} on chart`}
+                        className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium text-subtle-foreground transition-colors hover:bg-surface-hover hover:text-foreground"
+                      >
+                        <CandlestickChart className="size-3.5" aria-hidden="true" />
+                        Chart
+                      </Link>
+                    ) : (
+                      <span
+                        className="text-xs text-muted-foreground"
+                        title="This instrument or timeframe is not supported by the chart"
+                      >
+                        Not chartable
+                      </span>
+                    )}
+                  </td>
                 </tr>
                 {isOpen ? (
                   <tr id={detailId} className="border-b border-border bg-surface-elevated/50">
                     <td />
-                    <td colSpan={8} className="px-3 py-4">
+                    <td colSpan={9} className="px-3 py-4">
                       <div className="grid gap-6 lg:grid-cols-[1fr_1.4fr]">
                         {opportunity.reasons?.length ? (
                           <ReasonList reasons={opportunity.reasons} />

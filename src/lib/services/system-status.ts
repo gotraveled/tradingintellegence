@@ -97,3 +97,16 @@ export function isMarketDataConnected(): boolean {
     (service) => service.id === "market-data" && service.status === "connected",
   );
 }
+
+/**
+ * The market-data service entry — the single derivation for provider-connectivity
+ * badges (topbar, markets, chart capability strip). Callers must render its
+ * `status` verbatim: `unverified` means configured-but-never-answered, never
+ * connectivity, and a `connected` provider still says nothing about whether a
+ * particular instrument has data.
+ */
+export function getMarketDataStatus(): ServiceStatus {
+  const service = getSystemStatus().find((entry) => entry.id === "market-data");
+  if (!service) throw new Error("market-data service missing from system status");
+  return service;
+}

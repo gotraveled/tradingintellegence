@@ -14,7 +14,12 @@ import {
 import { providerError } from "@/lib/market-data/provider";
 import type { HistoricalDataProvider, ProviderResponse } from "@/lib/market-data/provider";
 import type { MarketDataRequest } from "@/lib/types";
-import { getSystemStatus, isMarketDataConnected, type ServiceStatus } from "../system-status";
+import {
+  getMarketDataStatus,
+  getSystemStatus,
+  isMarketDataConnected,
+  type ServiceStatus,
+} from "../system-status";
 
 const REQUEST: MarketDataRequest = {
   asset: { symbol: "AAA" },
@@ -193,5 +198,22 @@ describe("getSystemStatus", () => {
     expect(payload).not.toContain("polygon.io");
     expect(payload).not.toContain("apiKey");
     expect(payload).not.toContain("baseUrl");
+  });
+
+  it("getMarketDataStatus returns the market-data entry verbatim — the shared badge derivation", () => {
+    // Consumers (topbar, markets, chart strip) must never substitute their own status.
+    expect(getMarketDataStatus()).toEqual(
+      getSystemStatus().find((s) => s.id === "market-data"),
+    );
+  });
+
+  it("getMarketDataStatus tracks each state transition", async () => {
+    expect(getMarketDataStatus().status).toBe("not_configured");
+    setConfiguredProvider(new FakeProvider(okResponse));
+    expect(getMarketDataStatus().status).toBe("unverified");
+    const wrapped = observeProviderHealth(new FakeProvider(okResponse));
+    setConfiguredProvider(wrapped);
+    await wrapped.getCandles(REQUEST);
+    expect(getMarketDataStatus().status).toBe("connected");
   });
 });

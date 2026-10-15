@@ -1,6 +1,7 @@
 "use client";
 
 import { CircleMinus, Plus, Star, Trash2 } from "lucide-react";
+import Link from "next/link";
 import { useState, type FormEvent } from "react";
 import { SetupStatusBadge } from "@/components/opportunities/status-badge";
 import { BiasBadge } from "@/components/shared/bias-badge";
@@ -11,6 +12,7 @@ import { Select } from "@/components/ui/field";
 import { StatusBadge } from "@/components/ui/status";
 import { TableShell } from "@/components/ui/table-shell";
 import {
+  DEFAULT_TIMEFRAME,
   describeSetup,
   FEATURED_INSTRUMENTS,
   getMarketSegment,
@@ -18,7 +20,7 @@ import {
 } from "@/lib/constants";
 import type { DataSource } from "@/lib/services/types";
 import type { MarketSegmentId, WatchlistItem } from "@/lib/types";
-import { formatDateTimeUTC } from "@/lib/utils";
+import { chartHref, formatDateTimeUTC } from "@/lib/utils";
 
 const COLUMNS = [
   { key: "symbol", label: "Symbol" },
@@ -35,6 +37,21 @@ function StatusCell({ item }: { item: WatchlistItem }) {
     <StatusBadge tone="inactive" label={NO_SETUP_LABEL} icon={CircleMinus} />
   ) : (
     <SetupStatusBadge status={item.status} />
+  );
+}
+
+/** Symbol → chart link; non-catalog symbols render plain rather than reroute. */
+function SymbolCell({ symbol }: { symbol: string }) {
+  const href = chartHref(symbol, DEFAULT_TIMEFRAME);
+  if (!href) return <>{symbol}</>;
+  return (
+    <Link
+      href={href}
+      aria-label={`View ${symbol} on chart`}
+      className="underline-offset-2 transition-colors hover:text-foreground hover:underline"
+    >
+      {symbol}
+    </Link>
   );
 }
 
@@ -137,7 +154,7 @@ export function WatchlistWorkspace({ initialItems, source }: WatchlistWorkspaceP
               {items.map((item) => (
                 <tr key={item.id} className="border-b border-border last:border-b-0">
                   <th scope="row" className="px-5 py-3 text-left numeric font-semibold">
-                    {item.symbol}
+                    <SymbolCell symbol={item.symbol} />
                   </th>
                   <td className="px-5 py-3 text-muted-foreground">{marketLabel(item.market)}</td>
                   <td className="px-5 py-3">
@@ -172,7 +189,9 @@ export function WatchlistWorkspace({ initialItems, source }: WatchlistWorkspaceP
               <li key={item.id} className="space-y-2.5 px-4 py-3.5">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="numeric font-semibold">{item.symbol}</p>
+                    <p className="numeric font-semibold">
+                      <SymbolCell symbol={item.symbol} />
+                    </p>
                     <p className="text-xs text-muted-foreground">{marketLabel(item.market)}</p>
                   </div>
                   <div className="flex items-center gap-2">

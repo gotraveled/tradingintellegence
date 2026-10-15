@@ -1,6 +1,5 @@
 import { ArrowUpRight } from "lucide-react";
 import Link from "next/link";
-import { ConnectionBadge } from "@/components/ui/status";
 import { MARKET_SEGMENTS, marketSegmentHref } from "@/lib/constants";
 
 /** High-level market categories. Shows structure only; no market data is rendered. */
@@ -35,7 +34,6 @@ export function MarketOverview() {
           </ul>
           <div className="mt-auto flex items-center justify-between gap-2 pt-1">
             <span className="text-[11px] text-subtle-foreground">{segment.hours}</span>
-            <ConnectionBadge status="disconnected" />
           </div>
         </Link>
       ))}

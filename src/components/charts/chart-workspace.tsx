@@ -1,13 +1,15 @@
 "use client";
 
 import { CandlestickChart, RefreshCw, ShieldAlert, Unplug } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TradePlan } from "@/components/opportunities/trade-plan";
 import { DemoBadge } from "@/components/shared/demo";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import { FEATURED_INSTRUMENTS, getInstrument, timeframeLabel } from "@/lib/constants";
+import { getInstrument, ROUTES, timeframeLabel } from "@/lib/constants";
 import { CandlesClientError, fetchCandles } from "@/lib/services/candles-runner";
+import type { ServiceStatus } from "@/lib/services/system-status";
 import {
   chartAnalysisRequest,
   pickCell,
@@ -17,13 +19,21 @@ import {
 import type { DataSource } from "@/lib/services/intelligence";
 import { ServiceUnavailableError } from "@/lib/services/types";
 import type { AnalysisSnapshot, CandlesResult, Timeframe } from "@/lib/types";
+import {
+  buildChartHref,
+  buildChartQuery,
+  cn,
+  parseChartSelection,
+  serializeQuery,
+  type ChartQuery,
+} from "@/lib/utils";
 import { AnalysisPanel } from "./analysis-panel";
+import { ChartCapabilityStrip } from "./chart-capability-strip";
 import { toChartOverlays, toChartPlanOverlays, type OverlayLayer } from "./chart-types";
 import { LiveAnalysisPanel, type LiveAnalysisView } from "./live-analysis-panel";
 import type { CandlestickChartHandle } from "./candlestick-chart";
 import { ChartToolbar, type ChartStyle } from "./chart-toolbar";
 import { PriceChart } from "./price-chart";
-import { cn } from "@/lib/utils";
 
 type MobilePanel = "chart" | "plan" | "analysis";
 
@@ -36,7 +46,10 @@ const MOBILE_PANELS: { id: MobilePanel; label: string }[] = [
 interface ChartWorkspaceProps {
   snapshots: Record<string, AnalysisSnapshot>;
   source: DataSource;
-  initialSymbol?: string;
+  /** Resolved `/chart` search params — the URL is the selection source of truth. */
+  searchParams: ChartQuery;
+  /** Server-derived service status — rendered verbatim, never probed client-side. */
+  services: ServiceStatus[];
 }
 
 const DEFAULT_LAYERS: Record<OverlayLayer, boolean> = {
@@ -104,12 +117,25 @@ function loadCandles(
 export function ChartWorkspace({
   snapshots,
   source,
-  initialSymbol = FEATURED_INSTRUMENTS[0].symbol,
+  searchParams,
+  services,
 }: ChartWorkspaceProps) {
-  const [symbol, setSymbol] = useState(initialSymbol);
-  const [timeframe, setTimeframe] = useState<Timeframe>(
-    snapshots[initialSymbol]?.timeframe ?? "4h",
-  );
+  const router = useRouter();
+  const urlSelection = parseChartSelection(searchParams);
+  const {
+    symbol: urlSymbol,
+    autoAnalyze,
+    normalized,
+  } = urlSelection;
+  // A valid `timeframe` param always wins. When it's absent, the symbol's demo
+  // snapshot timeframe is the documented fallback (snapshot overlays only exist
+  // for that timeframe), else the shared DEFAULT_TIMEFRAME.
+  const urlTimeframe = urlSelection.timeframeFromUrl
+    ? urlSelection.timeframe
+    : snapshots[urlSymbol]?.timeframe ?? urlSelection.timeframe;
+  const [symbol, setSymbol] = useState(urlSymbol);
+  const [timeframe, setTimeframe] = useState<Timeframe>(urlTimeframe);
+  const [appliedUrl, setAppliedUrl] = useState(`${urlSymbol}|${urlTimeframe}`);
   const [chartStyle, setChartStyle] = useState<ChartStyle>("candles");
   const [layers, setLayers] = useState(DEFAULT_LAYERS);
   const [panel, setPanel] = useState<MobilePanel>("chart");
@@ -128,6 +154,8 @@ export function ChartWorkspace({
   });
   const chartHandle = useRef<CandlestickChartHandle | undefined>(undefined);
   const analyzeAbort = useRef<AbortController | undefined>(undefined);
+  /** Armed by `?analyze=1`, consumed by the first successful candle load. */
+  const pendingAutoAnalyze = useRef(false);
   /** Below xl only the selected panel is shown; at xl and up all panels are visible. */
   const visibleOn = (id: MobilePanel) => (panel === id ? "" : "hidden xl:block");
 
@@ -155,11 +183,52 @@ export function ChartWorkspace({
     return () => controller.abort();
   }, [symbol, timeframe, requestKey]);
 
-  const handleSymbolChange = (next: string) => {
-    setSymbol(next);
-    const nextSnapshot = snapshots[next];
-    if (nextSnapshot) setTimeframe(nextSnapshot.timeframe);
+  // External navigation (links, back/forward, refresh) is the source of truth:
+  // adopt the URL's resolved selection. Render-time reset — the `appliedUrl` key
+  // only diverges when searchParams actually changed (analyzed once per commit),
+  // so this can never revert an in-progress user selection or loop.
+  const urlKey = `${urlSymbol}|${urlTimeframe}`;
+  if (appliedUrl !== urlKey) {
+    setAppliedUrl(urlKey);
+    setSymbol(urlSymbol);
+    setTimeframe(urlTimeframe);
+  }
+
+  // URL hygiene: arm the one-shot auto-analyze intent and normalize the URL —
+  // invalid `symbol`/`timeframe` params are rewritten to the resolved selection
+  // and `analyze` is always stripped so a refresh or remount cannot refire it.
+  // `buildChartQuery` is canonical: on an already-normalized URL it produces the
+  // same string as `serializeQuery`, so the replace runs at most once per URL.
+  useEffect(() => {
+    if (autoAnalyze) pendingAutoAnalyze.current = true;
+    if (!autoAnalyze && !normalized) return;
+    const nextQuery = buildChartQuery(searchParams, {
+      symbol: urlSymbol,
+      timeframe: urlTimeframe,
+    });
+    if (nextQuery === serializeQuery(searchParams)) return;
+    router.replace(`${ROUTES.chart}?${nextQuery}`, { scroll: false });
+  }, [autoAnalyze, normalized, searchParams, urlSymbol, urlTimeframe, router]);
+
+  /** User-driven selection → update state and the URL (replace — no history spam). */
+  const applySelection = (nextSymbol: string, nextTimeframe: Timeframe) => {
+    // A deliberate reselection ends any pending auto-analyze — it was requested
+    // for the linked selection, not whatever the user picks next.
+    pendingAutoAnalyze.current = false;
+    setSymbol(nextSymbol);
+    setTimeframe(nextTimeframe);
+    router.replace(
+      buildChartHref(searchParams, { symbol: nextSymbol, timeframe: nextTimeframe }),
+      { scroll: false },
+    );
   };
+
+  const handleSymbolChange = (next: string) => {
+    const nextSnapshot = snapshots[next];
+    applySelection(next, nextSnapshot ? nextSnapshot.timeframe : timeframe);
+  };
+
+  const handleTimeframeChange = (next: Timeframe) => applySelection(symbol, next);
 
   // An in-flight analysis is obsolete the moment the selection changes — abort it.
   // A returned result can only ever display for the request that produced it: `live`
@@ -176,7 +245,7 @@ export function ChartWorkspace({
   const analysisEnabled =
     candlesState.status === "success" && live.state.status !== "loading";
 
-  const analyze = () => {
+  const analyze = useCallback(() => {
     if (!candlesResult || candlesResult.candleCount === 0) return;
     const key = `${symbol}|${timeframe}|${candlesResult.window.end}`;
     analyzeAbort.current?.abort();
@@ -218,7 +287,19 @@ export function ChartWorkspace({
                 },
         });
       });
-  };
+  }, [candlesResult, symbol, timeframe]);
+
+  // One-shot `?analyze=1`: the click that navigated here is the explicit user
+  // action. It fires exactly once when candles are ready, and is dropped (not
+  // silently deferred) on a terminal non-success candle state — the user can
+  // always click Analyze or Retry manually. The call is queued off the effect
+  // body so analysis state updates don't cascade synchronously inside a render
+  // commit.
+  useEffect(() => {
+    if (!pendingAutoAnalyze.current) return;
+    pendingAutoAnalyze.current = false;
+    if (candlesState.status === "success") queueMicrotask(analyze);
+  }, [candlesState.status, analyze]);
 
   const liveState: LiveState = live.key === `${symbol}|${timeframe}|${candlesResult?.window.end ?? ""}` ? live.state : { status: "idle" };
   const liveView = liveState.status === "success" ? liveState.view : undefined;
@@ -262,11 +343,12 @@ export function ChartWorkspace({
             panel === "chart" ? "flex" : "hidden xl:flex",
           )}
         >
+          <ChartCapabilityStrip services={services} />
           <ChartToolbar
             symbol={symbol}
             onSymbolChange={handleSymbolChange}
             timeframe={timeframe}
-            onTimeframeChange={setTimeframe}
+            onTimeframeChange={handleTimeframeChange}
             chartStyle={chartStyle}
             onChartStyleChange={setChartStyle}
             layers={layers}

@@ -1,4 +1,4 @@
-import type { Asset } from "@/lib/types";
+import type { Asset, MarketSegmentId } from "@/lib/types";
 
 /**
  * Static instrument catalog used by selectors until a market-data provider supplies the
@@ -83,4 +83,9 @@ export const FEATURED_INSTRUMENTS: Asset[] = [
 
 export function getInstrument(symbol: string) {
   return FEATURED_INSTRUMENTS.find((asset) => asset.symbol === symbol);
+}
+
+/** Catalog instruments for a market segment — identity only, no market data. */
+export function instrumentsBySegment(marketId: MarketSegmentId): Asset[] {
+  return FEATURED_INSTRUMENTS.filter((asset) => asset.marketId === marketId);
 }

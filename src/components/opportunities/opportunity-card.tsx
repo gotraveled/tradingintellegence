@@ -1,3 +1,5 @@
+import { CandlestickChart } from "lucide-react";
+import Link from "next/link";
 import { BiasBadge } from "@/components/shared/bias-badge";
 import { DemoBadge } from "@/components/shared/demo";
 import { ScoreMeter } from "@/components/shared/score-meter";
@@ -10,7 +12,7 @@ import {
   timeframeLabel,
 } from "@/lib/constants";
 import type { Direction, Opportunity, OpportunityStatus } from "@/lib/types";
-import { cn, formatDateTimeUTC, lastUpdated } from "@/lib/utils";
+import { chartHref, cn, formatDateTimeUTC, lastUpdated } from "@/lib/utils";
 import { ReasonList } from "./reason-list";
 import { SetupStatusBadge } from "./status-badge";
 import { TradePlan } from "./trade-plan";
@@ -87,6 +89,9 @@ export function OpportunityCard({
   const displayReasons = (showReasons ?? opportunity.status === "developing") && reasons.length > 0;
   const inactive = TERMINAL.includes(opportunity.status);
   const note = statusNote(opportunity);
+  // Guarded destination — undefined when the symbol/timeframe isn't chartable;
+  // never link to a substituted instrument.
+  const href = chartHref(opportunity.symbol, opportunity.timeframe);
 
   return (
     <article
@@ -143,11 +148,30 @@ export function OpportunityCard({
             {opportunity.confidence ? CONFIDENCE_LABEL[opportunity.confidence] : "Not assessed"}
           </span>
         </span>
-        <span>
-          Updated{" "}
-          <time dateTime={lastUpdated(opportunity)} className="numeric">
-            {formatDateTimeUTC(lastUpdated(opportunity))}
-          </time>
+        <span className="flex items-center gap-3">
+          {href ? (
+            <Link
+              href={href}
+              className="inline-flex items-center gap-1 text-xs font-medium text-subtle-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
+              aria-label={`View ${opportunity.symbol} on chart`}
+            >
+              <CandlestickChart className="size-3.5" aria-hidden="true" />
+              View on chart
+            </Link>
+          ) : (
+            <span
+              className="text-xs text-muted-foreground"
+              title="This instrument or timeframe is not supported by the chart"
+            >
+              Not chartable
+            </span>
+          )}
+          <span>
+            Updated{" "}
+            <time dateTime={lastUpdated(opportunity)} className="numeric">
+              {formatDateTimeUTC(lastUpdated(opportunity))}
+            </time>
+          </span>
         </span>
       </footer>
     </article>

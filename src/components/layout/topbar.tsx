@@ -1,10 +1,10 @@
 import { Search } from "lucide-react";
 import { MobileNav } from "@/components/navigation/mobile-nav";
 import { ConnectionBadge } from "@/components/ui/status";
-import { getSystemStatus } from "@/lib/services/system-status";
+import { getMarketDataStatus } from "@/lib/services/system-status";
 
 export function Topbar() {
-  const marketData = getSystemStatus().find((service) => service.id === "market-data");
+  const marketData = getMarketDataStatus();
 
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-background/90 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/75 sm:px-6">
@@ -24,7 +24,7 @@ export function Topbar() {
       </div>
       <div className="ml-auto hidden items-center gap-2 sm:flex">
         <span className="text-xs text-subtle-foreground">Market data</span>
-        {marketData ? <ConnectionBadge status={marketData.status} /> : null}
+        <ConnectionBadge status={marketData.status} />
       </div>
     </header>
   );
