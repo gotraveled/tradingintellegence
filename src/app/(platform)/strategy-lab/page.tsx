@@ -33,9 +33,10 @@ export default function StrategyLabPage() {
   return (
     <PageContainer>
       <PageHeader module={getNavItem(ROUTES.strategyLab)} />
-      <Notice tone="warning" title="Backtesting engine not connected">
-        This is the future backtesting environment. Runs are not executed yet, and any results shown
-        are illustrative demo data — not real performance.
+      <Notice tone="warning" title="Market-data provider required">
+        Backtests run on the real engine (spec 26) over provider-supplied history. No historical
+        market-data provider is connected yet, so runs report as unavailable — never demo data
+        presented as real.
       </Notice>
       <StrategyLabWorkspace strategies={strategies.data} demoResult={getDemoBacktestResult()} />
       <CapabilityList capabilities={CAPABILITIES} />
