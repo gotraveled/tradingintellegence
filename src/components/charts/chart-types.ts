@@ -1,4 +1,12 @@
-import type { AnalysisSnapshot, Candle, Direction, Price, Timeframe, ZoneType } from "@/lib/types";
+import type {
+  AnalysisSnapshot,
+  BacktestPlan,
+  Candle,
+  Direction,
+  Price,
+  Timeframe,
+  ZoneType,
+} from "@/lib/types";
 
 export type OverlayLayer = "structure" | "zones" | "liquidity" | "imbalance";
 
@@ -34,6 +42,8 @@ export interface PriceChartProps {
   chartStyle?: "candles" | "line";
   pricePrecision?: number;
   className?: string;
+  /** Imperative handle for view controls (fit/zoom) once the chart exists. */
+  onChartReady?: (handle: import("./candlestick-chart").CandlestickChartHandle | undefined) => void;
 }
 
 /** Maps a domain analysis snapshot into chart overlays. */
@@ -85,5 +95,45 @@ export function toChartOverlays(snapshot: AnalysisSnapshot | undefined): ChartOv
     });
   }
 
+  return overlays;
+}
+
+/**
+ * Live engine overlays — the matched `BacktestOpportunity.plan` projected onto the
+ * chart as labeled price lines. The "Engine" prefix distinguishes these from demo
+ * snapshot overlays: entry/stop draw on the structure layer, targets alongside.
+ * Missing plan fields simply produce no line — levels are never fabricated.
+ */
+export function toChartPlanOverlays(
+  setupId: string,
+  direction: Direction | undefined,
+  plan: BacktestPlan | undefined,
+): ChartOverlay[] {
+  if (!plan) return [];
+  const overlays: ChartOverlay[] = [];
+  const level = (id: string, price: number | undefined, label: string) => {
+    if (price === undefined) return;
+    overlays.push({
+      kind: "level",
+      id: `${setupId}-${id}`,
+      layer: "structure",
+      price,
+      label,
+      direction,
+    });
+  };
+  level("entry", plan.entry, "Engine entry");
+  level("stop", plan.stopLoss, "Engine stop");
+  (plan.targets ?? []).forEach((target, index) => {
+    if (target.price === undefined) return;
+    overlays.push({
+      kind: "level",
+      id: `${setupId}-target-${index}`,
+      layer: "structure",
+      price: target.price,
+      label: `Engine ${target.label ?? `target ${index + 1}`}`,
+      direction,
+    });
+  });
   return overlays;
 }

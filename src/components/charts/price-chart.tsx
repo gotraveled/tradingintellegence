@@ -1,7 +1,8 @@
-import { CandlestickChart } from "lucide-react";
+import { CandlestickChart as CandlestickChartIcon } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { timeframeLabel } from "@/lib/constants";
 import { cn, formatPrice } from "@/lib/utils";
+import { CandlestickChart } from "./candlestick-chart";
 import type { ChartOverlay, PriceChartProps } from "./chart-types";
 
 function overlayRange(overlay: ChartOverlay, precision: number) {
@@ -21,37 +22,38 @@ function overlaySwatch(overlay: ChartOverlay) {
 }
 
 /**
- * Placeholder chart surface.
- *
- * This is the single integration point for a real candlestick library (e.g. TradingView
- * Lightweight Charts). Replace the body of this component and keep `PriceChartProps` — the page,
- * toolbar, and analysis panel do not need to change.
+ * The chart surface — real historical candles rendered through Lightweight Charts,
+ * isolated behind `PriceChartProps`. Data arrives only via `candles` (fetched by the
+ * workspace from /api/candles); this component never fetches and never fabricates.
+ * `onChartReady` exposes the imperative handle (fit/zoom) to the toolbar.
  */
 export function PriceChart({
   symbol,
   timeframe,
   candles,
   overlays = [],
+  chartStyle = "candles",
   pricePrecision = 2,
   className,
+  onChartReady,
 }: PriceChartProps) {
   const hasData = Boolean(candles?.length);
 
   return (
     <div
-      className={cn("relative flex min-h-[420px] flex-1 flex-col bg-grid", className)}
+      className={cn("relative flex min-h-[420px] flex-1 flex-col", className)}
       role="img"
       aria-label={`${symbol} ${timeframeLabel(timeframe)} price chart`}
     >
-      <div className="pointer-events-none absolute top-3 left-4 space-y-0.5">
+      <div className="pointer-events-none absolute top-3 left-4 z-10 space-y-0.5">
         <p className="numeric text-sm font-semibold">{symbol}</p>
         <p className="numeric text-xs text-subtle-foreground">{timeframeLabel(timeframe)}</p>
       </div>
 
       {overlays.length ? (
         <ul
-          className="absolute top-3 right-4 max-w-[60%] space-y-1"
-          aria-label="Overlays that will be drawn on the chart"
+          className="absolute top-3 right-4 z-10 max-w-[60%] space-y-1"
+          aria-label="Overlays drawn on the chart"
         >
           {overlays.map((overlay) => (
             <li
@@ -71,15 +73,24 @@ export function PriceChart({
         </ul>
       ) : null}
 
-      <div className="flex flex-1 items-center justify-center">
-        {hasData ? null : (
+      {hasData ? (
+        <CandlestickChart
+          candles={candles ?? []}
+          timeframe={timeframe}
+          overlays={overlays}
+          chartStyle={chartStyle}
+          pricePrecision={pricePrecision}
+          onReady={onChartReady}
+        />
+      ) : (
+        <div className="flex flex-1 items-center justify-center">
           <EmptyState
-            icon={CandlestickChart}
-            title="Chart engine not connected"
-            description="Candles will render here once a market-data provider and chart library are connected. Overlays listed above show what the analysis would draw."
+            icon={CandlestickChartIcon}
+            title="No candles to display"
+            description="Candles appear here when the market-data provider returns bars for the selected symbol and timeframe."
           />
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -21,6 +21,7 @@ import type {
   BacktestTrade,
   BacktestTradeOutcome,
   EngineConfig,
+  MarketSegmentId,
   SetupOutcome,
   SystemBacktestResult,
 } from "@/lib/types";
@@ -63,7 +64,10 @@ export interface SystemBacktestExecution {
  * instrument catalog filtered by `request.market`. The catalog carries reference metadata
  * only — no prices — so it defines the scan extent, never the data.
  */
-export function defaultUniverse(request: BacktestRequest): AssetIdentifier[] {
+export function defaultUniverse(request: {
+  symbols?: string[];
+  market?: MarketSegmentId;
+}): AssetIdentifier[] {
   if (request.symbols && request.symbols.length > 0) {
     return request.symbols.map((symbol) => {
       const asset = getInstrument(symbol);

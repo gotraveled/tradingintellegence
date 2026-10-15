@@ -18,7 +18,7 @@ export function Topbar() {
           type="search"
           disabled
           aria-label="Search instruments"
-          placeholder="Search instruments — requires a market data provider"
+          placeholder="Instrument search is not yet available"
           className="h-9 w-full rounded-md border border-border bg-surface pr-3 pl-9 text-sm placeholder:text-subtle-foreground disabled:cursor-not-allowed"
         />
       </div>

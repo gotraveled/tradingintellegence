@@ -230,3 +230,50 @@ export interface DataQualityReport {
   info: DataValidationIssue[];
   status: DataQualityStatus;
 }
+
+// ---------------------------------------------------------------------------
+// Chart candles boundary — POST /api/candles.
+//
+// A bounded historical-candles read for the chart surface: one symbol, one canonical
+// timeframe, either an explicit [from, to) window or a bounded `bars` lookback ending
+// at `to` (default: server time). The response carries the provider's own normalized
+// candles and spec-5 quality report verbatim — the API never fills gaps, synthesizes
+// bars, or rewrites provider data.
+
+/** Historical-candles request. `from` (inclusive) + `to` (exclusive) OR `bars` lookback. */
+export interface CandlesRequest {
+  /** Catalog symbol preferred; unknown symbols pass through to the provider's own support check. */
+  symbol: string;
+  timeframe: Timeframe;
+  /** Inclusive window start (ISO timestamp). Mutually exclusive with `bars`. */
+  from?: ISODateTime;
+  /** Exclusive window end (ISO timestamp); defaults to server time at the request. */
+  to?: ISODateTime;
+  /** Lookback depth in bars ending at `to`; bounded server-side. */
+  bars?: number;
+}
+
+/** Successful candles read — including an honestly empty (zero-bar) window. */
+export interface CandlesResult {
+  /** Symbol as requested (trimmed, uppercased). */
+  symbol: string;
+  /** Resolved identity — catalog metadata when known, `{symbol}` only otherwise. Never invented. */
+  asset: AssetIdentifier;
+  timeframe: Timeframe;
+  /** Actual exclusive-end window fetched (start aligned to the timeframe boundary). */
+  window: { start: UnixMs; end: UnixMs };
+  /** Provider-normalized candles, ascending, deduplicated — verbatim, gaps preserved. */
+  candles: Candle[];
+  candleCount: number;
+  /** Spec-5 quality report — gap metrics include *expected* closures, not only defects. */
+  quality: DataQualityReport;
+  source: MarketDataSource;
+  /** Always "historical" — aggregates from a REST provider; never live or streaming. */
+  classification: "historical";
+  /** Server retrieval time of this response. */
+  retrievedAt: ISODateTime;
+  /** The actual vendor ticker served, when it differs from the requested symbol (e.g. X:BTCUSD). */
+  servedTicker?: string;
+  /** Provider warnings (rejected rows, ticker alias) — surfaced, never hidden. */
+  warnings: string[];
+}

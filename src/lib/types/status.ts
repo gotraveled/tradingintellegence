@@ -5,6 +5,19 @@
  */
 export type Tone = "bullish" | "bearish" | "developing" | "neutral" | "inactive";
 
-export type ConnectionStatus = "connected" | "degraded" | "disconnected" | "not_configured";
+/**
+ * connected       — last real interaction succeeded.
+ * degraded        — last real interaction failed at the service/transport level.
+ * disconnected    — wired but not reachable (no recent success).
+ * unverified      — configured, but no real interaction has verified reachability yet.
+ *                   A credential's existence alone is never reported as connectivity.
+ * not_configured  — nothing to connect: no credentials, or the feature isn't implemented.
+ */
+export type ConnectionStatus =
+  | "connected"
+  | "degraded"
+  | "disconnected"
+  | "unverified"
+  | "not_configured";
 
 export type ModuleAvailability = "available" | "preview" | "planned";

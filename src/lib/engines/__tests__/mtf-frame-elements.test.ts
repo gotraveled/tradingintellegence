@@ -9,7 +9,11 @@
  * Composition-only: no producer algorithms change; everything is additive and
  * parity-preserving when no frames are supplied.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// Each test runs full spec-26 engine pipelines — several seconds per case is normal.
+// Scoped file-level timeout; the 5s default flakes under parallel worker contention.
+vi.setConfig({ testTimeout: 30_000 });
 import type {
   BacktestCell,
   Candle,

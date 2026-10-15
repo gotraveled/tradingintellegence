@@ -5,6 +5,7 @@ import {
   ChartLine,
   Expand,
   RotateCcw,
+  Sparkles,
   ZoomIn,
   ZoomOut,
   type LucideIcon,
@@ -29,13 +30,6 @@ const STYLES: { id: ChartStyle; label: string; icon: LucideIcon }[] = [
   { id: "line", label: "Line", icon: ChartLine },
 ];
 
-const VIEW_CONTROLS: { label: string; icon: LucideIcon }[] = [
-  { label: "Zoom in", icon: ZoomIn },
-  { label: "Zoom out", icon: ZoomOut },
-  { label: "Reset view", icon: RotateCcw },
-  { label: "Fullscreen", icon: Expand },
-];
-
 interface ChartToolbarProps {
   symbol: string;
   onSymbolChange: (symbol: string) => void;
@@ -45,6 +39,15 @@ interface ChartToolbarProps {
   onChartStyleChange: (style: ChartStyle) => void;
   layers: Record<OverlayLayer, boolean>;
   onLayerToggle: (layer: OverlayLayer) => void;
+  /** View controls — enabled only when a live chart handle exists. */
+  onResetView?: () => void;
+  onZoomIn?: () => void;
+  onZoomOut?: () => void;
+  chartReady?: boolean;
+  /** Engine analysis of the displayed symbol/timeframe — explicit user action. */
+  onAnalyze?: () => void;
+  analyzeEnabled?: boolean;
+  analyzing?: boolean;
 }
 
 function segmentClass(active: boolean) {
@@ -65,7 +68,20 @@ export function ChartToolbar({
   onChartStyleChange,
   layers,
   onLayerToggle,
+  onResetView,
+  onZoomIn,
+  onZoomOut,
+  chartReady = false,
+  onAnalyze,
+  analyzeEnabled = false,
+  analyzing = false,
 }: ChartToolbarProps) {
+  const viewControls: { label: string; icon: LucideIcon; onClick?: () => void }[] = [
+    { label: "Zoom in", icon: ZoomIn, onClick: onZoomIn },
+    { label: "Zoom out", icon: ZoomOut, onClick: onZoomOut },
+    { label: "Reset view", icon: RotateCcw, onClick: onResetView },
+    { label: "Fullscreen", icon: Expand },
+  ];
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-3 py-2.5">
       <div className="w-44">
@@ -131,19 +147,38 @@ export function ChartToolbar({
         ))}
       </div>
 
+      <button
+        type="button"
+        disabled={!analyzeEnabled || analyzing || onAnalyze === undefined}
+        onClick={onAnalyze}
+        title={
+          analyzeEnabled
+            ? `Analyze ${symbol} on ${timeframe} at the last closed bar`
+            : "Available once chart data is loaded"
+        }
+        className="inline-flex h-7 items-center gap-1.5 rounded border border-info/40 bg-info-muted px-2.5 text-xs font-medium text-info transition-colors hover:bg-info-muted/70 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <Sparkles className="size-3.5" aria-hidden="true" />
+        {analyzing ? "Analyzing…" : "Analyze"}
+      </button>
+
       <div role="group" aria-label="View controls" className="ml-auto flex items-center gap-0.5">
-        {VIEW_CONTROLS.map(({ label, icon: Icon }) => (
-          <button
-            key={label}
-            type="button"
-            disabled
-            aria-label={label}
-            title={`${label} — available when the chart engine is connected`}
-            className="flex size-7 items-center justify-center rounded text-subtle-foreground disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Icon className="size-3.5" aria-hidden="true" />
-          </button>
-        ))}
+        {viewControls.map(({ label, icon: Icon, onClick }) => {
+          const enabled = chartReady && onClick !== undefined;
+          return (
+            <button
+              key={label}
+              type="button"
+              disabled={!enabled}
+              onClick={onClick}
+              aria-label={label}
+              title={enabled ? label : `${label} — available when the chart has data`}
+              className="flex size-7 items-center justify-center rounded text-subtle-foreground hover:bg-surface-elevated hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Icon className="size-3.5" aria-hidden="true" />
+            </button>
+          );
+        })}
       </div>
     </div>
   );

@@ -10,7 +10,11 @@
  * Reason ids: C9 (reversal) is the activation trigger and B8 (breakout) the
  * opposing-CHOCH guard — both taken — so the gate reasons are C10 / B9 / N8.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// Each test runs full spec-26 engine pipelines — several seconds per case is normal.
+// Scoped file-level timeout; the 5s default flakes under parallel worker contention.
+vi.setConfig({ testTimeout: 30_000 });
 import type {
   Bias,
   Candle,

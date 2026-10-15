@@ -8,5 +8,9 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
+    // Threads pool: the heavy spec-30+ engine tests are synchronous CPU work that starves
+    // the forks pool's IPC channel, producing intermittent `onTaskUpdate` RPC timeouts
+    // (exit 1 with a green suite). Worker threads keep the channel responsive.
+    pool: "threads",
   },
 });

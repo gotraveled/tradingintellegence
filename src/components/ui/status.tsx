@@ -43,6 +43,7 @@ const CONNECTION_META: Record<ConnectionStatus, { tone: Tone; label: string; ico
   connected: { tone: "bullish", label: "Connected", icon: CircleCheck },
   degraded: { tone: "developing", label: "Degraded", icon: TriangleAlert },
   disconnected: { tone: "inactive", label: "Not connected", icon: Unplug },
+  unverified: { tone: "neutral", label: "Configured", icon: Info },
   not_configured: { tone: "inactive", label: "Not configured", icon: CircleDashed },
 };
 

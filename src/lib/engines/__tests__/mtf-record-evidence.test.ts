@@ -9,7 +9,11 @@
  * Composition-only: no MTF producer logic, detector, scoring, scanner, or outcome
  * contracts change. Tests are additive; the 790-test baseline must remain green.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// Each test runs full spec-26 engine pipelines — several seconds per case is normal.
+// Scoped file-level timeout; the 5s default flakes under parallel worker contention.
+vi.setConfig({ testTimeout: 30_000 });
 import type {
   BacktestCell,
   BacktestDeveloping,

@@ -1,7 +1,6 @@
 import { PageContainer, PageHeader } from "@/components/layout/page-header";
 import { SubNav } from "@/components/navigation/sub-nav";
 import { OpportunityAnatomy } from "@/components/opportunities/opportunity-anatomy";
-import { DemoNotice } from "@/components/shared/demo";
 import {
   getNavItem,
   ROUTES,
@@ -10,7 +9,7 @@ import {
   type ScannerView,
 } from "@/lib/constants";
 import { getOpportunities } from "@/lib/services/intelligence";
-import { ScannerResults } from "./scanner-results";
+import { ScannerLive } from "./scanner-live";
 
 const SCANNER_TABS = [
   { title: "All", href: ROUTES.scanner },
@@ -21,7 +20,9 @@ const SCANNER_TABS = [
 export function ScannerWorkspace({ view }: { view?: ScannerView }) {
   const scanner = getNavItem(ROUTES.scanner);
   const current = view ? scannerViewHref(view.id) : ROUTES.scanner;
-  const opportunities = getOpportunities();
+  // Demo payload retained only as the explicit preview fallback inside ScannerLive —
+  // it renders on user action, always badged, never as the default.
+  const demo = getOpportunities().data;
 
   return (
     <PageContainer>
@@ -32,12 +33,7 @@ export function ScannerWorkspace({ view }: { view?: ScannerView }) {
         description={view ? view.description : scanner.description}
       />
       <SubNav label="Scanner tabs" items={SCANNER_TABS} current={current} />
-      {opportunities.source === "demo" ? <DemoNotice /> : null}
-      <ScannerResults
-        opportunities={opportunities.data}
-        source={opportunities.source}
-        view={view}
-      />
+      <ScannerLive demo={demo} view={view} />
       {!view ? <OpportunityAnatomy /> : null}
     </PageContainer>
   );
