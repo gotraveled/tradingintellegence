@@ -11,7 +11,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Select } from "@/components/ui/field";
-import { FEATURED_INSTRUMENTS, TIMEFRAMES } from "@/lib/constants";
+import { instrumentsBySegment, MARKET_SEGMENTS, TIMEFRAMES } from "@/lib/constants";
 import type { Timeframe } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import type { OverlayLayer } from "./chart-types";
@@ -94,11 +94,18 @@ export function ChartToolbar({
           onChange={(event) => onSymbolChange(event.target.value)}
           className="h-8 numeric font-semibold"
         >
-          {FEATURED_INSTRUMENTS.map((asset) => (
-            <option key={asset.id} value={asset.symbol}>
-              {asset.symbol}
-            </option>
-          ))}
+          {MARKET_SEGMENTS.map((segment) => {
+            const assets = instrumentsBySegment(segment.id);
+            return assets.length === 0 ? null : (
+              <optgroup key={segment.id} label={segment.label}>
+                {assets.map((asset) => (
+                  <option key={asset.id} value={asset.symbol}>
+                    {asset.symbol}
+                  </option>
+                ))}
+              </optgroup>
+            );
+          })}
         </Select>
       </div>
 

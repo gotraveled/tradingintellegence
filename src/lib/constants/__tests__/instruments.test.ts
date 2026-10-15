@@ -31,6 +31,12 @@ describe("instrumentsBySegment", () => {
       "NIFTY 50",
     );
   });
+
+  it("gives the toolbar selector a non-empty optgroup per segment", () => {
+    for (const segment of MARKET_SEGMENTS) {
+      expect(instrumentsBySegment(segment.id).length).toBeGreaterThan(0);
+    }
+  });
 });
 
 describe("markets/watchlist → chart destinations", () => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { CandlestickChart, RefreshCw, ShieldAlert, Unplug } from "lucide-react";
+import { CandlestickChart, Crosshair, RefreshCw, ShieldAlert, Unplug } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TradePlan } from "@/components/opportunities/trade-plan";
@@ -29,7 +29,7 @@ import {
 } from "@/lib/utils";
 import { AnalysisPanel } from "./analysis-panel";
 import { ChartCapabilityStrip } from "./chart-capability-strip";
-import { toChartOverlays, toChartPlanOverlays, type OverlayLayer } from "./chart-types";
+import { selectChartOverlays, selectTradePlanView, type OverlayLayer } from "./chart-types";
 import { LiveAnalysisPanel, type LiveAnalysisView } from "./live-analysis-panel";
 import type { CandlestickChartHandle } from "./candlestick-chart";
 import { ChartToolbar, type ChartStyle } from "./chart-toolbar";
@@ -163,11 +163,6 @@ export function ChartWorkspace({
   const precision = getInstrument(symbol)?.pricePrecision ?? 2;
   const demo = source === "demo";
   const timeframeMismatch = snapshot && snapshot.timeframe !== timeframe;
-
-  const demoOverlays = useMemo(
-    () => toChartOverlays(snapshot).filter((overlay) => layers[overlay.layer]),
-    [snapshot, layers],
-  );
 
   const requestKey = `${symbol}|${timeframe}|${retryCount}`;
   const candlesState: CandlesState =
@@ -303,13 +298,19 @@ export function ChartWorkspace({
 
   const liveState: LiveState = live.key === `${symbol}|${timeframe}|${candlesResult?.window.end ?? ""}` ? live.state : { status: "idle" };
   const liveView = liveState.status === "success" ? liveState.view : undefined;
-  // A matching live result replaces demo overlays — demo never masquerades as engine output.
-  const liveTop = liveView?.opportunities[0];
-  const overlays = liveView
-    ? liveTop
-      ? toChartPlanOverlays(liveTop.setupId, liveTop.direction, liveTop.plan)
-      : []
-    : demoOverlays;
+  // A matching live result replaces reference overlays — demo never masquerades
+  // as engine output, and a live verdict with no setup clears the canvas.
+  const overlays = useMemo(
+    () => selectChartOverlays(liveView?.opportunities, snapshot, layers),
+    [liveView, snapshot, layers],
+  );
+  // The standalone plan panel only ever shows snapshot levels — preview before
+  // the engine runs, collapsed reference after. A bare "developing" placeholder
+  // would read as a verdict the engine never made.
+  const planView = selectTradePlanView(
+    snapshot?.opportunity !== undefined,
+    liveView !== undefined,
+  );
 
   return (
     <div className="space-y-4">
@@ -446,10 +447,10 @@ export function ChartWorkspace({
               }}
             />
           ) : null}
-          {timeframeMismatch ? (
+          {timeframeMismatch && !liveView ? (
             <p className="border-t border-border px-4 py-2 text-[11px] text-subtle-foreground">
-              Demo analysis for {symbol} is available on {timeframeLabel(snapshot.timeframe)} only;
-              overlays shown are from that timeframe.
+              {demo ? "Demo" : "Snapshot"} analysis for {symbol} is available on{" "}
+              {timeframeLabel(snapshot.timeframe)} only; overlays shown are from that timeframe.
             </p>
           ) : null}
         </div>
@@ -516,43 +517,108 @@ export function ChartWorkspace({
                 />
               ) : null}
 
-              <AnalysisPanel
-                snapshot={snapshot}
-                symbol={symbol}
-                demo={demo}
-                pricePrecision={precision}
-              />
+              {/* Once a real verdict exists for this selection, the reference
+                  snapshot defers behind a disclosure so demo levels cannot read
+                  as corroboration. Without a snapshot the panel's only content
+                  is its "engine not connected" empty state — false after a
+                  successful run — so it renders nothing here. */}
+              {liveView ? (
+                snapshot ? (
+                  <details className="group rounded-lg border border-border bg-surface">
+                    <summary className="cursor-pointer select-none px-4 py-3 text-xs font-medium text-subtle-foreground transition-colors hover:text-foreground">
+                      Reference snapshot{demo ? " (demo)" : ""} — precomputed{" "}
+                      {timeframeLabel(snapshot.timeframe)} analysis, not the engine run above
+                    </summary>
+                    <AnalysisPanel
+                      snapshot={snapshot}
+                      symbol={symbol}
+                      demo={demo}
+                      pricePrecision={precision}
+                    />
+                  </details>
+                ) : null
+              ) : (
+                <AnalysisPanel
+                  snapshot={snapshot}
+                  symbol={symbol}
+                  demo={demo}
+                  pricePrecision={precision}
+                />
+              )}
             </div>
           </div>
 
-          <section
-            aria-label="Trade plan"
-            className={cn(
-              "order-1 rounded-lg border border-border bg-surface xl:order-2",
-              visibleOn("plan"),
-            )}
-          >
-            <header className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
-              <h2 className="text-sm font-semibold">Trade plan</h2>
-              {demo && snapshot?.opportunity ? <DemoBadge /> : null}
-            </header>
-            <div className="space-y-3 p-4">
-              <TradePlan
-                layout="stack"
-                plan={
-                  snapshot?.opportunity ?? {
-                    status: "developing",
-                    pricePrecision: precision,
-                  }
-                }
-              />
-              <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-subtle-foreground">
-                <ShieldAlert className="mt-px size-3.5 shrink-0" aria-hidden="true" />
-                Levels describe where the setup would be invalidated or reach its objectives. They
-                are analysis, not instructions to trade.
-              </p>
-            </div>
-          </section>
+          {/* The standalone trade plan only ever presents snapshot content:
+              preview before the engine runs, collapsed reference after. */}
+          {planView === "reference" && snapshot?.opportunity ? (
+            <details
+              className={cn(
+                "order-1 rounded-lg border border-border bg-surface xl:order-2",
+                visibleOn("plan"),
+              )}
+            >
+              <summary className="cursor-pointer select-none px-4 py-3 text-xs font-medium text-subtle-foreground transition-colors hover:text-foreground">
+                Reference trade plan{demo ? " (demo)" : ""} — not the engine result
+              </summary>
+              <div className="space-y-3 p-4 pt-0">
+                <TradePlan layout="stack" plan={snapshot.opportunity} />
+                <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-subtle-foreground">
+                  <ShieldAlert className="mt-px size-3.5 shrink-0" aria-hidden="true" />
+                  Reference levels from the precomputed snapshot — superseded by the engine
+                  analysis result.
+                </p>
+              </div>
+            </details>
+          ) : planView === "preview" && snapshot?.opportunity ? (
+            <section
+              aria-label="Trade plan"
+              className={cn(
+                "order-1 rounded-lg border border-border bg-surface xl:order-2",
+                visibleOn("plan"),
+              )}
+            >
+              <header className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
+                <h2 className="text-sm font-semibold">Trade plan</h2>
+                {demo ? <DemoBadge /> : null}
+              </header>
+              <div className="space-y-3 p-4">
+                <TradePlan layout="stack" plan={snapshot.opportunity} />
+                <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-subtle-foreground">
+                  <ShieldAlert className="mt-px size-3.5 shrink-0" aria-hidden="true" />
+                  {demo
+                    ? "Preview levels from a precomputed demo snapshot — illustrative, not an engine verdict. Run Analyze for a live result."
+                    : "Levels from a precomputed snapshot — not the latest engine run. Run Analyze for a live result."}
+                </p>
+              </div>
+            </section>
+          ) : (
+            <section
+              aria-label="Trade plan"
+              className={cn(
+                "order-1 rounded-lg border border-border bg-surface xl:order-2",
+                visibleOn("plan"),
+              )}
+            >
+              <header className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
+                <h2 className="text-sm font-semibold">Trade plan</h2>
+              </header>
+              <div className="p-4">
+                {planView === "empty" ? (
+                  <EmptyState
+                    icon={Crosshair}
+                    title="No trade plan yet"
+                    description={`Run Analyze to evaluate ${symbol} on ${timeframeLabel(timeframe)} at the last closed bar.`}
+                  />
+                ) : (
+                  <EmptyState
+                    icon={Crosshair}
+                    title="No reference trade plan"
+                    description="No precomputed snapshot exists for this instrument. The engine result is shown under Engine analysis."
+                  />
+                )}
+              </div>
+            </section>
+          )}
         </div>
       </div>
     </div>
