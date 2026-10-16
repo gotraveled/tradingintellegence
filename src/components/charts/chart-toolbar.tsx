@@ -48,6 +48,11 @@ interface ChartToolbarProps {
   onAnalyze?: () => void;
   analyzeEnabled?: boolean;
   analyzing?: boolean;
+  /**
+   * Declared-entitled timeframes from the capability row (server-derived). When
+   * present, buttons outside it are disabled rather than served an empty chart.
+   */
+  enabledTimeframes?: readonly Timeframe[];
 }
 
 function segmentClass(active: boolean) {
@@ -75,6 +80,7 @@ export function ChartToolbar({
   onAnalyze,
   analyzeEnabled = false,
   analyzing = false,
+  enabledTimeframes,
 }: ChartToolbarProps) {
   const viewControls: { label: string; icon: LucideIcon; onClick?: () => void }[] = [
     { label: "Zoom in", icon: ZoomIn, onClick: onZoomIn },
@@ -110,17 +116,30 @@ export function ChartToolbar({
       </div>
 
       <div role="group" aria-label="Timeframe" className="flex items-center gap-0.5">
-        {TIMEFRAMES.map((item) => (
-          <button
-            key={item.value}
-            type="button"
-            aria-pressed={item.value === timeframe}
-            onClick={() => onTimeframeChange(item.value)}
-            className={cn("numeric", segmentClass(item.value === timeframe))}
-          >
-            {item.label}
-          </button>
-        ))}
+        {TIMEFRAMES.map((item) => {
+          const entitled = enabledTimeframes === undefined || enabledTimeframes.includes(item.value);
+          return (
+            <button
+              key={item.value}
+              type="button"
+              aria-pressed={item.value === timeframe}
+              disabled={!entitled}
+              title={
+                entitled
+                  ? undefined
+                  : `${item.label} is outside the configured provider's declared coverage`
+              }
+              onClick={() => onTimeframeChange(item.value)}
+              className={cn(
+                "numeric",
+                segmentClass(item.value === timeframe),
+                !entitled && "cursor-not-allowed opacity-40 hover:bg-transparent hover:text-subtle-foreground",
+              )}
+            >
+              {item.label}
+            </button>
+          );
+        })}
       </div>
 
       <div className="h-5 w-px bg-border" aria-hidden="true" />

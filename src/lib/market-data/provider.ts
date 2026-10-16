@@ -1,5 +1,6 @@
 import type {
   Candle,
+  DataClassification,
   DataQualityReport,
   MarketDataError,
   MarketDataRequest,
@@ -24,6 +25,13 @@ export interface MarketDataResult {
   /** Quality summary of what was returned — callers may gate on `status`. */
   quality: DataQualityReport;
   source: MarketDataSource;
+  /**
+   * Freshness classification of this response — set by the provider from vendor
+   * evidence (e.g. Polygon's `DELAYED` aggregate status) or by the router's
+   * declared capability row. Absent → callers treat as `"historical"`.
+   * Never `"live"` from a REST aggregate read.
+   */
+  classification?: DataClassification;
   /** Warnings from normalization/validation even when `ok` — e.g. gaps, misalignment. */
   warnings?: string[];
 }

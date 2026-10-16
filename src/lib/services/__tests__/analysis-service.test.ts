@@ -210,4 +210,65 @@ describe("executeAnalysis", () => {
       service: "Market data provider",
     });
   });
+
+  it("a sparse fragment is skipped — a 200 with few bars is not a successful cell", async () => {
+    // One stray bar where the window implies far more — the smoke-test signature.
+    const provider = new TestProvider([flatBar(0)]);
+    const out = await executeAnalysis(baseRequest, { provider }).catch((e: Error) => e);
+    // The single symbol is skipped as insufficient → composition refuses the run.
+    expect(out).toBeInstanceOf(Error);
+    expect((out as Error).message).toMatch(/was not run|No historical candles/i);
+  });
+
+  it("partial sparsity: the thin symbol is skipped, the adequate one still runs", async () => {
+    const rows = Array.from({ length: 120 }, (_, i) => flatBar(i));
+    const provider = new TestProvider(rows);
+    // Wrap: AAA gets the full series; BBB gets a 3-bar fragment back.
+    const sparseProvider = new Proxy(provider, {
+      get: (t, p) =>
+        p === "getCandles"
+          ? async (r: MarketDataRequest) => {
+              const res = await t.getCandles(r);
+              if (!res.ok || r.asset.symbol !== "BBB") return res;
+              const candles = res.result.candles.slice(0, 3);
+              return {
+                ok: true as const,
+                result: {
+                  ...res.result,
+                  candles,
+                  quality: { ...res.result.quality, barCount: candles.length },
+                },
+              };
+            }
+          : Reflect.get(t, p),
+    });
+    const out = await executeAnalysis(
+      { ...baseRequest, symbols: ["AAA", "BBB"] },
+      { provider: sparseProvider },
+    );
+    expect(out.cells).toHaveLength(1);
+    expect(out.skipped[0].symbol).toBe("BBB");
+    expect(out.skipped[0].reason).toMatch(/insufficient|no candles/i);
+  });
+
+  it("cell classification + result dataClassification propagate provider evidence", async () => {
+    const rows = Array.from({ length: 120 }, (_, i) => flatBar(i));
+    const classified = new Proxy(new TestProvider(rows), {
+      get: (t, p) =>
+        p === "getCandles"
+          ? async (r: MarketDataRequest) => {
+              const res = await t.getCandles(r);
+              return res.ok
+                ? { ok: true, result: { ...res.result, classification: "delayed" as const } }
+                : res;
+            }
+          : Reflect.get(t, p),
+    });
+    const out = await executeAnalysis(baseRequest, { provider: classified });
+    expect(out.cells[0].classification).toBe("delayed");
+    expect(out.dataClassification).toBe("delayed");
+    // An unclassified provider leaves the honest "historical" floor.
+    const plain = await executeAnalysis(baseRequest, { provider: new TestProvider(rows) });
+    expect(plain.dataClassification).toBe("historical");
+  });
 });

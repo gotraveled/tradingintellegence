@@ -20,19 +20,35 @@ export interface ProviderConnectivity {
   at: UnixMs;
 }
 
-let lastConnectivity: ProviderConnectivity | undefined;
+/** Per-provider observations keyed by `MarketDataSource.id` — a routed deployment
+ *  never lets one vendor's failure mislabel another's. `latest` mirrors the most
+ *  recent observation overall for the single-provider status path. */
+const byProvider = new Map<string, ProviderConnectivity>();
+let latest: ProviderConnectivity | undefined;
 
 /** Called by the provider wrapper for every completed request — never for caller-side skips. */
-export function recordProviderConnectivity(ok: boolean, at: UnixMs = Date.now()): void {
-  lastConnectivity = { ok, at };
+export function recordProviderConnectivity(
+  ok: boolean,
+  at: UnixMs = Date.now(),
+  sourceId?: string,
+): void {
+  const entry: ProviderConnectivity = { ok, at };
+  latest = entry;
+  if (sourceId !== undefined) byProvider.set(sourceId, entry);
 }
 
 /** The most recent real observation, or `undefined` when nothing has been seen this process. */
 export function getLastProviderConnectivity(): ProviderConnectivity | undefined {
-  return lastConnectivity;
+  return latest;
+}
+
+/** The last observation for one provider id — undefined when it never answered. */
+export function getProviderConnectivity(sourceId: string): ProviderConnectivity | undefined {
+  return byProvider.get(sourceId);
 }
 
 /** Test seam — restores the "configured but unverified" baseline. */
 export function clearProviderConnectivity(): void {
-  lastConnectivity = undefined;
+  byProvider.clear();
+  latest = undefined;
 }

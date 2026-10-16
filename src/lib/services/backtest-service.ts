@@ -26,6 +26,7 @@ import type {
   SystemBacktestResult,
 } from "@/lib/types";
 import { defaultConfig } from "./engine-defaults";
+import { assessDataSufficiency } from "./data-sufficiency";
 import { ServiceUnavailableError } from "./types";
 
 const DAY_MS = 86_400_000;
@@ -147,9 +148,18 @@ async function buildCells(
       skipped.push({ symbol: asset.symbol, reason: response.error.message });
       continue;
     }
-    const { candles } = response.result;
+    const { candles, quality } = response.result;
     if (candles.length === 0) {
       skipped.push({ symbol: asset.symbol, reason: "provider returned no candles" });
+      continue;
+    }
+    // A sparse fragment is not a backtest input — skipped with an explicit
+    // reason so a successful HTTP response can't masquerade as adequate coverage.
+    if (assessDataSufficiency({ candles, quality }) === "insufficient") {
+      skipped.push({
+        symbol: asset.symbol,
+        reason: `insufficient data — ${candles.length} bars returned for the requested window`,
+      });
       continue;
     }
     cells.push({

@@ -35,6 +35,7 @@ import type {
   Timeframe,
   UnixMs,
 } from "@/lib/types";
+import { assessDataSufficiency } from "./data-sufficiency";
 
 const DAY_MS = 86_400_000;
 
@@ -198,8 +199,14 @@ export async function executeCandles(
     candles, // provider-verbatim: ascending, deduplicated, gaps preserved
     candleCount: candles.length,
     quality,
-    source: deps.provider.source,
-    classification: "historical",
+    // The routed result's own source — under ProviderRouter this is the vendor
+    // that actually served, not the router's aggregate label.
+    source: response.result.source ?? deps.provider.source,
+    // Provider-reported freshness (Polygon stamps DELAYED evidence) or the
+    // router's declared capability floor — never upgraded by request success.
+    classification: response.result.classification ?? "historical",
+    // zero candles is a valid empty window — never sufficiency by implication.
+    sufficiency: assessDataSufficiency({ candles, quality }),
     retrievedAt: new Date(nowMs).toISOString(),
     ...(servedTicker !== undefined ? { servedTicker } : {}),
     warnings: warnings ?? [],

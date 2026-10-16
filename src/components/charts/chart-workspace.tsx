@@ -1,6 +1,6 @@
 "use client";
 
-import { CandlestickChart, Crosshair, RefreshCw, ShieldAlert, Unplug } from "lucide-react";
+import { CandlestickChart, Crosshair, RefreshCw, ShieldAlert, TriangleAlert, Unplug } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TradePlan } from "@/components/opportunities/trade-plan";
@@ -66,6 +66,9 @@ type CandlesState =
   | { status: "loading" }
   | { status: "success"; result: CandlesResult }
   | { status: "empty"; result: CandlesResult }
+  /** Provider answered with data too sparse to chart honestly — not an error,
+   *  not a usable chart: distinct from both `empty` and `success`. */
+  | { status: "insufficient"; result: CandlesResult }
   | { status: "unsupported"; message: string }
   | { status: "unconfigured"; message: string }
   | { status: "error"; message: string };
@@ -105,7 +108,9 @@ function loadCandles(
       done(
         result.candleCount === 0
           ? { status: "empty", result }
-          : { status: "success", result },
+          : result.sufficiency === "insufficient"
+            ? { status: "insufficient", result }
+            : { status: "success", result },
       ),
     )
     .catch((error: unknown) => {
@@ -233,9 +238,15 @@ export function ChartWorkspace({
   }, [requestKey]);
 
   const candlesResult =
-    candlesState.status === "success" || candlesState.status === "empty"
+    candlesState.status === "success" ||
+    candlesState.status === "empty" ||
+    candlesState.status === "insufficient"
       ? candlesState.result
       : undefined;
+  const marketDataAvailability = services.find(
+    (service) => service.id === "market-data",
+  )?.dataAvailability;
+  const enabledTimeframes = marketDataAvailability?.timeframes;
   const candles = candlesResult?.candles;
   const analysisEnabled =
     candlesState.status === "success" && live.state.status !== "loading";
@@ -361,13 +372,15 @@ export function ChartWorkspace({
             onAnalyze={analyze}
             analyzeEnabled={analysisEnabled}
             analyzing={liveState.status === "loading"}
+            enabledTimeframes={enabledTimeframes}
           />
-          {candlesState.status === "success" && candlesResult ? (
+          {candlesResult && candlesState.status !== "loading" ? (
             <p
               className="border-b border-border px-3 py-1.5 text-[11px] text-subtle-foreground"
               aria-label="Data provenance"
             >
-              Historical data · {candlesResult.source.label} aggregates ·{" "}
+              {candlesResult.classification === "delayed" ? "Delayed" : "Historical"} data ·{" "}
+              {candlesResult.source.label} aggregates ·{" "}
               {candlesResult.candleCount} bars · retrieved{" "}
               {new Date(candlesResult.retrievedAt).toLocaleString()}
               {candlesResult.quality.missingBarCount > 0
@@ -409,6 +422,16 @@ export function ChartWorkspace({
                 icon={CandlestickChart}
                 title="No data in this window"
                 description={`${candlesResult.source.label} returned no ${timeframeLabel(timeframe)} bars for ${symbol} in the requested range.`}
+              />
+            </div>
+          ) : null}
+
+          {candlesState.status === "insufficient" && candlesResult ? (
+            <div className="flex min-h-[340px] items-center justify-center p-4">
+              <EmptyState
+                icon={TriangleAlert}
+                title="Insufficient data in this window"
+                description={`${candlesResult.source.label} returned only ${candlesResult.candleCount} ${timeframeLabel(timeframe)} bars for ${symbol} — too sparse to chart or analyze. The configured plan may not cover this interval.`}
               />
             </div>
           ) : null}

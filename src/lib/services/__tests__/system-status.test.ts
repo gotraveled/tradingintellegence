@@ -207,6 +207,37 @@ describe("getSystemStatus", () => {
     );
   });
 
+  it("declared capability rides the market-data entry — never invented for unknown providers", () => {
+    // Env-configured deployment: the Polygon capability row is present.
+    process.env[MARKET_DATA_KEY_ENV] = "TEST-KEY-NOT-REAL";
+    const md = service("market-data");
+    expect(md.dataAvailability).toBeDefined();
+    expect(md.dataAvailability?.classification).toBe("delayed");
+    expect(md.dataAvailability?.confidence).toBe("inferred"); // POLYGON_PLAN unset
+    expect(md.dataAvailability?.displayRights).toBe("unknown");
+    expect(md.dataAvailability?.timeframes).toEqual(["1D", "1W", "1M"]); // Basic EOD
+    expect(md.dataAvailability?.note).toMatch(/DELAYED|Basic/i);
+    expect(md.description).toMatch(/inferred/i);
+
+    // An injected provider has no declared row — capabilities are not fabricated.
+    delete process.env[MARKET_DATA_KEY_ENV];
+    setConfiguredProvider(new FakeProvider(okResponse));
+    expect(service("market-data").dataAvailability).toBeUndefined();
+  });
+
+  it("declared POLYGON_PLAN widens the surfaced entitlement set", () => {
+    process.env[MARKET_DATA_KEY_ENV] = "TEST-KEY-NOT-REAL";
+    process.env.POLYGON_PLAN = "starter";
+    try {
+      const md = service("market-data");
+      expect(md.dataAvailability?.confidence).toBe("declared");
+      expect(md.dataAvailability?.timeframes).toContain("4h");
+      expect(md.description).not.toMatch(/inferred/i);
+    } finally {
+      delete process.env.POLYGON_PLAN;
+    }
+  });
+
   it("getMarketDataStatus tracks each state transition", async () => {
     expect(getMarketDataStatus().status).toBe("not_configured");
     setConfiguredProvider(new FakeProvider(okResponse));

@@ -231,6 +231,25 @@ export interface DataQualityReport {
   status: DataQualityStatus;
 }
 
+/**
+ * Data freshness classification — how the serving provider's feed relates to
+ * real time. `historical` = archival/indefinitely-stale-safe aggregates;
+ * `delayed` = provider-reported delayed or end-of-day entitlement;
+ * `live` = streaming/real-time (reserved — no provider emits it today).
+ * Never inferred from request success; it comes from provider evidence or the
+ * declared capability row.
+ */
+export type DataClassification = "historical" | "delayed" | "live";
+
+/**
+ * Product-layer verdict on whether a returned window can support normal use —
+ * distinct from `quality.status` (per-bar integrity). `empty` = provider ok with
+ * zero candles (a valid honest result); `insufficient` = nonzero but too sparse
+ * to chart/analyze as if complete; `ok` = adequate. See
+ * `services/data-sufficiency.ts` for the threshold rules.
+ */
+export type DataSufficiency = "ok" | "empty" | "insufficient";
+
 // ---------------------------------------------------------------------------
 // Chart candles boundary — POST /api/candles.
 //
@@ -268,8 +287,19 @@ export interface CandlesResult {
   /** Spec-5 quality report — gap metrics include *expected* closures, not only defects. */
   quality: DataQualityReport;
   source: MarketDataSource;
-  /** Always "historical" — aggregates from a REST provider; never live or streaming. */
-  classification: "historical";
+  /**
+   * Provider-evidence or capability-declared freshness. "historical" for feeds
+   * with no reported delay semantics; "delayed" when the provider reported a
+   * delayed/EOD entitlement (e.g. Polygon `DELAYED` aggregate status); "live"
+   * is reserved for streaming and is never emitted today.
+   */
+  classification: DataClassification;
+  /**
+   * Whether the returned window can support normal use. Zero candles is `empty`
+   * (a valid result, never an error); sparse-but-nonzero responses are
+   * `insufficient` so a 200 can never masquerade as adequate coverage.
+   */
+  sufficiency: DataSufficiency;
   /** Server retrieval time of this response. */
   retrievedAt: ISODateTime;
   /** The actual vendor ticker served, when it differs from the requested symbol (e.g. X:BTCUSD). */

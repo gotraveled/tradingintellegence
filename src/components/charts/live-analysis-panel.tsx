@@ -110,6 +110,9 @@ export function LiveAnalysisPanel({
         )}
         {barCount !== undefined ? ` · ${barCount} bars analyzed` : ""}
         {quality !== undefined ? ` · data ${quality.replaceAll("_", " ")}` : ""}
+        {(cell?.classification ?? result.dataClassification) !== undefined
+          ? ` · ${(cell?.classification ?? result.dataClassification) === "delayed" ? "delayed data" : "historical data"}`
+          : ""}
         {` · method ${result.versions.methodVersion}`}
       </p>
       <p className="border-b border-border px-4 py-2 text-[11px] leading-relaxed text-subtle-foreground">

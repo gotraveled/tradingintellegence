@@ -3,6 +3,7 @@ import type { Bias, ISODateTime, Score, Timeframe, UnixMs } from "./common";
 import type { LiquidityEvent } from "./liquidity";
 import type {
   AssetIdentifier,
+  DataClassification,
   DataQualityReport,
   MarketDataSource,
   MarketSegmentId,
@@ -145,6 +146,8 @@ export interface AnalysisCell {
   asset: AssetIdentifier;
   /** The provider's own quality report for the fetched window — verbatim. */
   quality: DataQualityReport;
+  /** Freshness classification of the candles that fed this cell (provider-reported or capability-declared). */
+  classification?: DataClassification;
 }
 
 /**
@@ -166,6 +169,13 @@ export interface AnalysisResult {
   skipped: { symbol: string; reason: string }[];
   /** Which provider served the candles (`kind: "rest"` — historical aggregates). */
   dataSource: MarketDataSource;
+  /**
+   * Freshness classification common to every evaluated cell — "delayed" when
+   * the serving feed reported a delayed/EOD entitlement, "historical" for pure
+   * archival data. Absent only when cells disagree (multi-provider routing) —
+   * per-cell `classification` is the ground truth then.
+   */
+  dataClassification?: DataClassification;
   /** Engine/scanner version stamps — results comparable only within them. */
   versions: { methodVersion: string; paramsVersion: string; configVersion: string };
 }

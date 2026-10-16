@@ -325,6 +325,63 @@ describe("route — HTTP/status mapping and secrecy", () => {
   });
 });
 
+describe("M1 — classification propagation + sufficiency verdict", () => {
+  it("provider-reported classification propagates; absent defaults to historical", async () => {
+    const candles = Array.from({ length: 20 }, (_, i) => ({
+      time: i * 60_000, open: 1, high: 2, low: 0.5, close: 1.5,
+    }));
+    const delayed: ProviderResponse = {
+      ok: true,
+      result: {
+        candles,
+        quality: { ...QUALITY, barCount: candles.length },
+        source: SOURCE,
+        classification: "delayed",
+      },
+    };
+    const res = await executeCandles(
+      { symbol: "AAPL", timeframe: "4h", bars: 20 },
+      { provider: new FakeProvider(delayed), nowMs: NOW },
+    );
+    expect(res.classification).toBe("delayed");
+
+    const plain = await executeCandles(
+      { symbol: "AAPL", timeframe: "4h", bars: 20 },
+      { provider: new FakeProvider(okWith(candles)), nowMs: NOW },
+    );
+    expect(plain.classification).toBe("historical"); // provider said nothing → floor
+  });
+
+  it("success never upgrades a sparse window — sufficiency is stamped from evidence", async () => {
+    const sparse = okWith([{ time: 1000, open: 1, high: 2, low: 0.5, close: 1.5 }]); // 1 bar
+    const res = await executeCandles(
+      { symbol: "AAPL", timeframe: "4h", bars: 50 },
+      { provider: new FakeProvider(sparse), nowMs: NOW },
+    );
+    expect(res.sufficiency).toBe("insufficient"); // 200-level response, honest verdict
+    expect(res.candleCount).toBe(1);
+
+    const empty = await executeCandles(
+      { symbol: "AAPL", timeframe: "4h", bars: 50 },
+      { provider: new FakeProvider(emptyOk), nowMs: NOW },
+    );
+    expect(empty.sufficiency).toBe("empty"); // zero candles ≠ insufficient
+
+    const full = await executeCandles(
+      { symbol: "AAPL", timeframe: "4h", bars: 50 },
+      {
+        provider: new FakeProvider(
+          okWith(Array.from({ length: 30 }, (_, i) => ({
+            time: i * 60_000, open: 1, high: 2, low: 0.5, close: 1.5,
+          }))),
+        ),
+        nowMs: NOW,
+      },
+    );
+    expect(full.sufficiency).toBe("ok");
+  });
+});
+
 describe("fetchCandles — client seam", () => {
   afterEach(() => vi.unstubAllGlobals());
 

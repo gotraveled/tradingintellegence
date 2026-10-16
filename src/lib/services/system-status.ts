@@ -1,14 +1,69 @@
 import {
+  configuredCapabilities,
   getLastProviderConnectivity,
   isProviderConfigured,
 } from "@/lib/market-data/providers";
-import type { ConnectionStatus } from "@/lib/types";
+import { CANONICAL_TIMEFRAMES } from "@/lib/market-data/providers/capabilities";
+import type {
+  CapabilityConfidence,
+  DisplayRights,
+} from "@/lib/market-data/providers/capabilities";
+import type { ConnectionStatus, DataClassification, Timeframe } from "@/lib/types";
+
+/** Declared capability facts the UI renders verbatim — never probed, never implied. */
+export interface MarketDataAvailability {
+  /** Union of entitled timeframes across configured providers, canonical order. */
+  timeframes: readonly Timeframe[];
+  /** Freshness of the configured feeds — "delayed" dominates "historical". */
+  classification?: DataClassification;
+  /** The weakest confidence across rows — one inferred row makes the set inferred. */
+  confidence?: CapabilityConfidence;
+  /** Weakest display-rights state across rows (unknown dominates authorized). */
+  displayRights?: DisplayRights;
+  /** The providers' own capability notes, joined. */
+  note?: string;
+}
 
 export interface ServiceStatus {
   id: string;
   name: string;
   description: string;
   status: ConnectionStatus;
+  /** Declared capability row — present on the market-data entry only. */
+  dataAvailability?: MarketDataAvailability;
+}
+
+/** Merge declared capability rows into one UI-safe summary. */
+function declaredAvailability(): MarketDataAvailability | undefined {
+  const caps = configuredCapabilities();
+  if (caps.length === 0) return undefined;
+  const timeframes = CANONICAL_TIMEFRAMES.filter((tf) =>
+    caps.some((cap) => cap.entitledTimeframes.includes(tf)),
+  );
+  const classes = new Set(caps.map((cap) => cap.classification));
+  const classification: DataClassification = classes.has("delayed")
+    ? "delayed"
+    : classes.has("live")
+      ? "live"
+      : "historical";
+  const confidence: CapabilityConfidence = caps.some((cap) => cap.confidence === "inferred")
+    ? "inferred"
+    : caps.some((cap) => cap.confidence === "declared")
+      ? "declared"
+      : "verified";
+  const displayRights: DisplayRights = caps.some((cap) => cap.displayRights === "not_authorized")
+    ? "not_authorized"
+    : caps.some((cap) => cap.displayRights === "unknown")
+      ? "unknown"
+      : "authorized";
+  const notes = caps.map((cap) => cap.note).filter(Boolean);
+  return {
+    timeframes,
+    classification,
+    confidence,
+    displayRights,
+    ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
+  };
 }
 
 /**
@@ -40,13 +95,19 @@ export function getSystemStatus(): ServiceStatus[] {
         ? "connected"
         : "degraded";
 
+  const availability = declaredAvailability();
+  const entitlementNote =
+    availability?.confidence === "inferred"
+      ? " Entitlement is inferred (POLYGON_PLAN unset) — the account tier has not been verified."
+      : "";
+
   const marketDataDescription = !configured
     ? "Historical candles — no market-data provider is configured."
     : observed === undefined
-      ? "Historical candle aggregates — provider configured; connectivity is verified by the first real request."
+      ? `Historical candle aggregates — provider configured; connectivity is verified by the first real request.${entitlementNote}`
       : observed.ok
-        ? "Historical candle aggregates via the configured REST provider — last request answered."
-        : "Historical candle aggregates — the last provider request failed; the provider may be temporarily unavailable.";
+        ? `Historical candle aggregates via the configured REST provider — last request answered.${entitlementNote}`
+        : `Historical candle aggregates — the last provider request failed; the provider may be temporarily unavailable.${entitlementNote}`;
 
   // The engine is in-process: wired and functional, but every run needs a configured
   // provider — when credentials are absent it degrades rather than pretending to be
@@ -62,6 +123,7 @@ export function getSystemStatus(): ServiceStatus[] {
       name: "Market data",
       description: marketDataDescription,
       status: marketDataStatus,
+      ...(availability !== undefined ? { dataAvailability: availability } : {}),
     },
     {
       id: "live-quotes",

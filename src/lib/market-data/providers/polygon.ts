@@ -14,6 +14,10 @@
  *   a hard page bound and timestamp dedup at page boundaries.
  * - NSE / `indian-markets` assets are unsupported (no coverage): `supports()` → false and
  *   `getCandles` → `unsupported_symbol`. Nothing is fabricated.
+ * - Polygon reports entitlement delay via the aggregate `status` field (`DELAYED`
+ *   on EOD/delayed plans, `OK` otherwise — observed 2026-10-16 smoke test). The
+ *   provider stamps `classification: "delayed"` on evidence, `"historical"`
+ *   otherwise; the capability row's declared class is the router's fallback.
  */
 import type {
   AssetIdentifier,
@@ -189,6 +193,7 @@ export class PolygonProvider implements HistoricalDataProvider {
     const seen = new Set<number>(); // page-boundary dedup — stitches, never data repair.
     let next: string | undefined = url;
     let pages = 0;
+    let delayedStatus = false; // vendor-reported DELAYED — the classification evidence.
 
     while (next !== undefined) {
       if (pages >= MAX_PAGES) {
@@ -199,6 +204,7 @@ export class PolygonProvider implements HistoricalDataProvider {
       const page = await this.fetchPage(next, ticker, request);
       if (!page.ok) return { ok: false, error: page.error };
       const body = page.body;
+      if (body.status === "DELAYED") delayedStatus = true;
 
       if (body.results === undefined) {
         if (body.status === "NOT_FOUND" || body.status === "ERROR") {
@@ -240,6 +246,9 @@ export class PolygonProvider implements HistoricalDataProvider {
         candles,
         quality,
         source: this.source,
+        // DELAYED is Polygon's own report of entitlement delay; absent → the
+        // aggregate is ordinary historical data. A REST read is never "live".
+        classification: delayedStatus ? "delayed" : "historical",
         warnings: [
           ...normalized.rejected.map((r) => `row ${r.index}: ${r.reason}`),
           `ticker:${ticker}`, // record the served pair — e.g. X:BTCUSD for BTCUSDT.

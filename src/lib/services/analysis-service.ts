@@ -31,6 +31,7 @@ import type {
 } from "@/lib/types";
 import { defaultConfig } from "./engine-defaults";
 import { defaultUniverse, type BacktestSkip } from "./backtest-service";
+import { assessDataSufficiency } from "./data-sufficiency";
 import { ServiceUnavailableError } from "./types";
 
 const DAY_MS = 86_400_000;
@@ -121,9 +122,18 @@ async function buildCells(
       skipped.push({ symbol: asset.symbol, reason: response.error.message });
       continue;
     }
-    const { candles, quality } = response.result;
+    const { candles, quality, classification } = response.result;
     if (candles.length === 0) {
       skipped.push({ symbol: asset.symbol, reason: "provider returned no candles" });
+      continue;
+    }
+    // A sparse fragment must never produce a successful-looking analysis cell —
+    // sparse responses are skipped with an honest reason (M1 sufficiency rule).
+    if (assessDataSufficiency({ candles, quality }) === "insufficient") {
+      skipped.push({
+        symbol: asset.symbol,
+        reason: `insufficient data — ${candles.length} bars returned for the requested window`,
+      });
       continue;
     }
     // Anchor = last CLOSED bar at asOf — an open bar's contents are not yet knowable.
@@ -154,6 +164,7 @@ async function buildCells(
       evaluatedAt: candles[asOfIdx].time,
       asset,
       quality,
+      ...(classification !== undefined ? { classification } : {}),
     });
   }
   return { cells, anchors, skipped };
@@ -250,9 +261,15 @@ export async function executeAnalysis(
   };
 
   const data = res.data;
+  const cellRows = [...anchors.values()].sort((a, b) => a.symbol.localeCompare(b.symbol));
+  // A single value only when every evaluated cell agrees — mixed multi-provider
+  // answers leave it absent and per-cell classification is the ground truth.
+  const classes = new Set(cellRows.map((c) => c.classification ?? "historical"));
+  const dataClassification = classes.size === 1 ? [...classes][0] : undefined;
   return {
     asOf: new Date(asOfMs).toISOString(),
-    cells: [...anchors.values()].sort((a, b) => a.symbol.localeCompare(b.symbol)),
+    cells: cellRows,
+    ...(dataClassification !== undefined ? { dataClassification } : {}),
     opportunities: data.opportunities
       .map(atAnchor)
       .filter((r): r is NonNullable<typeof r> => r !== undefined),

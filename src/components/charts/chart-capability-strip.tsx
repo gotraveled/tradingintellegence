@@ -12,10 +12,19 @@ import type { ServiceStatus } from "@/lib/services/system-status";
  *   about whether a specific instrument has data (that's the per-request
  *   `skipped`/empty-state contract).
  * - Live quotes are a separate service — their absence is shown, not hidden.
+ * - `dataAvailability` is the DECLARED capability row: entitled timeframes,
+ *   classification (delayed/historical — never "live"), and whether that
+ *   entitlement is verified or merely inferred.
  */
+const CLASSIFICATION_LABEL: Record<string, string> = {
+  historical: "Historical",
+  delayed: "Delayed",
+};
+
 export function ChartCapabilityStrip({ services }: { services: ServiceStatus[] }) {
   const marketData = services.find((service) => service.id === "market-data");
   const liveQuotes = services.find((service) => service.id === "live-quotes");
+  const availability = marketData?.dataAvailability;
 
   return (
     <dl
@@ -27,6 +36,12 @@ export function ChartCapabilityStrip({ services }: { services: ServiceStatus[] }
           <dt className="text-subtle-foreground">Market data</dt>
           <dd className="flex items-center gap-2">
             <ConnectionBadge status={marketData.status} />
+            {availability?.classification !== undefined ? (
+              <span className="rounded border border-border px-1 py-px text-[10px] font-medium text-muted-foreground">
+                {CLASSIFICATION_LABEL[availability.classification] ?? availability.classification}
+                {availability.confidence === "inferred" ? " · unverified plan" : ""}
+              </span>
+            ) : null}
             <span className="hidden text-subtle-foreground md:inline" title={marketData.description}>
               {marketData.description}
             </span>
@@ -42,7 +57,9 @@ export function ChartCapabilityStrip({ services }: { services: ServiceStatus[] }
         </div>
       ) : null}
       <dd className="ml-auto text-subtle-foreground">
-        Candles and analysis are historical aggregates — never live quotes.
+        {availability !== undefined
+          ? `Declared coverage: ${availability.timeframes.join(" · ")}${availability.displayRights === "unknown" ? " · display rights unverified" : ""}`
+          : "Candles and analysis are historical aggregates — never live quotes."}
       </dd>
     </dl>
   );

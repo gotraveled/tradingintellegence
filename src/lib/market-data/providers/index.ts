@@ -9,10 +9,25 @@
  */
 import type { HistoricalDataProvider } from "../provider";
 import type { MarketDataErrorCode } from "@/lib/types";
+import {
+  POLYGON_PLAN_ENV,
+  polygonCapability,
+  resolvePolygonPlan,
+  type ProviderCapability,
+} from "./capabilities";
 import { PolygonProvider } from "./polygon";
+import { ProviderRouter } from "./router";
 import { recordProviderConnectivity } from "./health";
 
-export { getLastProviderConnectivity, clearProviderConnectivity } from "./health";
+export {
+  getLastProviderConnectivity,
+  getProviderConnectivity,
+  clearProviderConnectivity,
+} from "./health";
+export { POLYGON_PLAN_ENV } from "./capabilities";
+export type { ProviderCapability } from "./capabilities";
+export { ProviderRouter } from "./router";
+export type { RoutedProvider } from "./router";
 
 export const MARKET_DATA_KEY_ENV = "POLYGON_API_KEY";
 export const MARKET_DATA_BASE_URL_ENV = "MARKET_DATA_BASE_URL";
@@ -65,10 +80,14 @@ export function observeProviderHealth(inner: HistoricalDataProvider): Historical
     getCandles: async (request) => {
       try {
         const res = await inner.getCandles(request);
-        recordProviderConnectivity(res.ok || NON_CONNECTIVITY_CODES.has(res.error.code));
+        recordProviderConnectivity(
+          res.ok || NON_CONNECTIVITY_CODES.has(res.error.code),
+          Date.now(),
+          inner.source.id,
+        );
         return res;
       } catch (err) {
-        recordProviderConnectivity(false);
+        recordProviderConnectivity(false, Date.now(), inner.source.id);
         throw err;
       }
     },
@@ -86,10 +105,35 @@ export function createConfiguredProvider(): HistoricalDataProvider | undefined {
   if (configuredProvider !== undefined) return configuredProvider;
   const apiKey = process.env[MARKET_DATA_KEY_ENV];
   if (!apiKey) return undefined;
-  return observeProviderHealth(
-    new PolygonProvider({
-      apiKey,
-      baseUrl: process.env[MARKET_DATA_BASE_URL_ENV],
-    }),
-  );
+  // Env-built deployment: Polygon behind the capability router. The capability
+  // row is the declared entitlement (POLYGON_PLAN; inferred Basic when unset) —
+  // it gates timeframe/window classes before any vendor traffic.
+  const { plan, confidence } = resolvePolygonPlan(process.env[POLYGON_PLAN_ENV]);
+  return new ProviderRouter([
+    {
+      provider: observeProviderHealth(
+        new PolygonProvider({
+          apiKey,
+          baseUrl: process.env[MARKET_DATA_BASE_URL_ENV],
+        }),
+      ),
+      capability: polygonCapability(plan, confidence),
+    },
+  ]);
+}
+
+/**
+ * The capability rows the CURRENT configuration would serve under — the status/UI
+ * surface for entitlement facts (timeframes, classification, display rights,
+ * confidence). An explicitly-registered registry provider (tests/bootstrap) has
+ * no declared row: capabilities() then reports an empty set rather than inventing
+ * coverage for a provider we know nothing about.
+ */
+export function configuredCapabilities(): readonly ProviderCapability[] {
+  if (configuredProvider !== undefined) {
+    return configuredProvider instanceof ProviderRouter ? configuredProvider.capabilities() : [];
+  }
+  if (!process.env[MARKET_DATA_KEY_ENV]) return [];
+  const { plan, confidence } = resolvePolygonPlan(process.env[POLYGON_PLAN_ENV]);
+  return [polygonCapability(plan, confidence)];
 }
