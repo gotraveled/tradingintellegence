@@ -35,6 +35,8 @@ import type {
   Timeframe,
   UnixMs,
 } from "@/lib/types";
+import { nseRegular } from "@/lib/market-data/calendars/nse";
+import { assessDataFreshness } from "./data-freshness";
 import { assessDataSufficiency } from "./data-sufficiency";
 
 const DAY_MS = 86_400_000;
@@ -206,7 +208,25 @@ export async function executeCandles(
     // router's declared capability floor — never upgraded by request success.
     classification: response.result.classification ?? "historical",
     // zero candles is a valid empty window — never sufficiency by implication.
-    sufficiency: assessDataSufficiency({ candles, quality }),
+    // The floor compares against what was asked: a bounded bars:N request or
+    // the window's own expected count — never a universal minimum.
+    sufficiency: assessDataSufficiency({
+      candles,
+      quality,
+      requestedBars: request.bars ?? quality.expectedBarCount,
+    }),
+    // Session-aware staleness: last-bar time on the market's own clock —
+    // weekends and exchange holidays count as closed, never as missing data.
+    freshness: assessDataFreshness({
+      candles,
+      timeframe,
+      // indian-markets gets the real NSE calendar (IST session + holidays);
+      // other segments keep the coarse weekday/always-open defaults.
+      calendar:
+        asset.marketId === "indian-markets" ? nseRegular() : undefined,
+      is24x7: asset.assetClass === "crypto",
+      nowMs,
+    }),
     retrievedAt: new Date(nowMs).toISOString(),
     ...(servedTicker !== undefined ? { servedTicker } : {}),
     warnings: warnings ?? [],

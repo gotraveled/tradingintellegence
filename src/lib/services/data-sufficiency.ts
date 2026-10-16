@@ -28,15 +28,27 @@ export const DATA_MIN_COVERAGE_PCT = 50;
 export interface DataSufficiencyInput {
   candles: readonly Candle[];
   quality: DataQualityReport;
+  /**
+   * How many bars the caller actually asked for (or the window's expected
+   * count where determinable). When the request itself is smaller than
+   * DATA_MIN_BARS, satisfying it is `ok` — the floor compares against the
+   * request, never against a universal minimum that punishes small windows.
+   */
+  requestedBars?: number;
 }
 
 export function assessDataSufficiency(input: DataSufficiencyInput): DataSufficiency {
-  const { candles, quality } = input;
+  const { candles, quality, requestedBars } = input;
   if (candles.length === 0) return "empty";
   if (quality.status === "invalid") return "insufficient";
   if (quality.coveragePct !== undefined && quality.coveragePct < DATA_MIN_COVERAGE_PCT) {
     return "insufficient";
   }
-  if (candles.length < DATA_MIN_BARS) return "insufficient";
+  // The floor is the smaller of the absolute minimum and the request — a
+  // 5-bar ask filled with 5 bars is complete; a 300-bar ask filled with 9 is
+  // a fragment. Provider-limited history (window truncated before start) still
+  // fails the floor when the request wanted more than the market produced.
+  const floor = Math.min(DATA_MIN_BARS, requestedBars ?? DATA_MIN_BARS);
+  if (candles.length < floor) return "insufficient";
   return "ok";
 }

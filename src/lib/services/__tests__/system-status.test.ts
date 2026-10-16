@@ -225,6 +225,24 @@ describe("getSystemStatus", () => {
     expect(service("market-data").dataAvailability).toBeUndefined();
   });
 
+  it("serving scope + display verdict ride the status entry — honest, never hidden", () => {
+    process.env[MARKET_DATA_KEY_ENV] = "TEST-KEY-NOT-REAL";
+    const md = service("market-data");
+    // Under the test env the scope is internal → unknown rights do not block.
+    expect(md.dataAvailability?.serving).toBe("internal");
+    expect(md.dataAvailability?.displayAllowed).toBe(true);
+    // An explicit public scope flips the verdict — the gate's own answer.
+    process.env.MARKET_DATA_SERVING = "public";
+    try {
+      const pub = service("market-data");
+      expect(pub.dataAvailability?.serving).toBe("public");
+      expect(pub.dataAvailability?.displayAllowed).toBe(false); // polygon row is unknown
+      expect(pub.description).toMatch(/not authorized/i);
+    } finally {
+      delete process.env.MARKET_DATA_SERVING;
+    }
+  });
+
   it("declared POLYGON_PLAN widens the surfaced entitlement set", () => {
     process.env[MARKET_DATA_KEY_ENV] = "TEST-KEY-NOT-REAL";
     process.env.POLYGON_PLAN = "starter";

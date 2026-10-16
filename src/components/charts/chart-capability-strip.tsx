@@ -58,7 +58,7 @@ export function ChartCapabilityStrip({ services }: { services: ServiceStatus[] }
       ) : null}
       <dd className="ml-auto text-subtle-foreground">
         {availability !== undefined
-          ? `Declared coverage: ${availability.timeframes.join(" · ")}${availability.displayRights === "unknown" ? " · display rights unverified" : ""}`
+          ? `Declared coverage: ${availability.timeframes.join(" · ")}${availability.displayAllowed ? "" : " · public display blocked (rights not established)"}`
           : "Candles and analysis are historical aggregates — never live quotes."}
       </dd>
     </dl>

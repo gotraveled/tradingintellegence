@@ -78,9 +78,12 @@ export interface ProviderCapability {
   classification: DataClassification;
   confidence: CapabilityConfidence;
   /**
-   * Commercial display status. DECLARED ONLY in M1 — surfaced in status so the
-   * licensing state is visible; it becomes a serving gate when a provider whose
-   * terms distinguish display rights exists (Phase M3, India).
+   * Commercial display status — ENFORCED (Phase M2). Under a public serving
+   * scope only `authorized` rows may serve; `unknown` and `not_authorized`
+   * fail closed with `display_not_authorized` (see `providers/serving.ts`).
+   * Setting `authorized` requires documentary evidence (a written vendor or
+   * exchange agreement covering commercial display on this surface) recorded
+   * in `note` — a paid plan or working key is never sufficient basis.
    */
   displayRights: DisplayRights;
   /** Short human-readable note — where the row came from. */

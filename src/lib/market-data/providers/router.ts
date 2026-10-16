@@ -20,13 +20,15 @@
  * codes at getCandles time — a 422 `unsupported_timeframe` never collapses
  * into `unsupported_symbol`.
  *
- * `displayRights` is intentionally NOT a serving gate in M1 — Polygon's
- * redistribution status is `unknown` and gating on it would zero the product.
- * It rides the row into `getSystemStatus()` and becomes authoritative for the
- * India provider in Phase M3.
+ * `displayRights` IS enforced here (Phase M2, design §3.10): under a
+ * `public` serving scope a row must be `authorized` before any vendor data
+ * reaches a response; `unknown`/`not_authorized` fail closed with
+ * `display_not_authorized`. Under `internal` scope (dev/test) the row does
+ * not block — capability gates (markets/timeframes/history) still apply.
  */
 import type { MarketDataRequest, MarketDataSource } from "@/lib/types";
 import type { ProviderCapability } from "./capabilities";
+import { displayBlock, servingScope, type ServingScope } from "./serving";
 import { providerError, type HistoricalDataProvider, type ProviderResponse } from "../provider";
 
 const DAY_MS = 86_400_000;
@@ -47,9 +49,11 @@ function marketCovered(entry: RoutedProvider, request: MarketDataRequest): boole
 
 export class ProviderRouter implements HistoricalDataProvider {
   private readonly entries: RoutedProvider[];
+  private readonly scope: ServingScope;
 
-  constructor(entries: RoutedProvider[]) {
+  constructor(entries: RoutedProvider[], scope: ServingScope = servingScope()) {
     this.entries = entries;
+    this.scope = scope;
   }
 
   get source(): MarketDataSource {
@@ -95,6 +99,12 @@ export class ProviderRouter implements HistoricalDataProvider {
     const serving =
       candidates.find((entry) => entry.provider.supports(request)) ?? candidates[0];
     const { capability } = serving;
+
+    // Licensing first (Phase M2): no vendor data reaches a public response
+    // without authorized display rights — fail closed, before any traffic.
+    const rightsBlock = displayBlock(capability, this.scope);
+    if (rightsBlock) return rightsBlock;
+
     const confidenceNote =
       capability.confidence === "inferred"
         ? ` (entitlement inferred — ${serving.provider.source.id} plan not declared; capability may be narrower than the account)`

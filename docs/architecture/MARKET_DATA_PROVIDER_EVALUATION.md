@@ -1,5 +1,37 @@
 # Market Data Provider Evaluation
 
+## M3 decision record (2026-10-16) — India provider: BLOCKED on rights
+
+**Decision: no India provider is integrated into public serving.** Verified
+against current published terms; technical feasibility is not in question —
+licensing is:
+
+| Candidate | NSE equities + indices | Historical (EOD + intraday) | Public-display terms (published) |
+|---|---|---|---|
+| **TrueData** (NSE/BSE/MCX authorized vendor) | Yes — all segments, REST + WebSocket | Yes — EOD + tick/minute history | *Not granted by the API product.* Terms: "licensed solely for Personal / Proprietary Algo Trading, Charting, and Analysis use of a single Subscriber"; "redistribution, commercial display, enterprise-wide access, or third-party use requires the requisite approval and/or licensing from the respective stock exchange(s)". A redistribution path exists — requires written approval from the exchanges *and* TrueData. |
+| **GDFL** (NSE-authorized L1 vendor) | Yes | Yes | *"APIs available here are only for Individual Users for Personal Use. For Commercial Use, you will need to sign agreement with respective Exchanges and pay them the requisite fees."* |
+| **Broker APIs** (Dhan / Upstox / Kite) | Yes | Yes | Personal-use or unpublished terms; Kite Connect explicitly prohibits public display. None establish redistribution rights. |
+| **NSE Data & Analytics direct** | Yes (L1/L2/L3, tick) | Via authorized feed | The licensing authority itself — a `Relevant Agreement` under the NSE Data Usage & Sharing Policy is required for any commercial display. |
+
+**Evidence needed to proceed (any one):**
+1. Executed `Relevant Agreement` with NSE Data & Analytics covering commercial
+   display/redistribution on this product surface, **or**
+2. Written redistribution/display approval from TrueData or GDFL referencing
+   the underlying exchange authorization, **or**
+3. A broker-API agreement whose terms explicitly permit the deployed use
+   (none currently publish such terms for public display).
+
+Until one exists, `indian-markets` stays without a capability row: `NIFTY 50`
+and NSE equities return `unsupported_symbol` — honest absence, never a
+rights-skirting fragment. The `nseRegular` session calendar (Step 3 of M3)
+is in place so a licensed adapter slots in behind `HistoricalDataProvider`
+without contract changes. A personal/internal-scope deployment could lawfully
+use TrueData/GDFL *internal-use* APIs where their terms allow it — that is a
+deployment decision for the operator, not an integration committed here.
+
+---
+
+
 Status: evaluation record — sources checked **2026-10-16**.
 Method: official docs/pricing pages and first-party policy pages where found;
 third-party reviews marked as such. Pricing and licensing change — re-verify

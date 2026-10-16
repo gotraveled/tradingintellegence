@@ -54,10 +54,25 @@ Polygon construction.
 
 ## Phase M3 — India provider adapter (licensing-gated)
 
+**Status 2026-10-16 — licensing-blocked, calendar landed.** Published terms
+verification (see PROVIDER_EVALUATION decision record): TrueData and GDFL APIs
+are personal/internal-use only; public display requires a signed exchange
+agreement. No `indian-markets` capability row ships — NIFTY 50 stays
+`unsupported_symbol`, which is the honest state. The M3 precondition stands.
+
+**Landed in M3 (infrastructure, not an integration):** `exchangeCalendar()`
+contract in `sessions.ts` (fixed-offset exchange timezone, session window,
+versioned holiday table, `covers()` coverage predicate, honest `expectedBars`
+for session-tiling intervals) and `calendars/nse.ts` (`nseRegular()`, the
+official 2026 trading-holiday circular, coverage window, Muhurat special
+session recorded but closed). `data-freshness` accepts an explicit calendar
+and declines spans the holiday table cannot verify — a declaration gap is
+`sessionAware:false`, never a guessed stale flag.
+
 **Precondition (blocking):** a written entitlement — NSE-authorized vendor
 agreement (TrueData/GDFL/etc.) or confirmed internal-only broker-API scope.
-**Without it, `entitledForPublicDisplay: false` stays and the adapter serves
-nothing publicly.**
+**Without it, `displayRights` stays un-`authorized` and the adapter serves
+nothing publicly** (enforced by `serving.ts`, not by convention).
 
 | Change | File |
 |---|---|

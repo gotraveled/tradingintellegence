@@ -75,6 +75,41 @@ describe("assessDataSufficiency", () => {
     ).toBe("ok");
   });
 
+  it("requestedBars lowers the floor — a filled small request is complete", () => {
+    const candles = bars(5);
+    // Without the request context, 5 < MIN_BARS looks sparse…
+    expect(
+      assessDataSufficiency({ candles, quality: quality({ barCount: 5 }) }),
+    ).toBe("insufficient");
+    // …but if the caller asked for exactly 5, the window is satisfied.
+    expect(
+      assessDataSufficiency({
+        candles,
+        quality: quality({ barCount: 5 }),
+        requestedBars: 5,
+      }),
+    ).toBe("ok");
+    // An under-filled small request is still insufficient.
+    expect(
+      assessDataSufficiency({
+        candles: bars(3),
+        quality: quality({ barCount: 3 }),
+        requestedBars: 5,
+      }),
+    ).toBe("insufficient");
+  });
+
+  it("provider-limited history is not excused — floor follows the ask, not the yield", () => {
+    // Asked for 300 daily bars; the market only produced 9 (IPO/short history).
+    expect(
+      assessDataSufficiency({
+        candles: bars(9),
+        quality: quality({ barCount: 9 }),
+        requestedBars: 300,
+      }),
+    ).toBe("insufficient");
+  });
+
   it("adequate bars with warnings stays ok — gaps are quality facts, not sufficiency", () => {
     const candles = bars(40);
     expect(

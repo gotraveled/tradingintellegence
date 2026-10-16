@@ -26,9 +26,11 @@ import type {
   AnalysisResult,
   AssetIdentifier,
   BacktestCell,
+  CandleSeries,
   EngineConfig,
   Timeframe,
 } from "@/lib/types";
+import type { FrameRole } from "@/lib/engines/mtf";
 import { defaultConfig } from "./engine-defaults";
 import { defaultUniverse, type BacktestSkip } from "./backtest-service";
 import { assessDataSufficiency } from "./data-sufficiency";
@@ -52,6 +54,18 @@ export interface AnalysisCompositionDeps {
   run?: typeof runBacktest;
   /** Injectable clock — request-time asOf resolution stays deterministic in tests. */
   nowMs?: number;
+  /**
+   * Spec-31 opt-in: resolves auxiliary MTF frame series for a cell. Called once
+   * per built cell; `undefined` leaves `BacktestCell.frames` unset — baseline
+   * behavior is preserved bit-for-bit. Callers (e.g. multi-file uploaded
+   * datasets) must also set `config.mtf.set` so each role's configured
+   * timeframe matches the frame's declared timeframe — the engine verifies
+   * this and skips mismatched frames with a diagnostic.
+   */
+  frames?: (
+    asset: AssetIdentifier,
+    timeframe: Timeframe,
+  ) => Partial<Record<FrameRole, CandleSeries>> | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -99,6 +113,7 @@ async function buildCells(
   timeframe: Timeframe,
   windowMs: { start: number; end: number },
   provider: HistoricalDataProvider,
+  frames?: AnalysisCompositionDeps["frames"],
 ): Promise<{
   cells: BacktestCell[];
   anchors: Map<string, AnalysisCell>;
@@ -145,6 +160,7 @@ async function buildCells(
       });
       continue;
     }
+    const framesForCell = frames?.(asset, timeframe);
     cells.push({
       symbol: asset.symbol,
       timeframe,
@@ -155,6 +171,9 @@ async function buildCells(
         assetClass: asset.assetClass,
         exchange: asset.exchange,
       },
+      // Spec-31 transport: only set when the resolver supplies frames — absent
+      // is the documented bit-identical baseline (no join attempted).
+      ...(framesForCell !== undefined ? { frames: framesForCell } : {}),
     });
     anchors.set(asset.symbol, {
       symbol: asset.symbol,
@@ -219,6 +238,7 @@ export async function executeAnalysis(
     request.timeframe,
     windowMs,
     deps.provider,
+    deps.frames,
   );
   if (cells.length === 0) {
     throw new ServiceUnavailableError(
@@ -279,5 +299,11 @@ export async function executeAnalysis(
     skipped,
     dataSource: deps.provider.source,
     versions: data.versions,
+    // Engine-side diagnostics verbatim — includes `mtfFramesSkipped`, the
+    // spec-31 count of supplied frames that failed contract validation. Never
+    // hidden: a rejected frame is a reportable fact, not a silent default.
+    ...(res.meta.diagnostics !== undefined
+      ? { engineDiagnostics: res.meta.diagnostics }
+      : {}),
   };
 }

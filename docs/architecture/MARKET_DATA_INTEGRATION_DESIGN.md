@@ -150,13 +150,30 @@ vendor creds follow the same pattern (`INDIA_DATA_KEY`/`…_BASE_URL` envs).
 Provider error `message` is vendor-shaped but safe; `detail` never reaches the
 client today — keep it that way.
 
-### 3.10 Redistribution gating
+### 3.10 Redistribution gating — implemented (Phase M2)
 
-Until an exchange/vendor agreement exists for India display, gate at the
-**routing layer**: `entitledForPublicDisplay(providerId)` flag in the
-capability row. `indian-markets` rows ship `false` → `supports()` false →
-existing `unsupported_symbol` honesty + UI's "not yet supported" path.
-Licensing is enforced as data, not as a comment.
+The capability row carries `displayRights: authorized | not_authorized |
+unknown` (a 3-state rather than the original boolean — "we haven't verified"
+is itself an honest state). The **serving scope** contract in
+`providers/serving.ts` creates the production boundary the repo lacked:
+
+- `MARKET_DATA_SERVING` (`public`/`internal`, documented in `.env.example`) →
+  `NODE_ENV=production` defaults `public` → otherwise `internal`.
+- `ProviderRouter.getCandles` calls `displayBlock` before any vendor traffic:
+  public scope + non-`authorized` row → `display_not_authorized` (HTTP **451**).
+  Internal scope never blocks on rights; all other capability gates still
+  apply — a broker's personal-use API stays usable where its terms permit.
+- Because enforcement sits at the router, **every** consumer path — candles,
+  analysis, backtest, scanner — inherits it; there is no alternate route that
+  bypasses the capability row.
+
+**Evidence required to set `authorized`:** a written vendor/exchange
+agreement explicitly covering commercial display or redistribution on the
+deployed surface, referenced in the row's `note`. A paid subscription, a
+working API key, or successful responses are technical access only — none is
+display authorization. With no such agreement, Polygon's row stays `unknown`
+and a production deployment serves licensing-blocked states rather than
+provider data.
 
 ## 4. Non-goals
 

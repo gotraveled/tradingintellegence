@@ -255,6 +255,79 @@ describe("ProviderRouter — routing and capability gating", () => {
     expect(res).toMatchObject({ ok: false, error: { code: "rate_limited" } });
   });
 
+  it("public scope + unknown rights → display_not_authorized before any vendor traffic", async () => {
+    let called = 0;
+    const counting: HistoricalDataProvider = {
+      source: SOURCE_A,
+      supports: () => true,
+      getCandles: async () => {
+        called++;
+        return okResult(SOURCE_A);
+      },
+    };
+    const router = new ProviderRouter(
+      [{ provider: counting, capability: capFor("vendor-a", { displayRights: "unknown" }) }],
+      "public",
+    );
+    const res = await router.getCandles(REQ());
+    expect(called).toBe(0); // blocked at the router — no traffic, no data
+    expect(res).toMatchObject({ ok: false, error: { code: "display_not_authorized" } });
+  });
+
+  it("public scope + not_authorized → same fail-closed code", async () => {
+    const router = new ProviderRouter(
+      [
+        {
+          provider: new FakeVendor(SOURCE_A, anyAsset, okResult(SOURCE_A)),
+          capability: capFor("vendor-a", { displayRights: "not_authorized" }),
+        },
+      ],
+      "public",
+    );
+    expect((await router.getCandles(REQ())).ok).toBe(false);
+  });
+
+  it("public scope + authorized → serves; internal scope never blocks on rights", async () => {
+    const authorized = new ProviderRouter(
+      [
+        {
+          provider: new FakeVendor(SOURCE_A, anyAsset, okResult(SOURCE_A)),
+          capability: capFor("vendor-a", { displayRights: "authorized" }),
+        },
+      ],
+      "public",
+    );
+    expect((await authorized.getCandles(REQ())).ok).toBe(true);
+
+    const internal = new ProviderRouter(
+      [
+        {
+          provider: new FakeVendor(SOURCE_A, anyAsset, okResult(SOURCE_A)),
+          capability: capFor("vendor-a", { displayRights: "not_authorized" }),
+        },
+      ],
+      "internal",
+    );
+    expect((await internal.getCandles(REQ())).ok).toBe(true); // dev/test reads unaffected
+  });
+
+  it("rights gate precedes timeframe errors — licensing is the primary fact", async () => {
+    const router = new ProviderRouter(
+      [
+        {
+          provider: new FakeVendor(SOURCE_A, anyAsset, okResult(SOURCE_A)),
+          capability: capFor("vendor-a", {
+            displayRights: "unknown",
+            entitledTimeframes: ["1D"],
+          }),
+        },
+      ],
+      "public",
+    );
+    const res = await router.getCandles(REQ({ timeframe: "4h" }));
+    expect(res).toMatchObject({ ok: false, error: { code: "display_not_authorized" } });
+  });
+
   it("multi-provider routing picks the covering vendor and reports its source", async () => {
     const router = new ProviderRouter([
       {

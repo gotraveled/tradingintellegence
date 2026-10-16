@@ -70,6 +70,9 @@ type CandlesState =
    *  not a usable chart: distinct from both `empty` and `success`. */
   | { status: "insufficient"; result: CandlesResult }
   | { status: "unsupported"; message: string }
+  /** 451 display_not_authorized — data exists but public display is blocked;
+   *  distinct from "unsupported" (never produced) and "unconfigured". */
+  | { status: "restricted"; message: string }
   | { status: "unconfigured"; message: string }
   | { status: "error"; message: string };
 
@@ -78,6 +81,9 @@ function candlesFailure(error: unknown): CandlesState {
     return { status: "unconfigured", message: error.message };
   }
   if (error instanceof CandlesClientError) {
+    if (error.status === 451 || error.code === "display_not_authorized") {
+      return { status: "restricted", message: error.message };
+    }
     const unsupported =
       error.code === "unsupported_symbol" ||
       error.code === "unsupported_timeframe" ||
@@ -381,8 +387,10 @@ export function ChartWorkspace({
             >
               {candlesResult.classification === "delayed" ? "Delayed" : "Historical"} data ·{" "}
               {candlesResult.source.label} aggregates ·{" "}
-              {candlesResult.candleCount} bars · retrieved{" "}
-              {new Date(candlesResult.retrievedAt).toLocaleString()}
+              {candlesResult.candleCount} bars{candlesResult.freshness?.lastBarTimestamp !== undefined
+                ? ` · last bar ${new Date(candlesResult.freshness.lastBarTimestamp).toISOString().slice(0, 16).replace("T", " ")} UTC`
+                : ""}
+              {candlesResult.freshness?.stale ? " — stale (bars missing during market-open intervals)" : ""}
               {candlesResult.quality.missingBarCount > 0
                 ? ` · ${candlesResult.quality.missingBarCount} intervals absent (includes expected session closures)`
                 : ""}
@@ -393,6 +401,16 @@ export function ChartWorkspace({
             <div className="space-y-3 p-4" aria-busy="true" aria-label="Loading candles">
               <Skeleton className="h-6 w-40" />
               <Skeleton className="h-72 w-full" />
+            </div>
+          ) : null}
+
+          {candlesState.status === "restricted" ? (
+            <div className="flex min-h-[340px] items-center justify-center p-4">
+              <EmptyState
+                icon={ShieldAlert}
+                title="Data display is restricted"
+                description={`${candlesState.message} Charts, analysis and scanner surfaces show this state — no provider data is rendered.`}
+              />
             </div>
           ) : null}
 

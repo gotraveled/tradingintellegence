@@ -28,6 +28,8 @@ export { POLYGON_PLAN_ENV } from "./capabilities";
 export type { ProviderCapability } from "./capabilities";
 export { ProviderRouter } from "./router";
 export type { RoutedProvider } from "./router";
+export { SERVING_SCOPE_ENV, servingScope, displayBlock } from "./serving";
+export type { ServingScope } from "./serving";
 
 export const MARKET_DATA_KEY_ENV = "POLYGON_API_KEY";
 export const MARKET_DATA_BASE_URL_ENV = "MARKET_DATA_BASE_URL";
@@ -67,6 +69,9 @@ const NON_CONNECTIVITY_CODES: ReadonlySet<MarketDataErrorCode> = new Set([
   "data_not_available",
   "invalid_data",
   "incomplete_data",
+  // Licensing fact — the router answered before any vendor traffic; it is a
+  // resolved configuration state, never a connectivity failure or a probe.
+  "display_not_authorized",
 ]);
 
 /**
@@ -109,6 +114,8 @@ export function createConfiguredProvider(): HistoricalDataProvider | undefined {
   // row is the declared entitlement (POLYGON_PLAN; inferred Basic when unset) —
   // it gates timeframe/window classes before any vendor traffic.
   const { plan, confidence } = resolvePolygonPlan(process.env[POLYGON_PLAN_ENV]);
+  // Serving scope resolves inside the router's constructor default —
+  // production fails closed on unverified display rights (Phase M2, §3.10).
   return new ProviderRouter([
     {
       provider: observeProviderHealth(

@@ -27,6 +27,8 @@ const ERROR_STATUS: Record<MarketDataErrorCode | "invalid_request", number> = {
   provider_error: 502,
   invalid_data: 502,
   incomplete_data: 502,
+  // 451 Unavailable For Legal Reasons — display rights not established.
+  display_not_authorized: 451,
 };
 
 function json(status: number, body: unknown): Response {

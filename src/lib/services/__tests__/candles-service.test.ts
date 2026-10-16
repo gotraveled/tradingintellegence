@@ -315,6 +315,14 @@ describe("route — HTTP/status mapping and secrecy", () => {
     expect(body.result.quality.status).toBe("valid");
   });
 
+  it("display_not_authorized maps to 451 — licensing facts are not server errors", async () => {
+    setConfiguredProvider(new FakeProvider(providerError("display_not_authorized", "rights blocked")));
+    const res = await post({ symbol: "AAPL", timeframe: "4h", bars: 10 });
+    expect(res.status).toBe(451);
+    const body = await res.json();
+    expect(body.error.code).toBe("display_not_authorized");
+  });
+
   it("response payloads never contain credentials or provider internals", async () => {
     setConfiguredProvider(new FakeProvider(okWith([{ time: 1, open: 1, high: 1, low: 1, close: 1 }])));
     const res = await post({ symbol: "AAPL", timeframe: "4h", bars: 10 });

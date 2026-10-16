@@ -12,14 +12,26 @@ const num = (v: unknown): number | undefined => {
   return undefined;
 };
 
-/** Accepts ms epoch, seconds epoch, or ISO-8601 — output is always bar-open ms, UTC. */
+/** Accepts ms epoch, seconds epoch, numeric-string epoch, or ISO-8601 — output
+ *  is always bar-open ms, UTC. */
 export function normalizeTimestamp(v: unknown): number | undefined {
   if (typeof v === "number" && Number.isFinite(v)) {
     // Heuristic: < 1e12 is seconds epoch, >= is ms. Documented, deterministic.
     return v < 1e12 ? Math.round(v * 1000) : Math.round(v);
   }
   if (typeof v === "string") {
-    const parsed = Date.parse(v);
+    const trimmed = v.trim();
+    // Numeric strings are the CSV/vendor epoch case: every cell is a string,
+    // so "1704067200" must take the numeric path, not Date.parse (which
+    // returns NaN for bare epoch digits). Guard: ≥1e9 means post-2001 epoch —
+    // below that, "2024"-style year strings keep their Date.parse behavior.
+    if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
+      const n = Number(trimmed);
+      if (Number.isFinite(n) && Math.abs(n) >= 1e9) {
+        return n < 1e12 ? Math.round(n * 1000) : Math.round(n);
+      }
+    }
+    const parsed = Date.parse(trimmed);
     return Number.isFinite(parsed) ? parsed : undefined;
   }
   return undefined;

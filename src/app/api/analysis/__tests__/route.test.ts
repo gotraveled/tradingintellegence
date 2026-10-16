@@ -5,7 +5,8 @@
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { POST } from "../route";
-import { setConfiguredProvider } from "@/lib/market-data/providers";
+import { ProviderRouter, setConfiguredProvider } from "@/lib/market-data/providers";
+import { CANONICAL_TIMEFRAMES } from "@/lib/market-data/providers/capabilities";
 import type { HistoricalDataProvider, ProviderResponse } from "@/lib/market-data/provider";
 import type { Candle, MarketDataRequest } from "@/lib/types";
 
@@ -159,6 +160,64 @@ describe("POST /api/analysis", () => {
     expect(res.status).toBe(503);
     const body = await res.json();
     expect(body.error.service).toBe("Market data provider");
+  });
+  it("public scope + unverified display rights → 503 with no provider data in the payload", async () => {
+    // The router enforces rights — any route consuming it inherits the gate.
+    const router = new ProviderRouter(
+      [
+        {
+          provider: new TestProvider(Array.from({ length: 120 }, (_, i) => flatBar(i))),
+          capability: {
+            providerId: "test",
+            markets: ["us-stocks", "crypto", "forex", "commodities", "indices"],
+            technicalTimeframes: CANONICAL_TIMEFRAMES,
+            entitledTimeframes: CANONICAL_TIMEFRAMES,
+            classification: "delayed",
+            confidence: "declared",
+            displayRights: "unknown", // not authorized → fail closed
+            note: "test row",
+          },
+        },
+      ],
+      "public",
+    );
+    setConfiguredProvider(router);
+    const res = await post(REQUEST);
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    const text = JSON.stringify(body);
+    // No result, no candle array, no bar fields, no opportunity records — the
+    // payload carries only the honest error, never provider data.
+    expect(body.result).toBeUndefined();
+    expect(text).not.toMatch(/"candles"\s*:\s*\[/);
+    expect(text).not.toContain('"open"');
+    expect(text).not.toMatch(/"cells"\s*:\s*\[\s*{/);
+    expect(text).not.toContain("1704");
+    expect(body.error.service).toBe("Market data provider");
+  });
+
+  it("internal scope still serves the same provider — the gate is scope-aware", async () => {
+    const router = new ProviderRouter(
+      [
+        {
+          provider: new TestProvider(Array.from({ length: 120 }, (_, i) => flatBar(i))),
+          capability: {
+            providerId: "test",
+            markets: ["us-stocks"],
+            technicalTimeframes: CANONICAL_TIMEFRAMES,
+            entitledTimeframes: CANONICAL_TIMEFRAMES,
+            classification: "delayed",
+            confidence: "declared",
+            displayRights: "unknown",
+            note: "test row",
+          },
+        },
+      ],
+      "internal",
+    );
+    setConfiguredProvider(router);
+    const res = await post(REQUEST);
+    expect(res.status).toBe(200);
   });
 
   it("never leaks the API key or provider internals into the response", async () => {

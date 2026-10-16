@@ -2,6 +2,8 @@ import {
   configuredCapabilities,
   getLastProviderConnectivity,
   isProviderConfigured,
+  servingScope,
+  type ServingScope,
 } from "@/lib/market-data/providers";
 import { CANONICAL_TIMEFRAMES } from "@/lib/market-data/providers/capabilities";
 import type {
@@ -20,6 +22,10 @@ export interface MarketDataAvailability {
   confidence?: CapabilityConfidence;
   /** Weakest display-rights state across rows (unknown dominates authorized). */
   displayRights?: DisplayRights;
+  /** The serving scope this process resolves to (public fails closed). */
+  serving: ServingScope;
+  /** Whether the current rows may serve under `serving` — false is enforced. */
+  displayAllowed: boolean;
   /** The providers' own capability notes, joined. */
   note?: string;
 }
@@ -57,11 +63,18 @@ function declaredAvailability(): MarketDataAvailability | undefined {
       ? "unknown"
       : "authorized";
   const notes = caps.map((cap) => cap.note).filter(Boolean);
+  const serving = servingScope();
+  // The actual gate verdict: public serving needs authorized rows; internal
+  // scope never blocks on rights (capability gates still apply there).
+  const displayAllowed =
+    serving === "internal" || displayRights === "authorized";
   return {
     timeframes,
     classification,
     confidence,
     displayRights,
+    serving,
+    displayAllowed,
     ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
   };
 }
@@ -100,14 +113,18 @@ export function getSystemStatus(): ServiceStatus[] {
     availability?.confidence === "inferred"
       ? " Entitlement is inferred (POLYGON_PLAN unset) — the account tier has not been verified."
       : "";
+  const rightsNote =
+    availability !== undefined && !availability.displayAllowed
+      ? " Public display is not authorized for the configured provider's data — responses are licensing-blocked."
+      : "";
 
   const marketDataDescription = !configured
     ? "Historical candles — no market-data provider is configured."
     : observed === undefined
-      ? `Historical candle aggregates — provider configured; connectivity is verified by the first real request.${entitlementNote}`
+      ? `Historical candle aggregates — provider configured; connectivity is verified by the first real request.${entitlementNote}${rightsNote}`
       : observed.ok
-        ? `Historical candle aggregates via the configured REST provider — last request answered.${entitlementNote}`
-        : `Historical candle aggregates — the last provider request failed; the provider may be temporarily unavailable.${entitlementNote}`;
+        ? `Historical candle aggregates via the configured REST provider — last request answered.${entitlementNote}${rightsNote}`
+        : `Historical candle aggregates — the last provider request failed; the provider may be temporarily unavailable.${entitlementNote}${rightsNote}`;
 
   // The engine is in-process: wired and functional, but every run needs a configured
   // provider — when credentials are absent it degrades rather than pretending to be

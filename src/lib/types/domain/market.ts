@@ -157,7 +157,13 @@ export type MarketDataErrorCode =
   | "provider_error"
   | "rate_limited"
   | "invalid_data"
-  | "incomplete_data";
+  | "incomplete_data"
+  /**
+   * The serving scope (public vs internal) may not display this provider's
+   * data: its capability row is `not_authorized`, or `unknown` while the scope
+   * fails closed. Licensing fact, never a connectivity error.
+   */
+  | "display_not_authorized";
 
 export interface MarketDataError {
   code: MarketDataErrorCode;
@@ -250,6 +256,35 @@ export type DataClassification = "historical" | "delayed" | "live";
  */
 export type DataSufficiency = "ok" | "empty" | "insufficient";
 
+/**
+ * Freshness facts — computed at the service layer from the returned window,
+ * never inferred from HTTP success or the vendor's status field. Distinct
+ * from `classification` (the vendor's delivery-tier label): classification
+ * says WHAT the feed is, freshness says HOW OLD the last bar actually is.
+ */
+export interface DataFreshness {
+  /** Bar-open time of the last returned candle — absent for an empty window. */
+  lastBarTimestamp?: UnixMs;
+  /** Wall-clock retrieval instant — NOT a proxy for the last bar's time. */
+  retrievedAt: UnixMs;
+  /** now − lastBarTimestamp; absent for an empty window. */
+  observedAgeMs?: number;
+  /**
+   * Session-open intervals elapsed between the last bar's close and the read.
+   * A weekend closure on a weekday calendar contributes 0 — the market was
+   * legitimately shut, not "missing data". Undefined for unknown calendars.
+   */
+  expectedIntervalsSinceLastBar?: number;
+  /**
+   * True only when the elapsed window contains more session-open intervals
+   * than a normal read would — i.e., the market was open and bars were absent.
+   * Never true merely because observedAgeMs is large (closed market ≠ stale).
+   */
+  stale: boolean;
+  /** False when no calendar can reason about sessions (uncountable/unknown). */
+  sessionAware: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Chart candles boundary — POST /api/candles.
 //
@@ -302,6 +337,12 @@ export interface CandlesResult {
   sufficiency: DataSufficiency;
   /** Server retrieval time of this response. */
   retrievedAt: ISODateTime;
+  /**
+   * Session-aware freshness facts — how old the last bar is relative to the
+   * market's session clock. Independent of `classification` (delivery-tier
+   * label) and of `retrievedAt` (read time, not data time).
+   */
+  freshness?: DataFreshness;
   /** The actual vendor ticker served, when it differs from the requested symbol (e.g. X:BTCUSD). */
   servedTicker?: string;
   /** Provider warnings (rejected rows, ticker alias) — surfaced, never hidden. */

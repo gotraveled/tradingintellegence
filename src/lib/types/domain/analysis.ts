@@ -178,4 +178,11 @@ export interface AnalysisResult {
   dataClassification?: DataClassification;
   /** Engine/scanner version stamps — results comparable only within them. */
   versions: { methodVersion: string; paramsVersion: string; configVersion: string };
+  /**
+   * Engine-run diagnostics verbatim (spec-26 `meta.diagnostics`) — includes
+   * `mtfFramesSkipped`, the spec-31 count of supplied aux frames rejected by
+   * contract validation. A rejected frame is a reportable fact, never a
+   * silently-absent vote. Absent when the engine produced no diagnostics.
+   */
+  engineDiagnostics?: Record<string, number | string | boolean>;
 }
