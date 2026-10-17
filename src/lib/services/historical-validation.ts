@@ -78,6 +78,18 @@ export interface ValidationRunConfig {
   /** Chronological cohorts. test = remainder. Descriptive only — no tuning exists
    *  in this workflow, so no split can leak tuned parameters. */
   split?: { trainPct: number; validationPct: number };
+  /** Additional explicit cost cases — re-priced on the SAME frozen scenarios;
+   *  the base case (costs) is always included. Never defaults to invented values. */
+  costSensitivity?: ValidationCostConfig[];
+  /** Additional evaluation horizons — each evaluated independently on the same
+   *  frozen scenarios; horizonBars is always included. */
+  horizonSensitivity?: number[];
+  /** Explicit opt-in: emit PURGED cohort aggregates alongside the raw ones —
+   *  earlier-cohort scenarios whose consumed window (anchorBar, resolvedBar]
+   *  reaches ANY later cohort's same-series evaluation partition are excluded
+   *  from the earlier cohort's purged statistics. Diagnostics are always
+   *  emitted; this flag only controls whether purged aggregates are computed. */
+  purgeBoundaries?: boolean;
 }
 
 export type ValidationStatus =
@@ -101,6 +113,9 @@ export interface ValidatedScenario {
   setupId: string;
   setupType: SetupType;
   direction: Direction;
+  /** Series identity — bar indices are only comparable inside the same series. */
+  symbol?: string;
+  timeframe?: Timeframe;
   /** Anchor = canonical confirmBar — the last bar whose close the scenario knew. */
   anchorBar: number;
   anchorTime: string;
@@ -138,17 +153,46 @@ export interface ValidatedScenario {
 // Contract — result
 // ---------------------------------------------------------------------------
 
+export interface DependenceDiagnostics {
+  /** Distinct anchorBar values — multiple scenarios CAN share one anchor. */
+  uniqueAnchors: number;
+  /** Anchor-sorted pairs (i<j) whose evaluation windows share ≥1 future bar. */
+  overlappingPairs: number;
+  /** Scenarios whose window reaches a later scenario's anchor. */
+  overlappingWindows: number;
+  /** Connected components under transitive consecutive-window overlap — a
+   *  rough upper bound on independent evidence. */
+  clusters: number;
+  /** Largest cluster size — worst-case correlated chain. */
+  largestCluster: number;
+}
+
 export interface ValidationAggregate {
   scenarioCount: number;
-  /** Confirmed setups excluded before evaluation (missing levels, out-of-window). */
   excludedCount: number;
   counts: Record<ValidationStatus, number>;
-  /** Scenarios with an activated entry inside the window. */
+  /** Filled rows with defined netR — denominator for the MIXED filled stats. */
   filledCount: number;
-  /** filled rows partitioned by netR sign — precise definitions, no "win rate = profit". */
+  /** Mixed (realized + mark-to-market) — kept for export compatibility. */
   wins: number;
   losses: number;
   breakevens: number;
+  /** REALIZED outcomes only — terminal statuses; the honest win denominator. */
+  realizedCount: number;
+  realizedWins: number;
+  realizedLosses: number;
+  realizedBreakevens: number;
+  /** Mark-to-market (censored) rows — reported separately, never as realized. */
+  mtmCount: number;
+  mtmWins: number;
+  mtmLosses: number;
+  mtmBreakevens: number;
+  /** netR > 0 among realized rows only — absent when realizedCount = 0. */
+  realizedWinRate?: number;
+  /** Mean netR over realized rows only. */
+  realizedExpectancyR?: number;
+  /** Mean netR over censored rows only — explicitly unrealized. */
+  mtmMeanR?: number;
   /** Mean netR over filled rows with defined netR — absent on empty denominator. */
   expectancyR?: number;
   grossExpectancyR?: number;
@@ -159,18 +203,156 @@ export interface ValidationAggregate {
   maxDrawdownR?: number;
   /** Mean of the directional-hold baseline over scenarios that produced baselineR. */
   meanBaselineR?: number;
+  /** Uncertainty around supported metrics — absent metrics carry a note inside. */
+  uncertainty?: ValidationUncertainty;
+  /** Dependence diagnostics for THIS aggregate's slice. */
+  dependence?: DependenceDiagnostics;
+  /** Count of scenarios whose window overlaps a later anchor inside THIS aggregate. */
+  overlappingWindows?: number;
+}
+
+export interface UncertaintyEstimate {
+  /** Exact estimator label — reproducibility demands the method, not a magic CI. */
+  method: "wilson-score" | "student-t" | "moving-block-bootstrap";
+  confidence: number;
+  point: number;
+  lower: number;
+  upper: number;
+  /** The count actually divided by — see `denominator` for its definition. */
+  n: number;
+  denominator: string;
+  /** Whether the estimate assumes independence or models dependence. */
+  dependenceHandling: "iid-assumed" | "moving-block-bootstrap";
+  /** Bootstrap details — present only for resampling estimates. */
+  bootstrap?: { resamples: number; blockLen: number; seed: number; resamplingUnit: string };
+  caveat?: string;
+}
+
+export interface ValidationUncertainty {
+  winRate?: UncertaintyEstimate;
+  expectancyR?: UncertaintyEstimate;
+  /** Why a metric was omitted, or which assumptions its interval carries. */
+  notes: string[];
 }
 
 export interface SplitAggregate {
   name: "train" | "validation" | "test";
   fromScenario: number;
   toScenario: number;
+  /** Inclusive anchor-time bounds — cohort boundaries must be inspectable. */
+  anchorFrom?: string;
+  anchorTo?: string;
   aggregate: ValidationAggregate;
+  /** Present only when config.purgeBoundaries — recomputed on retained rows. */
+  purged?: PurgedCohort;
+}
+
+export type BoundaryStatus = "clean" | "leakage_detected" | "indeterminate";
+export type WalkForwardStatus = "clean" | "purged" | "leakage_detected" | "indeterminate";
+
+export interface BoundaryContamination {
+  setupId: string;
+  /** Position in the run's scenario array — audit trail across cohorts. */
+  scenarioIndex: number;
+  /** Which earlier cohort the scenario belongs to. */
+  fromCohort: string;
+  /** Series the comparison was made on — indices are never mixed across series. */
+  series: string;
+  anchorBar: number;
+  resolvedBar: number;
+  /** The same-series boundary anchor this row crossed (earliest later-cohort
+   *  anchor on its series). */
+  boundaryAnchorBar: number;
+  /** Consumed bars lying at-or-past that series boundary's first consumed bar. */
+  barsIntoLaterCohort: number;
+}
+
+export interface BoundaryLeakageReport {
+  /** Scenario index where the later cohort begins. */
+  boundaryIndex: number;
+  toCohort: string;
+  /** Boundary semantics — verbatim, so consumers never guess the definition. */
+  basis: string;
+  /** Smallest same-series boundary anchor across the later cohort (earliest
+   *  later-cohort scenario anchor); per-series values in `perSeries`. */
+  boundaryAnchorBar?: number;
+  /** First held-out consumed bar — boundaryAnchorBar + 1. */
+  boundaryBar?: number;
+  /** Anchor timestamp of the earliest later-cohort scenario. */
+  boundaryTime?: string;
+  /** One boundary per series present in the later cohort — bar indices are
+   *  comparable only inside a single series. */
+  perSeries: {
+    series: string;
+    boundaryAnchorBar: number;
+    boundaryTime?: string;
+    laterScenarioCount: number;
+  }[];
+  /** Evaluable earlier-cohort scenarios examined (incl. unverifiable ones). */
+  earlierEvaluableCount: number;
+  /** Earlier evaluable rows whose series identity or resolved timing could
+   *  not be verified — these make the boundary indeterminate. */
+  unverifiableCount: number;
+  contaminatedCount: number;
+  /** contaminatedCount / earlierEvaluableCount — absent when 0 examined. */
+  contaminatedPct?: number;
+  /** Distinct same-series anchor bars among contaminated scenarios. */
+  affectedAnchors: number;
+  /** Distinct later-cohort consumed bars also consumed by contaminating
+   *  windows — per-series union size summed; undefined when not derivable. */
+  laterBarsTouched?: number;
+  contamination: BoundaryContamination[];
+  status: BoundaryStatus;
+  note?: string;
+}
+
+export interface PurgedCohort {
+  /** Exact rule — recorded verbatim in methodology + shown in UI. */
+  rule: string;
+  retainedCount: number;
+  purgedCount: number;
+  purgedSetupIds: string[];
+  /** Why each row was excluded — which later cohort its window reached and
+   *  how far past that cohort's same-series boundary it resolved. */
+  purgeReasons: { setupId: string; intoCohort: string; barsIntoLaterCohort: number }[];
+  /** Aggregate over RETAINED rows only — dependence + uncertainty recomputed. */
+  aggregate?: ValidationAggregate;
+  /** Set when a reliable purge could not run — the cohort is then NOT purged. */
+  unavailableReason?: string;
+}
+
+export interface WalkForwardReport {
+  boundaries: BoundaryLeakageReport[];
+  /** overall = worst of: indeterminate > (purged | leakage_detected) > clean */
+  status: WalkForwardStatus;
+  notes: string[];
+}
+
+export interface CostSensitivityCase {
+  /** "base" for the configured costs, otherwise a deterministic label. */
+  label: string;
+  costs?: ValidationCostConfig;
+  aggregate: ValidationAggregate;
+  /** aggregate.expectancyR minus the BASE case's — negative means dearer. */
+  expectancyDeltaR?: number;
+  /** Filled rows whose netR sign changed vs base — cost made a winner a loser. */
+  signFlips: number;
+  /** True when the expectancy sign flips vs base — classification changed. */
+  expectancySignChange: boolean;
+}
+
+export interface HorizonSensitivityResult {
+  horizonBars: number;
+  aggregate: ValidationAggregate;
+  /** base status → this status transition counts (populations must be disclosed). */
+  statusTransitions: Record<string, number>;
+  /** Rows whose status differs from the base-horizon run. */
+  changedCount: number;
 }
 
 export interface HistoricalValidationResult {
   contractVersion: typeof VALIDATION_CONTRACT_VERSION;
-  /** sha256 over {config, datasets} — reproduce the run bit-for-bit. */
+  /** sha256 over {config, datasets, versions} — reproduce the run bit-for-bit. */
   fingerprint: string;
   datasets: { symbol: string; timeframe: Timeframe; bars: number; firstBar: string; lastBar: string }[];
   config: ValidationRunConfig;
@@ -179,6 +361,20 @@ export interface HistoricalValidationResult {
   scenarios: ValidatedScenario[];
   aggregate: ValidationAggregate;
   splits?: SplitAggregate[];
+  /** Cross-boundary outcome-window leakage diagnostics — emitted whenever a
+   *  chronological split is configured. */
+  walkForward?: WalkForwardReport;
+  /** Sensitivity grids — same frozen scenarios, only the named assumption varies. */
+  sensitivity?: { costs?: CostSensitivityCase[]; horizons?: HorizonSensitivityResult[] };
+  /** What each metric divides by and which estimator produced each interval —
+   *  required to distinguish a genuine outcome change from a definition change. */
+  methodology: {
+    metricDefinitions: Record<string, string>;
+    uncertaintyMethod: string;
+    cohortBoundaries: string;
+    /** Exact boundary-leakage rule + purge semantics when purging is enabled. */
+    boundaryPolicy: string;
+  };
   /** Honest caveats — sample size, overlap, censoring share, data quality, bias. */
   warnings: string[];
   assumptions: string[];
@@ -196,6 +392,33 @@ const num = (v: unknown): number | undefined =>
 const sgn = (d: Direction) => (d === "bearish" ? -1 : 1);
 const round4 = (x: number) => Number(x.toFixed(4));
 const toISO = (ms: number) => new Date(ms).toISOString();
+
+/** Precise denominator definitions — emitted verbatim in every result. */
+const METRIC_DEFINITIONS: Record<string, string> = {
+  filledCount: "scenarios whose canonical activeBar stamp falls inside the evaluation window AND produced a defined netR",
+  realizedCount: "filled scenarios with a TERMINAL status (target/stop/expired/cancelled) — the realized denominator",
+  realizedWins: "realized scenarios with netR > 0",
+  realizedLosses: "realized scenarios with netR < 0",
+  realizedBreakevens: "realized scenarios with netR === 0",
+  realizedWinRate: "realizedWins / realizedCount — never includes censored rows",
+  realizedExpectancyR: "mean netR over realized scenarios only",
+  mtmCount: "censored scenarios still open at window end — mark-to-market, NOT realized",
+  mtmWins: "censored scenarios with mark-to-market netR > 0 (unrealized)",
+  mtmLosses: "censored scenarios with mark-to-market netR < 0 (unrealized)",
+  mtmMeanR: "mean mark-to-market netR over censored rows — explicitly unrealized",
+  wins: "filled scenarios with netR > 0 — MIXED: realized + mark-to-market (kept for export compatibility)",
+  losses: "filled scenarios with netR < 0 — MIXED: realized + mark-to-market",
+  breakevens: "filled scenarios with netR === 0 — MIXED",
+  expectancyR: "mean netR over all filled rows — MIXED: includes censored mark-to-market values",
+  grossExpectancyR: "mean of grossR over filled rows before cost deduction",
+  medianR: "median netR over filled rows — MIXED",
+  totalR: "sum of netR over filled rows — MIXED",
+  maxDrawdownR: "max peak-to-trough of cumulative netR in anchor order over filled rows (≥2)",
+  meanBaselineR: "mean baselineR over scenarios that produced one (activated rows)",
+  uniqueAnchors: "distinct anchor bars — a scenarioCount > uniqueAnchors gap means anchor duplication",
+  overlappingPairs: "anchor-sorted pairs whose evaluation windows share at least one future bar",
+  clusters: "connected components under transitive window overlap — upper bound on independent evidence",
+};
 
 const TERMINAL_STAMPS = ["targetReachedBar", "invalidatedBar", "expiredBar", "cancelledBar"] as const;
 
@@ -243,6 +466,8 @@ export function evaluateScenario(input: {
     setupId: s.id,
     setupType: s.type,
     direction: s.direction,
+    symbol: s.symbol,
+    timeframe: s.timeframe,
     anchorBar: cb ?? -1,
     anchorTime: cb !== undefined && cb >= 0 && cb < n ? toISO(candles[cb].time) : s.createdAt,
     scenario: {
@@ -344,6 +569,627 @@ export function evaluateScenario(input: {
 }
 
 // ---------------------------------------------------------------------------
+// Uncertainty — deterministic, dependency-free, honest about its assumptions
+// ---------------------------------------------------------------------------
+
+/**
+ * 97.5-percentile of Student's t by degrees of freedom — a fixed table (not an
+ * approximation for tiny df, where normal z would overstate coverage).
+ */
+const T975: Record<number, number> = {
+  1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
+  8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145,
+  15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093, 20: 2.086,
+  21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064, 25: 2.060, 26: 2.056,
+  27: 2.052, 28: 2.048, 29: 2.045, 30: 2.042, 40: 2.021, 50: 2.009,
+  60: 2.000, 80: 1.990, 100: 1.984, 120: 1.980,
+};
+const t975 = (df: number): number => {
+  const keys = Object.keys(T975).map(Number).sort((a, b) => a - b);
+  for (const k of keys) if (df <= k) return T975[k];
+  return 1.96; // df > 120 ≈ normal
+};
+
+/** Wilson score interval for a binomial proportion (95%) — valid at any n,
+ *  unlike the normal approximation which breaks down near 0/1 or small n.
+ *  Assumes INDEPENDENT observations — caller attaches dependence caveats. */
+export function wilsonInterval(wins: number, n: number, z = 1.96): UncertaintyEstimate | undefined {
+  if (n < 1) return undefined;
+  const p = wins / n;
+  const z2 = z * z;
+  const denom = 1 + z2 / n;
+  const centre = p + z2 / (2 * n);
+  const half = z * Math.sqrt((p * (1 - p) + z2 / (4 * n)) / n);
+  return {
+    method: "wilson-score", confidence: 0.95, point: round4(p),
+    lower: round4(Math.max(0, (centre - half) / denom)),
+    upper: round4(Math.min(1, (centre + half) / denom)),
+    n, denominator: "realized scenarios (terminal outcome, defined netR)",
+    dependenceHandling: "iid-assumed",
+  };
+}
+
+/** Student-t interval for a mean (95%) — requires n≥2 and nonzero variance.
+ *  Assumes INDEPENDENT observations; kept only as a labelled fallback. */
+export function meanTInterval(values: number[]): UncertaintyEstimate | undefined {
+  const n = values.length;
+  if (n < 2) return undefined;
+  const mean = values.reduce((a, b) => a + b, 0) / n;
+  const sd = Math.sqrt(values.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1));
+  if (sd === 0) {
+    // Degenerate: identical R values — the point is exact, report a zero-width band.
+    return {
+      method: "student-t", confidence: 0.95, point: round4(mean),
+      lower: round4(mean), upper: round4(mean), n,
+      denominator: "realized scenarios (netR values)",
+      dependenceHandling: "iid-assumed",
+      caveat: "all observations identical — interval collapses to the point estimate",
+    };
+  }
+  const half = t975(n - 1) * sd / Math.sqrt(n);
+  return {
+    method: "student-t", confidence: 0.95, point: round4(mean),
+    lower: round4(mean - half), upper: round4(mean + half), n,
+    denominator: "realized scenarios (netR values)",
+    dependenceHandling: "iid-assumed",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Dependence — windows share future bars; same anchor ≠ same window
+// ---------------------------------------------------------------------------
+
+/**
+ * Pairwise window-overlap analysis over an anchor-sorted scenario slice.
+ * Scenario i's window is (anchorBar_i, resolvedBar_i]; a LATER scenario shares
+ * future bars iff its anchor falls strictly inside that window. Equal anchors
+ * share the SAME window start — that is anchor duplication, reported via
+ * uniqueAnchors, and their windows trivially overlap.
+ *
+ * Side effect: sets `overlapsNext` on each scenario (UI row flag).
+ */
+export function analyzeDependence(scenarios: ValidatedScenario[]): DependenceDiagnostics {
+  // Group by canonical series first — raw bar indices are only comparable
+  // inside one symbol@timeframe series (the same key candleIndex uses, so
+  // duplicate files collapse to ONE series). A row without series identity
+  // forms its own group: overlap can be neither asserted nor ruled out, so it
+  // never merges into another row's cluster.
+  const groups: { s: ValidatedScenario; end: number | undefined }[][] = [];
+  const groupOf = new Map<string, number>();
+  for (const s of scenarios) {
+    const key = s.symbol !== undefined && s.timeframe !== undefined
+      ? `${s.symbol}@${s.timeframe}` : undefined;
+    const end = s.status === "unevaluable" ? undefined : (s.resolvedBar ?? s.anchorBar);
+    const g = key !== undefined ? groupOf.get(key) : undefined;
+    if (g === undefined) {
+      groups.push([{ s, end }]);
+      if (key !== undefined) groupOf.set(key, groups.length - 1);
+    } else {
+      groups[g].push({ s, end });
+    }
+  }
+  let uniqueAnchors = 0, overlappingPairs = 0, clusters = 0, largestCluster = 0;
+  for (const group of groups) {
+    // Anchor-sorted within the series — the caller's global time ordering
+    // implies it, but sorting keeps this function order-agnostic.
+    const rows = [...group].sort((a, b) => a.s.anchorBar - b.s.anchorBar);
+    const ends = rows.map((r) => r.end);
+    const anchorSet = new Set<number>();
+    for (let i = 0; i < rows.length; i++) {
+      anchorSet.add(rows[i].s.anchorBar);
+      if (ends[i] === undefined) continue;
+      for (let j = i + 1; j < rows.length; j++) {
+        if (rows[j].s.anchorBar < ends[i]!) overlappingPairs++;
+        else break; // anchor-sorted — no later pair can overlap window i
+      }
+      // Row flag: a later same-series scenario's anchor falls inside THIS window.
+      if (i + 1 < rows.length && rows[i + 1].s.anchorBar < ends[i]!) {
+        rows[i].s.overlapsNext = true;
+      }
+    }
+    uniqueAnchors += anchorSet.size;
+    // Clusters = connected components under transitive window overlap.
+    let run = 0, clusterEnd = -Infinity;
+    for (let i = 0; i < rows.length; i++) {
+      if (ends[i] === undefined) { // no window → cannot share bars; closes any open run
+        if (run > largestCluster) largestCluster = run;
+        run = 0; clusterEnd = -Infinity;
+        continue;
+      }
+      if (rows[i].s.anchorBar < clusterEnd) {
+        run++;
+        if (ends[i]! > clusterEnd) clusterEnd = ends[i]!;
+      } else {
+        if (run > largestCluster) largestCluster = run;
+        run = 1; clusters++; clusterEnd = ends[i]!;
+      }
+    }
+    if (run > largestCluster) largestCluster = run;
+  }
+  const overlappingWindows = scenarios.filter((s) => s.overlapsNext === true).length;
+  return { uniqueAnchors, overlappingPairs, overlappingWindows, clusters, largestCluster };
+}
+
+// ---------------------------------------------------------------------------
+// Boundary leakage — did an earlier cohort's window consume later-cohort bars?
+// ---------------------------------------------------------------------------
+
+/** Exact boundary rule, recorded verbatim in methodology and shown in the UI. */
+export const BOUNDARY_PURGE_RULE =
+  "a cohort-K scenario is purged from cohort K's statistics when its consumed window (anchorBar, resolvedBar] reaches, on its own series, any bar >= (earliest anchor bar among cohort-J scenarios on the same series) + 1 for ANY later cohort J — i.e. resolvedBar exceeds the earliest later-cohort anchor on the same series; scenarios are never moved between cohorts";
+
+/** Boundary semantics, verbatim — emitted in every report so the UI and
+ *  auditors never have to guess which definition was applied. */
+export const BOUNDARY_BASIS =
+  "boundary = the FIRST HELD-OUT EVALUATION BAR of the later cohort, per series: (earliest anchor bar among the later cohort's scenarios on that series) + 1; bar indices are compared only inside the same symbol@timeframe series";
+
+/** Canonical series key — identical to the candleIndex key, so two uploaded
+ *  files with the same symbol@timeframe resolve to the SAME series object and
+ *  their bar indices remain mutually comparable. */
+const seriesKey = (s: ValidatedScenario): string | undefined =>
+  s.symbol === undefined || s.timeframe === undefined
+    ? undefined
+    : `${s.symbol}@${s.timeframe}`;
+
+/** Union-merge half-open-safe closed intervals [lo, hi]; input pre-sorted. */
+const mergeIntervals = (ivs: [number, number][]): [number, number][] => {
+  const out: [number, number][] = [];
+  for (const iv of [...ivs].sort((x, y) => x[0] - y[0])) {
+    const top = out[out.length - 1];
+    if (top !== undefined && iv[0] <= top[1] + 1) top[1] = Math.max(top[1], iv[1]);
+    else out.push([...iv]);
+  }
+  return out;
+};
+
+/**
+ * For each adjacent cohort boundary: find earlier-cohort scenarios whose
+ * consumed interval (anchorBar, resolvedBar] reaches the later cohort's
+ * evaluation partition — defined PER SERIES as
+ * (earliest anchorBar among later-cohort scenarios on that series) + 1.
+ *
+ * Design rules (established by audit, not assumed):
+ * - Cohorts are contiguous slices of the anchor-TIME-sorted scenario array;
+ *   the partition is a scenario-membership cut, and each series' held-out
+ *   evaluation domain begins at that cohort's earliest same-series anchor.
+ * - A scenario never supplies its series' boundary merely by being first in
+ *   the slice — the boundary is the cohort's minimum same-series anchor, and
+ *   ONLY evaluable-window rows (status !== unevaluable) define one. An
+ *   unevaluable row consumed nothing, so its anchor cannot bound the
+ *   partition; if a series has later rows but none can bound it, that
+ *   boundary is indeterminate rather than silently fabricated.
+ * - ALL evaluable earlier rows are examined (not only filled): a
+ *   not_filled/censored/expired/cancelled verdict consumed bars through
+ *   resolvedBar exactly as a target/stop did.
+ * - Rows whose series identity is missing, whose series cannot be bounded in
+ *   the later cohort, or whose resolvedBar is absent make the boundary
+ *   INDETERMINATE — never silently clean.
+ * - Raw integer indices are compared ONLY inside one canonical series
+ *   (symbol@timeframe, the same key the candleIndex uses); identical indices
+ *   from different files are never treated as overlap.
+ */
+export function analyzeBoundaryLeakage(
+  scenarios: readonly ValidatedScenario[],
+  splits: readonly SplitAggregate[],
+): BoundaryLeakageReport[] {
+  const reports: BoundaryLeakageReport[] = [];
+  for (let b = 1; b < splits.length; b++) {
+    const boundaryIndex = splits[b].fromScenario;
+    const later = scenarios.slice(boundaryIndex, splits[b].toScenario);
+    const earlier = scenarios.slice(0, boundaryIndex); // ALL earlier cohorts
+    if (later.length === 0 || earlier.length === 0) {
+      reports.push({
+        boundaryIndex, toCohort: splits[b].name, basis: BOUNDARY_BASIS,
+        perSeries: [], earlierEvaluableCount: 0, unverifiableCount: 0,
+        contaminatedCount: 0, affectedAnchors: 0, contamination: [],
+        status: "clean", note: "empty earlier or later cohort — nothing to leak",
+      });
+      continue;
+    }
+
+    // Per-series later-cohort partition: earliest bounding anchor + the
+    // union of later rows' consumed windows (the cohort's consumed domain).
+    interface SeriesDomain {
+      minAnchor: number;
+      boundaryTime?: string;
+      rows: number;
+      /** Evaluable rows that CAN bound the partition (anchor known). */
+      boundingRows: number;
+      unboundableRows: number;
+      intervals: [number, number][];
+    }
+    const domains = new Map<string, SeriesDomain>();
+    let laterUnkeyedConsuming = 0;
+    for (const s of later) {
+      const key = seriesKey(s);
+      const canBound = s.status !== "unevaluable" && s.anchorBar >= 0;
+      if (key === undefined) {
+        // A later row whose series is unknown and which may consume bars
+        // makes every earlier row's safety unverifiable.
+        if (s.status !== "unevaluable" || s.anchorBar >= 0) laterUnkeyedConsuming++;
+        continue;
+      }
+      const d = domains.get(key) ?? { minAnchor: Infinity, rows: 0, boundingRows: 0, unboundableRows: 0, intervals: [] };
+      d.rows++;
+      if (canBound) {
+        d.boundingRows++;
+        if (s.anchorBar < d.minAnchor) { d.minAnchor = s.anchorBar; d.boundaryTime = s.anchorTime; }
+      } else {
+        d.unboundableRows++;
+      }
+      if (s.status !== "unevaluable" && s.resolvedBar !== undefined && s.anchorBar >= 0) {
+        d.intervals.push([s.anchorBar + 1, s.resolvedBar]);
+      }
+      domains.set(key, d);
+    }
+    for (const d of domains.values()) d.intervals = mergeIntervals(d.intervals);
+
+    const contamination: BoundaryContamination[] = [];
+    const touched: [number, number][] = [];
+    let unverifiableCount = 0;
+    let earlierEvaluable = 0;
+    earlier.forEach((s, i) => {
+      if (s.status === "unevaluable") return; // consumed no outcome bars
+      earlierEvaluable++;
+      const key = seriesKey(s);
+      const dom = key === undefined ? undefined : domains.get(key);
+      // Unverifiable: unknown series identity, OR a same-series domain that
+      // exists but no later row can bound, OR missing resolved timing on a
+      // comparable row, OR an unkeyed consuming later row anywhere.
+      const seriesPresentButUnboundable = dom !== undefined && dom.boundingRows === 0;
+      const possiblyPresent = key === undefined || dom !== undefined || laterUnkeyedConsuming > 0;
+      if (key === undefined || s.resolvedBar === undefined || seriesPresentButUnboundable
+          || (laterUnkeyedConsuming > 0 && possiblyPresent)) {
+        unverifiableCount++;
+        return;
+      }
+      if (dom === undefined) return; // later cohort evaluates nothing on this series — cannot contaminate THIS boundary
+      const boundaryAnchor = dom.minAnchor;
+      if (s.resolvedBar >= boundaryAnchor + 1) {
+        contamination.push({
+          setupId: s.setupId, scenarioIndex: i,
+          fromCohort: splits.find((sp) => i >= sp.fromScenario && i < sp.toScenario)?.name ?? "train",
+          series: key!,
+          anchorBar: s.anchorBar, resolvedBar: s.resolvedBar,
+          boundaryAnchorBar: boundaryAnchor,
+          barsIntoLaterCohort: s.resolvedBar - boundaryAnchor,
+        });
+        // Intersect the contaminating window with the same-series consumed
+        // domain — only bars a later row actually consumed are "touched".
+        for (const iv of dom.intervals) {
+          const lo = Math.max(s.anchorBar + 1, iv[0]);
+          const hi = Math.min(s.resolvedBar, iv[1]);
+          if (lo <= hi && hi >= boundaryAnchor + 1) touched.push([lo, hi]);
+        }
+      }
+    });
+
+    const perSeries = [...domains.entries()]
+      .filter(([, d]) => d.boundingRows > 0)
+      .map(([k, d]) => ({
+        series: k, boundaryAnchorBar: d.minAnchor,
+        boundaryTime: d.boundaryTime, laterScenarioCount: d.rows,
+      }))
+      .sort((x, y) => x.boundaryAnchorBar - y.boundaryAnchorBar || x.series.localeCompare(y.series));
+    const boundaryAnchorBar = perSeries[0]?.boundaryAnchorBar;
+    const indeterminate = unverifiableCount > 0;
+
+    reports.push({
+      boundaryIndex,
+      toCohort: splits[b].name,
+      basis: BOUNDARY_BASIS,
+      boundaryAnchorBar,
+      boundaryBar: boundaryAnchorBar !== undefined ? boundaryAnchorBar + 1 : undefined,
+      boundaryTime: perSeries[0]?.boundaryTime,
+      perSeries,
+      earlierEvaluableCount: earlierEvaluable,
+      unverifiableCount,
+      contaminatedCount: contamination.length,
+      contaminatedPct: earlierEvaluable > 0
+        ? round4(contamination.length / earlierEvaluable) : undefined,
+      affectedAnchors: new Set(contamination.map((c) => `${c.series}@${c.anchorBar}`)).size,
+      laterBarsTouched: contamination.length > 0
+        ? mergeIntervals(touched).reduce((n, [lo, hi]) => n + (hi - lo + 1), 0)
+        : undefined,
+      contamination,
+      status: indeterminate ? "indeterminate"
+        : contamination.length > 0 ? "leakage_detected" : "clean",
+      ...(indeterminate
+        ? { note: `${unverifiableCount} earlier evaluable row(s) have unverifiable series identity, unboundable later partition, or missing resolved timing — cross-boundary safety cannot be established` }
+        : {}),
+    });
+  }
+  return reports;
+}
+
+/**
+ * Purge ONE cohort: exclude its own rows flagged by ANY later boundary
+ * (boundaries = reports for cohorts AFTER this one, in order). A row leaking
+ * into cohort K+2 is excluded from cohort K's purged statistics exactly as
+ * one leaking into K+1. Matching is by absolute scenarioIndex — unique,
+ * never name/anchor-derived. Returns unavailableReason (no aggregate) when
+ * any applicable boundary is indeterminate.
+ */
+export function purgeCohortSlice(
+  cohortRows: readonly ValidatedScenario[],
+  boundaries: readonly BoundaryLeakageReport[],
+  cohortFromScenario: number,
+): PurgedCohort {
+  const indeterminate = boundaries.filter((b) => b.status === "indeterminate");
+  if (indeterminate.length > 0) {
+    return {
+      rule: BOUNDARY_PURGE_RULE, retainedCount: cohortRows.length,
+      purgedCount: 0, purgedSetupIds: [], purgeReasons: [],
+      unavailableReason: indeterminate
+        .map((b) => `boundary → ${b.toCohort}: ${b.note ?? "indeterminate"}`)
+        .join(" | "),
+    };
+  }
+  const toScenario = cohortFromScenario + cohortRows.length;
+  const flagged = boundaries.flatMap((b) =>
+    b.contamination
+      .filter((c) => c.scenarioIndex >= cohortFromScenario && c.scenarioIndex < toScenario)
+      .map((c) => ({ ...c, intoCohort: b.toCohort })),
+  );
+  const purgeIdx = new Set(flagged.map((c) => c.scenarioIndex));
+  const retained = cohortRows.filter((_, i) => !purgeIdx.has(cohortFromScenario + i));
+  const reasons = flagged
+    .sort((a, b) => a.scenarioIndex - b.scenarioIndex)
+    .map((c) => ({ setupId: c.setupId, intoCohort: c.intoCohort, barsIntoLaterCohort: c.barsIntoLaterCohort }));
+  return {
+    rule: BOUNDARY_PURGE_RULE,
+    retainedCount: retained.length,
+    purgedCount: cohortRows.length - retained.length,
+    purgedSetupIds: [...new Set(reasons.map((r) => r.setupId))],
+    purgeReasons: reasons,
+    aggregate: aggregateScenarios([...retained]),
+  };
+}
+
+/** Overall walk-forward status from boundary reports + whether purging ran. */
+export function walkForwardStatus(
+  boundaries: readonly BoundaryLeakageReport[],
+  purgeEnabled: boolean,
+): WalkForwardStatus {
+  if (boundaries.some((b) => b.status === "indeterminate")) return "indeterminate";
+  if (boundaries.some((b) => b.status === "leakage_detected")) {
+    return purgeEnabled ? "purged" : "leakage_detected";
+  }
+  return "clean";
+}
+
+// ---------------------------------------------------------------------------
+// Moving-block bootstrap — dependence-aware resampling, fully deterministic
+// ---------------------------------------------------------------------------
+
+/** mulberry32 — small deterministic PRNG; same seed ⇒ same stream, always. */
+export function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** One moving-block resample: wrap-around blocks of `blockLen` preserve local
+ *  chronological runs — the resampled sequence inherits within-block dependence. */
+export function movingBlockResampleIndices(n: number, blockLen: number, rng: () => number): number[] {
+  const out: number[] = [];
+  while (out.length < n) {
+    const start = Math.floor(rng() * n);
+    for (let k = 0; k < blockLen && out.length < n; k++) out.push((start + k) % n);
+  }
+  return out;
+}
+
+const BOOTSTRAP_SEED = 0x9E3779B9;
+const BOOTSTRAP_B = 2000;
+const MIN_BOOTSTRAP_N = 8;
+const MIN_INDEPENDENT_CLUSTERS = 3;
+
+/**
+ * 95% percentile interval for the mean under a moving-block bootstrap.
+ * Resampling unit: chronological scenario outcomes in anchor order. Block
+ * length = ceil(sqrt(n)) — a standard zero-data-tuning heuristic that scales
+ * with observed dependence span; documented, not fitted to results.
+ */
+export function blockBootstrapMean(
+  values: readonly number[],
+  opts: { b?: number; blockLen?: number; seed?: number } = {},
+): UncertaintyEstimate | undefined {
+  const n = values.length;
+  if (n < MIN_BOOTSTRAP_N) return undefined;
+  const B = opts.b ?? BOOTSTRAP_B;
+  const blockLen = Math.min(n, Math.max(1, opts.blockLen ?? Math.ceil(Math.sqrt(n))));
+  const rng = mulberry32(opts.seed ?? BOOTSTRAP_SEED);
+  const means: number[] = [];
+  for (let b = 0; b < B; b++) {
+    const idx = movingBlockResampleIndices(n, blockLen, rng);
+    let sum = 0;
+    for (const i of idx) sum += values[i];
+    means.push(sum / n);
+  }
+  means.sort((a, b) => a - b);
+  const point = round4(values.reduce((a, b) => a + b, 0) / n);
+  return {
+    method: "moving-block-bootstrap", confidence: 0.95, point,
+    lower: round4(means[Math.floor(0.025 * B)]),
+    upper: round4(means[Math.min(B - 1, Math.floor(0.975 * B))]),
+    n, denominator: "realized scenarios in anchor order (netR values)",
+    dependenceHandling: "moving-block-bootstrap",
+    bootstrap: { resamples: B, blockLen, seed: BOOTSTRAP_SEED, resamplingUnit: "chronological realized scenario outcomes (anchor order)" },
+    caveat: "models within-block dependence only — does NOT correct selection bias, survivorship, regime change, or censoring",
+  };
+}
+
+/**
+ * Assemble the uncertainty block for an aggregate's scenario slice.
+ *
+ * Denominators: REALIZED outcomes only (terminal statuses) — censored
+ * mark-to-market rows are never silently counted as wins or losses.
+ *
+ * Method choice, applied per metric:
+ *  1. Moving-block bootstrap — when n_realized ≥ 8 AND ≥ 3 dependence
+ *     clusters exist (enough quasi-independent blocks to resample).
+ *  2. Labelled iid fallback (Wilson / Student-t) — when a point estimate
+ *     exists but blocks are insufficient; the assumption violation is stated.
+ *  3. REFUSAL — denominators too small for any defensible interval.
+ */
+export function computeUncertainty(
+  scenarios: readonly ValidatedScenario[],
+  dependence: DependenceDiagnostics,
+): ValidationUncertainty {
+  const notes: string[] = [];
+  const realized = scenarios.filter((s) =>
+    s.entryPrice !== undefined && s.netR !== undefined && s.status !== "censored");
+  const realizedRs = realized.map((s) => s.netR!);
+  const realizedWins = realizedRs.filter((r) => r > 0).length;
+  const n = realizedRs.length;
+  const blocksOk = dependence.clusters >= MIN_INDEPENDENT_CLUSTERS;
+  const bootstrapOk = n >= MIN_BOOTSTRAP_N && blocksOk;
+
+  if (n > 0 && !bootstrapOk) {
+    notes.push(
+      n < MIN_BOOTSTRAP_N
+        ? `dependence-aware bootstrap refused — ${n} realized observations < ${MIN_BOOTSTRAP_N} minimum; falling back to labelled iid intervals`
+        : `dependence-aware bootstrap refused — ${dependence.clusters} independent window cluster(s) < ${MIN_INDEPENDENT_CLUSTERS} minimum; falling back to labelled iid intervals`,
+    );
+  }
+
+  // Realized win rate — bootstrap the 0/1 series when supported, else Wilson.
+  let winRate: UncertaintyEstimate | undefined;
+  if (bootstrapOk) {
+    winRate = blockBootstrapMean(realizedRs.map((r) => (r > 0 ? 1 : 0)));
+    if (winRate) winRate = { ...winRate, denominator: "realized scenarios in anchor order (win indicators)" };
+  }
+  if (winRate === undefined && n >= 1) {
+    winRate = wilsonInterval(realizedWins, n);
+    if (winRate && dependence.overlappingPairs > 0) {
+      winRate = { ...winRate, caveat: `${dependence.overlappingPairs} overlapping window pair(s) — iid assumption violated; interval likely UNDERSTATES true uncertainty` };
+    }
+  }
+  if (winRate === undefined) {
+    notes.push("realized win-rate interval omitted — no realized outcomes (denominator = 0)");
+  }
+
+  // Realized expectancy — bootstrap netR series when supported, else Student-t.
+  let expectancyR: UncertaintyEstimate | undefined;
+  if (bootstrapOk) expectancyR = blockBootstrapMean(realizedRs);
+  if (expectancyR === undefined && n >= 2) {
+    expectancyR = meanTInterval(realizedRs);
+    if (expectancyR && dependence.overlappingPairs > 0) {
+      expectancyR = { ...expectancyR, caveat: `${dependence.overlappingPairs} overlapping window pair(s) — iid assumption violated; interval likely UNDERSTATES true uncertainty` };
+    }
+  }
+  if (expectancyR === undefined) {
+    notes.push(n <= 1
+      ? "realized expectancy interval omitted — fewer than 2 realized outcomes; no variance estimate is defensible"
+      : "realized expectancy interval omitted");
+  }
+
+  const mtm = scenarios.filter((s) => s.status === "censored" && s.netR !== undefined);
+  if (mtm.length > 0) {
+    notes.push(`${mtm.length} censored scenario(s) carry mark-to-market netR — reported separately, EXCLUDED from realized intervals`);
+  }
+  notes.push("intervals quantify only the sampling uncertainty of THIS uploaded sample under the stated method — they do not bound market regime change, survivorship, or dataset-selection bias");
+  return { ...(winRate ? { winRate } : {}), ...(expectancyR ? { expectancyR } : {}), notes };
+}
+
+// ---------------------------------------------------------------------------
+// Sensitivity — same frozen scenarios, one assumption varied at a time
+// ---------------------------------------------------------------------------
+
+/** Re-price an evaluated scenario under a different cost case. ONLY the
+ *  cost-dependent fields change — status, fills, excursions are frozen. */
+function repriceScenario(s: ValidatedScenario, costs: ValidationCostConfig | undefined): ValidatedScenario {
+  if (s.entryPrice === undefined || s.grossR === undefined || s.initialRisk === undefined || s.initialRisk <= 0) {
+    return { ...s, costR: s.costR ?? 0, netR: s.grossR }; // unactivated rows: net = gross = 0/undefined
+  }
+  const costR = round4(costPrice(costs, s.entryPrice) / s.initialRisk);
+  return { ...s, costR, netR: round4(s.grossR - costR) };
+}
+
+/**
+ * Cost sensitivity — every case reprices the SAME evaluated scenario rows.
+ * Scenario generation and selection are untouched; only R arithmetic moves.
+ */
+export function runCostSensitivity(
+  base: readonly ValidatedScenario[],
+  cases: ValidationCostConfig[],
+  excludedCount: number,
+): CostSensitivityCase[] {
+  const baseRs = base.map((s) => s.netR);
+  const baseExpect = aggregateScenarios([...base], excludedCount).expectancyR;
+  const out: CostSensitivityCase[] = [];
+  cases.forEach((costs, i) => {
+    const repriced = base.map((s) => repriceScenario(s, costs));
+    const aggregate = aggregateScenarios(repriced, excludedCount);
+    let signFlips = 0;
+    repriced.forEach((s, j) => {
+      const a = baseRs[j], b = s.netR;
+      if (a !== undefined && b !== undefined && a !== 0 && b !== 0 && Math.sign(a) !== Math.sign(b)) signFlips++;
+    });
+    const expectancySignChange = baseExpect !== undefined && aggregate.expectancyR !== undefined
+      && baseExpect !== 0 && Math.sign(baseExpect) !== Math.sign(aggregate.expectancyR);
+    out.push({
+      label: `cost-${i + 1}`,
+      costs,
+      aggregate,
+      expectancyDeltaR: baseExpect !== undefined && aggregate.expectancyR !== undefined
+        ? round4(aggregate.expectancyR - baseExpect) : undefined,
+      signFlips,
+      expectancySignChange,
+    });
+  });
+  return out;
+}
+
+/**
+ * Horizon sensitivity — re-evaluate the SAME frozen setups at each horizon.
+ * Each horizon gets its own truncated candle series and stamp-capped Setup
+ * clone inside evaluateScenario, so a horizon can never observe candles or
+ * lifecycle events beyond its own cutoff.
+ */
+export function runHorizonSensitivity(
+  setups: readonly Setup[],
+  candlesByCell: ReadonlyMap<string, readonly Candle[]>,
+  baseConfig: ValidationRunConfig,
+  baseScenarios: readonly ValidatedScenario[],
+  fullRows: ReadonlyMap<string, SetupOutcome | undefined>,
+  horizons: number[],
+  excludedCount: number,
+): HorizonSensitivityResult[] {
+  const out: HorizonSensitivityResult[] = [];
+  for (const h of horizons) {
+    const cfg = { ...baseConfig, horizonBars: h };
+    const scenarios = setups.map((s) => evaluateScenario({
+      setup: s,
+      candles: candlesByCell.get(`${s.symbol}@${s.timeframe}`) ?? [],
+      config: cfg,
+      fullRow: fullRows.get(s.id),
+    }));
+    // Per-horizon dependence is recomputed inside aggregateScenarios via
+    // analyzeDependence — windows shrink/grow with the horizon.
+    const aggregate = aggregateScenarios(scenarios, excludedCount);
+    const transitions: Record<string, number> = {};
+    let changed = 0;
+    scenarios.forEach((s, i) => {
+      const from = baseScenarios[i]?.status ?? "unevaluable";
+      if (s.status !== from) {
+        const key = `${from}→${s.status}`;
+        transitions[key] = (transitions[key] ?? 0) + 1;
+        changed++;
+      }
+    });
+    out.push({ horizonBars: h, aggregate, statusTransitions: transitions, changedCount: changed });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Aggregation — precise definitions; denominators never fabricated
 // ---------------------------------------------------------------------------
 
@@ -354,7 +1200,13 @@ export function aggregateScenarios(scenarios: ValidatedScenario[], excludedCount
   };
   for (const sc of scenarios) counts[sc.status]++;
   const filled = scenarios.filter((s) => s.entryPrice !== undefined && s.netR !== undefined);
+  // REALIZED = terminal statuses; MARK-TO-MARKET = censored rows still open at
+  // window end. The two populations are never silently mixed.
+  const realized = filled.filter((s) => s.status !== "censored");
+  const mtm = filled.filter((s) => s.status === "censored");
   const rs = filled.map((s) => s.netR!);
+  const realizedRs = realized.map((s) => s.netR!);
+  const mtmRs = mtm.map((s) => s.netR!);
   const grossRs = filled.map((s) => s.grossR!).filter((x) => x !== undefined);
   const wins = rs.filter((r) => r > 0).length;
   const losses = rs.filter((r) => r < 0).length;
@@ -371,6 +1223,8 @@ export function aggregateScenarios(scenarios: ValidatedScenario[], excludedCount
     maxDrawdownR = round4(mdd);
   }
   const baselines = scenarios.map((s) => s.baselineR).filter((x): x is number => x !== undefined);
+  const dependence = analyzeDependence(scenarios);
+  const mean = (xs: number[]) => (xs.length > 0 ? round4(xs.reduce((a, b) => a + b, 0) / xs.length) : undefined);
   return {
     scenarioCount: scenarios.length,
     excludedCount,
@@ -379,6 +1233,17 @@ export function aggregateScenarios(scenarios: ValidatedScenario[], excludedCount
     wins,
     losses,
     breakevens,
+    realizedCount: realized.length,
+    realizedWins: realizedRs.filter((r) => r > 0).length,
+    realizedLosses: realizedRs.filter((r) => r < 0).length,
+    realizedBreakevens: realizedRs.filter((r) => r === 0).length,
+    mtmCount: mtm.length,
+    mtmWins: mtmRs.filter((r) => r > 0).length,
+    mtmLosses: mtmRs.filter((r) => r < 0).length,
+    mtmBreakevens: mtmRs.filter((r) => r === 0).length,
+    realizedWinRate: realized.length > 0 ? round4(realizedRs.filter((r) => r > 0).length / realized.length) : undefined,
+    realizedExpectancyR: mean(realizedRs),
+    mtmMeanR: mean(mtmRs),
     expectancyR: rs.length > 0 ? round4(rs.reduce((a, b) => a + b, 0) / rs.length) : undefined,
     grossExpectancyR: grossRs.length > 0 ? round4(grossRs.reduce((a, b) => a + b, 0) / grossRs.length) : undefined,
     medianR: sortedR.length === 0 ? undefined
@@ -387,6 +1252,9 @@ export function aggregateScenarios(scenarios: ValidatedScenario[], excludedCount
     totalR: rs.length > 0 ? round4(rs.reduce((a, b) => a + b, 0)) : undefined,
     maxDrawdownR,
     meanBaselineR: baselines.length > 0 ? round4(baselines.reduce((a, b) => a + b, 0) / baselines.length) : undefined,
+    uncertainty: computeUncertainty(scenarios, dependence),
+    dependence,
+    overlappingWindows: dependence.overlappingWindows,
   };
 }
 
@@ -418,6 +1286,21 @@ export function runHistoricalValidation(input: {
     const bad = [trainPct, validationPct].some((p) => !Number.isFinite(p) || p < 0 || p > 1);
     if (bad || trainPct + validationPct >= 1) {
       throw new Error("split percentages must be in [0,1] and sum to < 1.");
+    }
+  }
+  const costsOk = (c: ValidationCostConfig | undefined): boolean => c === undefined || [c.feeBps, c.slippageBps, c.slippagePoints].every((v) => v === undefined || (Number.isFinite(v) && v >= 0));
+  if (!costsOk(config.costs)) throw new Error("cost fields must be non-negative finite numbers.");
+  if (config.costSensitivity !== undefined) {
+    if (!Array.isArray(config.costSensitivity) || config.costSensitivity.length === 0 || config.costSensitivity.length > 4 || !config.costSensitivity.every(costsOk)) {
+      throw new Error("costSensitivity must be 1–4 cost cases with non-negative finite fields.");
+    }
+  }
+  if (config.horizonSensitivity !== undefined) {
+    const hs = config.horizonSensitivity;
+    if (!Array.isArray(hs) || hs.length === 0 || hs.length > 5 ||
+        !hs.every((h) => Number.isInteger(h) && h >= 1) ||
+        new Set(hs).size !== hs.length || hs.includes(config.horizonBars)) {
+      throw new Error("horizonSensitivity must be 1–5 distinct integers ≥ 1 and different from horizonBars.");
     }
   }
 
@@ -464,44 +1347,136 @@ export function runHistoricalValidation(input: {
 
   // Evaluate each measured setup under the capped window — anchor order.
   const scenarios: ValidatedScenario[] = [];
+  const evaluatedSetups: Setup[] = []; // retained ONLY for frozen-scenario sensitivity reruns
   let excluded = 0;
   const candleIndex = new Map(cells.map((c) => [`${c.symbol}@${c.timeframe}`, c.series.candles] as const));
+  // Sort by ANCHOR TIME — the wall-clock time of the anchor bar — not by raw
+  // confirmBar index: identical indices from different series are incomparable,
+  // and cohort membership must follow chronological evaluation order. Rows
+  // without a valid anchor fall back to createdAt (their anchorTime does too).
+  const anchorTimeOf = (s: Setup): number => {
+    const cb = num(s.metadata?.confirmBar);
+    const candles = cb !== undefined ? candleIndex.get(`${s.symbol}@${s.timeframe}`) : undefined;
+    const t = cb !== undefined && candles !== undefined && cb >= 0 && cb < candles.length
+      ? candles[cb].time : undefined;
+    if (t !== undefined) return t;
+    const created = Date.parse(s.createdAt);
+    return Number.isFinite(created) ? created : Number.MAX_SAFE_INTEGER;
+  };
   for (const s of [...setups.values()].sort(
-    (a, b) => (num(a.metadata?.confirmBar) ?? 0) - (num(b.metadata?.confirmBar) ?? 0) || a.id.localeCompare(b.id),
+    (a, b) => anchorTimeOf(a) - anchorTimeOf(b) ||
+      `${a.symbol}@${a.timeframe}`.localeCompare(`${b.symbol}@${b.timeframe}`) ||
+      a.id.localeCompare(b.id),
   )) {
     if (hasSelection && !selectedIds.has(s.id)) { excluded++; continue; }
     const candles = candleIndex.get(`${s.symbol}@${s.timeframe}`);
     if (candles === undefined) { excluded++; continue; }
+    evaluatedSetups.push(s);
     scenarios.push(evaluateScenario({ setup: s, candles, config, fullRow: fullRows.get(s.id) }));
-  }
-
-  // Overlap disclosure: window_i = [anchor_i+1, anchor_i+horizon]; flag when the
-  // next scenario's anchor falls inside it — evidence shares candles.
-  let overlapping = 0;
-  for (let i = 0; i < scenarios.length - 1; i++) {
-    const a = scenarios[i];
-    const b = scenarios[i + 1];
-    if (a.status === "unevaluable") continue;
-    const aEnd = a.anchorBar + Math.max(1, Math.floor(config.horizonBars));
-    if (b.anchorBar <= aEnd) { a.overlapsNext = true; overlapping++; }
-  }
-  if (overlapping > 0) {
-    warnings.push(`${overlapping} scenario(s) have evaluation windows overlapping a later scenario's anchor — shared candles mean these rows are not independent observations.`);
   }
 
   // Chronological splits — contiguous cohorts by anchor order. Descriptive only:
   // this workflow performs no parameter selection, so no split can leak tuned state.
   let splits: SplitAggregate[] | undefined;
+  let walkForward: WalkForwardReport | undefined;
   if (config.split !== undefined && scenarios.length > 0) {
     const n = scenarios.length;
     const nTrain = Math.floor(n * config.split.trainPct);
     const nVal = Math.floor(n * config.split.validationPct);
-    const mk = (name: SplitAggregate["name"], from: number, to: number): SplitAggregate =>
-      ({ name, fromScenario: from, toScenario: to, aggregate: aggregateScenarios(scenarios.slice(from, to)) });
+    const mk = (name: SplitAggregate["name"], from: number, to: number): SplitAggregate => {
+      const slice = scenarios.slice(from, to);
+      const aggregate = aggregateScenarios(slice);
+      // A cohort with too few filled rows cannot support any conclusion — say so.
+      if (aggregate.filledCount > 0 && aggregate.filledCount < 10) {
+        warnings.push(`cohort '${name}': only ${aggregate.filledCount} filled scenario(s) — too small to support useful conclusions.`);
+      }
+      return {
+        name, fromScenario: from, toScenario: to,
+        anchorFrom: slice[0]?.anchorTime,
+        anchorTo: slice[slice.length - 1]?.anchorTime,
+        aggregate,
+      };
+    };
     splits = [mk("train", 0, nTrain), mk("validation", nTrain, nTrain + nVal), mk("test", nTrain + nVal, n)];
+
+    // Boundary leakage — evaluated over ACTUAL consumed windows. Purged
+    // cohorts (opt-in) remove the earlier cohort's own contaminating rows;
+    // original aggregates and membership are always retained alongside.
+    const boundaries = analyzeBoundaryLeakage(scenarios, splits);
+    if (config.purgeBoundaries === true) {
+      splits = splits.map((sp, i) => {
+        if (i === splits!.length - 1) return sp; // final cohort has no later boundary
+        const slice = scenarios.slice(sp.fromScenario, sp.toScenario);
+        // Purge against EVERY later boundary — a row leaking into cohort K+2
+        // contaminates cohort K's purged statistics too.
+        return { ...sp, purged: purgeCohortSlice(slice, boundaries.slice(i), sp.fromScenario) };
+      });
+    }
+    walkForward = {
+      boundaries,
+      status: walkForwardStatus(boundaries, config.purgeBoundaries === true),
+      notes: [
+        "purging removes only measured cross-boundary outcome-window contamination — it does NOT address regime/selection/survivorship bias, dependence within retained cohorts, or leakage through feature construction",
+        ...(config.purgeBoundaries !== true
+          ? ["purgeBoundaries not enabled — leakage is reported but cohort statistics remain unpurged"]
+          : []),
+      ],
+    };
   }
 
   const aggregate = aggregateScenarios(scenarios, excluded);
+
+  if (walkForward !== undefined) {
+    for (const b of walkForward.boundaries) {
+      if (b.status === "leakage_detected") {
+        warnings.push(
+          `boundary → ${b.toCohort}: ${b.contaminatedCount} earlier-cohort scenario(s) consumed later-cohort bars (${b.laterBarsTouched ?? "?"} bar(s) touched) — raw cohort statistics are contaminated${config.purgeBoundaries === true ? "; purged aggregates provided separately" : "; enable purgeBoundaries for purged aggregates"}.`,
+        );
+      } else if (b.status === "indeterminate") {
+        warnings.push(`boundary → ${b.toCohort}: INDETERMINATE — ${b.note}`);
+      }
+    }
+  }
+
+  // Dependence disclosure — analyzed over the anchor-sorted run; shared bars
+  // mean the rows are not independent observations.
+  const dep = aggregate.dependence!;
+  if (dep.overlappingPairs > 0) {
+    warnings.push(
+      `${dep.overlappingPairs} overlapping scenario pair(s) share future bars across ${dep.clusters} dependence cluster(s) — these rows are not independent evidence.`,
+    );
+  }
+  if (dep.uniqueAnchors < scenarios.length) {
+    warnings.push(
+      `${scenarios.length - dep.uniqueAnchors} scenario(s) share an anchor with another scenario — same-anchor rows are maximally dependent, not independent observations.`,
+    );
+  }
+
+  // Sensitivity grids — identical frozen scenarios, one assumption varied.
+  const sensitivity: HistoricalValidationResult["sensitivity"] = {};
+  if (config.costSensitivity !== undefined && config.costSensitivity.length > 0) {
+    sensitivity.costs = runCostSensitivity(scenarios, config.costSensitivity, excluded);
+    for (const c of sensitivity.costs) {
+      if (c.expectancySignChange) {
+        warnings.push(`cost case ${c.label} flips the sign of expectancy — the result is classification-sensitive to cost assumptions.`);
+      } else if (c.signFlips > 0) {
+        warnings.push(`cost case ${c.label} flips ${c.signFlips} scenario(s) from profitable to losing or vice-versa — margins are thin relative to assumed costs.`);
+      }
+    }
+  }
+  if (config.horizonSensitivity !== undefined && config.horizonSensitivity.length > 0) {
+    sensitivity.horizons = runHorizonSensitivity(
+      evaluatedSetups, candleIndex, config, scenarios, fullRows, config.horizonSensitivity, excluded,
+    );
+    for (const h of sensitivity.horizons) {
+      if (h.aggregate.filledCount !== aggregate.filledCount || h.changedCount > 0) {
+        warnings.push(
+          `horizon ${h.horizonBars}: ${h.aggregate.filledCount} filled (base ${aggregate.filledCount}), ${h.changedCount} status change(s) — outcome composition depends on the horizon; improvements may reflect membership changes, not skill.`,
+        );
+      }
+    }
+  }
+
   if (aggregate.filledCount > 0 && aggregate.filledCount < 30) {
     warnings.push(`small sample — ${aggregate.filledCount} filled scenarios; descriptive statistics only, no inference about expected performance is warranted.`);
   }
@@ -535,7 +1510,12 @@ export function runHistoricalValidation(input: {
     }
   }
   const fp = createHash("sha256")
-    .update(JSON.stringify({ v: VALIDATION_CONTRACT_VERSION, config, datasets, engineVersion: engine.versions }))
+    .update(JSON.stringify({
+      v: VALIDATION_CONTRACT_VERSION, config, datasets, engineVersion: engine.versions,
+      // Estimation contract — same data+config under a different uncertainty
+      // method must NOT collide with this fingerprint.
+      uncertaintyMethod: "moving-block-bootstrap v1 (B=2000, blockLen=ceil(sqrt(n)), seed=0x9E3779B9, unit=realized outcomes)",
+    }))
     .update(dataHash.digest())
     .digest("hex");
 
@@ -549,8 +1529,20 @@ export function runHistoricalValidation(input: {
     scenarios,
     aggregate,
     ...(splits !== undefined ? { splits } : {}),
+    ...(walkForward !== undefined ? { walkForward } : {}),
     warnings,
     assumptions,
+    ...(Object.keys(sensitivity).length > 0 ? { sensitivity } : {}),
+    methodology: {
+      metricDefinitions: METRIC_DEFINITIONS,
+      uncertaintyMethod: "realized winRate + realized expectancyR: moving-block bootstrap (B=2000, blockLen=ceil(sqrt(n)), seed=0x9E3779B9, resampling unit=chronological realized outcomes) when n_realized≥8 AND ≥3 dependence clusters; otherwise labelled iid fallback (Wilson-score / Student-t) or refusal — censored mark-to-market rows are excluded from realized intervals",
+      cohortBoundaries: splits !== undefined
+        ? splits.map((s) => `${s.name}=[${s.fromScenario},${s.toScenario}) anchors ${s.anchorFrom ?? "—"}..${s.anchorTo ?? "—"}`).join(" | ")
+        : "no chronological split configured",
+      boundaryPolicy: splits !== undefined
+        ? `${BOUNDARY_BASIS}; ${BOUNDARY_PURGE_RULE}; mode=${config.purgeBoundaries === true ? "purged aggregates emitted" : "diagnostics only"}`
+        : "no chronological split configured — no boundaries exist",
+    },
     engineDiagnostics: { engineVersions: engine.versions, cells: engine.cells },
     evaluatedAt: new Date().toISOString(),
   };

@@ -92,6 +92,29 @@ function parseConfig(raw: string | undefined): ValidationRunConfig | { error: st
       return { error: "split percentages must be in [0,1] and sum to < 1." };
     }
   }
+  if (cfg.purgeBoundaries !== undefined && typeof cfg.purgeBoundaries !== "boolean") {
+    return { error: "config.purgeBoundaries must be a boolean when provided." };
+  }
+  if (cfg.purgeBoundaries === true && cfg.split === undefined) {
+    return { error: "config.purgeBoundaries requires a chronological split — boundaries do not exist without cohorts." };
+  }
+  if (cfg.costSensitivity !== undefined) {
+    if (!Array.isArray(cfg.costSensitivity) || cfg.costSensitivity.length === 0 ||
+        cfg.costSensitivity.length > 4 ||
+        !cfg.costSensitivity.every((c) => c !== undefined &&
+          [c.feeBps, c.slippageBps, c.slippagePoints].every(
+            (v) => v === undefined || (Number.isFinite(v) && v >= 0)))) {
+      return { error: "costSensitivity must be 1–4 cost cases with non-negative finite fields." };
+    }
+  }
+  if (cfg.horizonSensitivity !== undefined) {
+    const hs = cfg.horizonSensitivity;
+    if (!Array.isArray(hs) || hs.length === 0 || hs.length > 5 ||
+        !hs.every((h) => Number.isInteger(h) && h >= 1) ||
+        new Set(hs).size !== hs.length || hs.includes(cfg.horizonBars as number)) {
+      return { error: "horizonSensitivity must be 1–5 distinct integers ≥ 1, all different from horizonBars." };
+    }
+  }
   return cfg as ValidationRunConfig;
 }
 

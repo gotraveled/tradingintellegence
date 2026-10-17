@@ -30,21 +30,57 @@ interface ScenarioRow {
   grossR?: number; costR?: number; netR?: number; mfeR?: number; maeR?: number;
   baselineR?: number; overlapsNext?: boolean;
 }
+interface CI { method: string; confidence: number; point: number; lower: number; upper: number; n: number; denominator: string; dependenceHandling?: string; bootstrap?: { resamples: number; blockLen: number; seed: number; resamplingUnit: string }; caveat?: string }
 interface Agg {
   scenarioCount: number; excludedCount: number;
   counts: Record<string, number>;
   filledCount: number; wins: number; losses: number; breakevens: number;
+  realizedCount: number; realizedWins: number; realizedLosses: number; realizedBreakevens: number;
+  mtmCount: number; mtmWins: number; mtmLosses: number; mtmBreakevens: number;
+  realizedWinRate?: number; realizedExpectancyR?: number; mtmMeanR?: number;
   expectancyR?: number; grossExpectancyR?: number; medianR?: number;
   totalR?: number; maxDrawdownR?: number; meanBaselineR?: number;
+  uncertainty?: { winRate?: CI; expectancyR?: CI; notes: string[] };
+  dependence?: { uniqueAnchors: number; overlappingPairs: number; overlappingWindows: number; clusters: number; largestCluster: number };
+  overlappingWindows?: number;
+}
+interface CostCase {
+  label: string; costs?: { feeBps?: number; slippageBps?: number; slippagePoints?: number };
+  aggregate: Agg; expectancyDeltaR?: number; signFlips: number; expectancySignChange: boolean;
+}
+interface HorizonCase {
+  horizonBars: number; aggregate: Agg;
+  statusTransitions: Record<string, number>; changedCount: number;
+}
+interface PurgedCohort {
+  rule: string; retainedCount: number; purgedCount: number; purgedSetupIds: string[];
+  purgeReasons?: { setupId: string; intoCohort: string; barsIntoLaterCohort: number }[];
+  aggregate?: Agg; unavailableReason?: string;
+}
+interface BoundaryReport {
+  boundaryIndex: number; toCohort: string;
+  /** Verbatim boundary definition — never infer it in the UI. */
+  basis?: string;
+  boundaryAnchorBar?: number; boundaryBar?: number; boundaryTime?: string;
+  perSeries?: { series: string; boundaryAnchorBar: number; boundaryTime?: string; laterScenarioCount: number }[];
+  earlierEvaluableCount: number; unverifiableCount?: number;
+  contaminatedCount: number; contaminatedPct?: number;
+  affectedAnchors: number; laterBarsTouched?: number;
+  contamination: { setupId: string; scenarioIndex: number; fromCohort: string; series?: string; anchorBar: number; resolvedBar: number; boundaryAnchorBar?: number; barsIntoLaterCohort: number }[];
+  status: "clean" | "leakage_detected" | "indeterminate"; note?: string;
 }
 interface Result {
   contractVersion: string; fingerprint: string;
   datasets: { symbol: string; timeframe: string; bars: number; firstBar: string; lastBar: string }[];
   scenarioCount: number; scenarios: ScenarioRow[];
   aggregate: Agg;
-  splits?: { name: string; aggregate: Agg }[];
+  splits?: { name: string; anchorFrom?: string; anchorTo?: string; aggregate: Agg; purged?: PurgedCohort }[];
+  walkForward?: { boundaries: BoundaryReport[]; status: "clean" | "purged" | "leakage_detected" | "indeterminate"; notes: string[] };
+  sensitivity?: { costs?: CostCase[]; horizons?: HorizonCase[] };
+  methodology?: { metricDefinitions: Record<string, string>; uncertaintyMethod: string; cohortBoundaries: string; boundaryPolicy?: string };
   warnings: string[]; assumptions: string[]; evaluatedAt: string;
   configVersion?: string;
+  config?: Record<string, unknown>;
 }
 
 const num = (v: string): number | undefined => (v.trim() === "" ? undefined : Number(v));
@@ -62,6 +98,10 @@ export function HistoricalValidationWorkspace() {
   const [slipPts, setSlipPts] = useState("0");
   const [minScore, setMinScore] = useState("");
   const [useSplit, setUseSplit] = useState(false);
+  const [usePurge, setUsePurge] = useState(false);
+  const [costCasesRaw, setCostCasesRaw] = useState("");   // "fee,slipBps,slipPts; …"
+  const [horizonsRaw, setHorizonsRaw] = useState("");      // "5,15"
+  const [comparison, setComparison] = useState<Result | undefined>();
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [result, setResult] = useState<Result | undefined>();
@@ -91,6 +131,18 @@ export function HistoricalValidationWorkspace() {
     const ms = num(minScore);
     if (ms !== undefined) config.minScore = ms;
     if (useSplit) config.split = { trainPct: 0.6, validationPct: 0.2 };
+    if (useSplit && usePurge) config.purgeBoundaries = true;
+    // Sensitivity grids — user-supplied assumptions only; nothing is invented.
+    const costCases = costCasesRaw.split(";").map((s) => s.trim()).filter(Boolean)
+      .map((s) => {
+        const [f, b, p] = s.split(",").map((x) => Number(x.trim()));
+        return { feeBps: f, slippageBps: b, slippagePoints: p };
+      })
+      .filter((c) => [c.feeBps, c.slippageBps, c.slippagePoints].every((v) => Number.isFinite(v) && v >= 0));
+    if (costCases.length > 0) config.costSensitivity = costCases.slice(0, 4);
+    const horizons = horizonsRaw.split(",").map((s) => Number(s.trim()))
+      .filter((h) => Number.isInteger(h) && h >= 1 && h !== (config.horizonBars as number));
+    if (horizons.length > 0) config.horizonSensitivity = [...new Set(horizons)].slice(0, 5);
     form.set("config", JSON.stringify(config));
 
     try {
@@ -203,8 +255,23 @@ export function HistoricalValidationWorkspace() {
           </div>
           <label className="col-span-2 flex items-center gap-2 text-xs text-muted-foreground">
             <input type="checkbox" checked={useSplit} onChange={(e) => setUseSplit(e.target.checked)} />
-            Report chronological train/validation/test cohorts (60/20/20 — descriptive only, no tuning exists)
+            Chronological split (60/20/20)
           </label>
+          <label className="col-span-2 flex items-center gap-2" title="Exclude earlier-cohort scenarios whose consumed window reaches the next cohort — labelled purged metrics only">
+            <input type="checkbox" checked={usePurge} disabled={!useSplit} onChange={(e) => setUsePurge(e.target.checked)} />
+            Purged boundary evaluation
+          </label>
+          <div className="col-span-2">
+            <label className="mb-1 block text-xs text-muted-foreground">Cost sensitivity (optional)</label>
+            <input className={field} value={costCasesRaw} onChange={(e) => setCostCasesRaw(e.target.value)}
+              placeholder="feeBps,slipBps,slipPts; e.g. 5,3,0.1; 15,8,0.3" />
+            <p className="mt-0.5 text-[11px] text-muted-foreground">semicolon-separated cases; these are YOUR assumptions — illustrative values are never implied</p>
+          </div>
+          <div className="col-span-2">
+            <label className="mb-1 block text-xs text-muted-foreground">Horizon sensitivity (optional)</label>
+            <input className={field} value={horizonsRaw} onChange={(e) => setHorizonsRaw(e.target.value)}
+              placeholder="comma-separated bars, e.g. 5,15,40" />
+          </div>
           <div className="col-span-2 flex items-end justify-end">
             <Button onClick={run} disabled={running || files.length === 0 || !symbol.trim()}>
               {running ? "Evaluating…" : "Run validation"}
@@ -230,18 +297,34 @@ export function HistoricalValidationWorkspace() {
             <CardHeader className="pb-2"
               title={`3 · Aggregate — ${agg!.filledCount} filled / ${result.scenarioCount} scenarios${agg!.excludedCount > 0 ? ` (+${agg!.excludedCount} excluded)` : ""}`} />
             <CardContent className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
-              <Stat label="Wins / losses / breakeven" value={`${agg!.wins} / ${agg!.losses} / ${agg!.breakevens}`} />
-              <Stat label="Net expectancy R" value={fmt(agg!.expectancyR, 4)} />
-              <Stat label="Gross expectancy R" value={fmt(agg!.grossExpectancyR, 4)} />
-              <Stat label="Median R" value={fmt(agg!.medianR, 3)} />
-              <Stat label="Total net R" value={fmt(agg!.totalR, 3)} />
+              <Stat label="Realized W / L / BE" value={`${agg!.realizedWins} / ${agg!.realizedLosses} / ${agg!.realizedBreakevens}  (n=${agg!.realizedCount})`} />
+              <Stat label="Mark-to-market W / L / BE" value={`${agg!.mtmWins} / ${agg!.mtmLosses} / ${agg!.mtmBreakevens}  (n=${agg!.mtmCount}, unrealized)`} />
+              <Stat label="Realized win rate" value={fmt(agg!.realizedWinRate, 3)} />
+              <Stat label="Realized expectancy R" value={fmt(agg!.realizedExpectancyR, 4)} />
+              <Stat label="M2M mean R (unrealized)" value={fmt(agg!.mtmMeanR, 3)} />
+              <Stat label="Net expectancy R (mixed)" value={fmt(agg!.expectancyR, 4)} />
+              <Stat label="Total net R (mixed)" value={fmt(agg!.totalR, 3)} />
               <Stat label="Max drawdown R" value={fmt(agg!.maxDrawdownR, 3)} />
               <Stat label="Baseline mean R (hold)" value={fmt(agg!.meanBaselineR, 3)} />
               <Stat
                 label="Statuses"
                 value={Object.entries(agg!.counts).filter(([, v]) => v > 0).map(([k, v]) => `${k}:${v}`).join(" · ") || "—"}
               />
+              <Stat label="Dependence" value={agg!.dependence
+                ? `${agg!.dependence.uniqueAnchors} unique anchors · ${agg!.dependence.overlappingPairs} overlapping pairs · ${agg!.dependence.clusters} clusters`
+                : "—"} />
+              <Stat label="Realized win-rate 95% CI" value={agg!.uncertainty?.winRate
+                ? `${fmt(agg!.uncertainty.winRate.point, 3)} [${fmt(agg!.uncertainty.winRate.lower, 3)}…${fmt(agg!.uncertainty.winRate.upper, 3)}] (${agg!.uncertainty.winRate.method})`
+                : "—"} />
+              <Stat label="Realized expectancy 95% CI" value={agg!.uncertainty?.expectancyR
+                ? `${fmt(agg!.uncertainty.expectancyR.point, 3)} [${fmt(agg!.uncertainty.expectancyR.lower, 3)}…${fmt(agg!.uncertainty.expectancyR.upper, 3)}] (${agg!.uncertainty.expectancyR.method})`
+                : "—"} />
             </CardContent>
+            {(agg!.uncertainty?.notes.length ?? 0) > 0 && (
+              <CardContent className="border-t border-border/50 pt-2 text-xs text-muted-foreground">
+                {agg!.uncertainty!.notes.map((n, i) => <p key={i}>· {n}</p>)}
+              </CardContent>
+            )}
           </Card>
 
           {result.splits && (
@@ -250,19 +333,154 @@ export function HistoricalValidationWorkspace() {
               <CardContent className="overflow-x-auto text-xs">
                 <table className="w-full min-w-[560px]">
                   <thead><tr className="border-b border-border text-left text-muted-foreground">
-                    <th className="py-1 pr-3">cohort</th><th className="pr-3">scenarios</th><th className="pr-3">filled</th>
-                    <th className="pr-3">wins</th><th className="pr-3">losses</th><th className="pr-3">net exp. R</th><th>total R</th>
+                    <th className="py-1 pr-3">cohort</th><th className="pr-3">anchors</th><th className="pr-3">scenarios</th><th className="pr-3">realized</th>
+                    <th className="pr-3">M2M</th><th className="pr-3">ambig.</th><th className="pr-3">realized W/L</th><th className="pr-3">realized exp. R</th><th className="pr-3">95% CI</th>
+                    <th className="pr-3">purged n</th><th className="pr-3">purged exp. R</th><th className="pr-3">purged CI (method)</th><th>total R (mixed)</th>
                   </tr></thead>
                   <tbody>
-                    {result.splits.map((s) => (
-                      <tr key={s.name} className="border-b border-border/50">
-                        <td className="py-1 pr-3 font-medium">{s.name}</td>
-                        <td className="pr-3">{s.aggregate.scenarioCount}</td>
-                        <td className="pr-3">{s.aggregate.filledCount}</td>
-                        <td className="pr-3">{s.aggregate.wins}</td>
-                        <td className="pr-3">{s.aggregate.losses}</td>
-                        <td className="pr-3">{fmt(s.aggregate.expectancyR, 3)}</td>
-                        <td>{fmt(s.aggregate.totalR, 3)}</td>
+                    {result.splits.map((s) => {
+                      const pAgg = s.purged?.aggregate;
+                      const pCi = pAgg?.uncertainty?.expectancyR;
+                      return (
+                        <tr key={s.name} className="border-b border-border/50">
+                          <td className="py-1 pr-3 font-medium">{s.name}</td>
+                          <td className="pr-3 text-muted-foreground">{(s.anchorFrom ?? "—").slice(0, 10)}→{(s.anchorTo ?? "—").slice(0, 10)}</td>
+                          <td className="pr-3">{s.aggregate.scenarioCount}</td>
+                          <td className="pr-3">{s.aggregate.realizedCount}{s.aggregate.realizedCount > 0 && s.aggregate.realizedCount < 10 ? " ⚠" : ""}</td>
+                          <td className="pr-3">{s.aggregate.mtmCount}</td>
+                          <td className="pr-3">{s.aggregate.counts.ambiguous ?? 0}</td>
+                          <td className="pr-3">{s.aggregate.realizedWins}/{s.aggregate.realizedLosses}</td>
+                          <td className="pr-3">{fmt(s.aggregate.realizedExpectancyR, 3)}</td>
+                          <td className="pr-3">{s.aggregate.uncertainty?.expectancyR ? `[${fmt(s.aggregate.uncertainty.expectancyR.lower, 2)}…${fmt(s.aggregate.uncertainty.expectancyR.upper, 2)}]` : "—"}</td>
+                          <td className="pr-3" title={s.purged?.purgeReasons?.map((r) => `${r.setupId} → ${r.intoCohort} (+${r.barsIntoLaterCohort}b)`).join("\n")}>
+                            {s.purged === undefined ? "—" : `${s.purged.retainedCount} (−${s.purged.purgedCount})`}
+                          </td>
+                          <td className="pr-3">{s.purged === undefined ? "—" : s.purged.unavailableReason !== undefined ? "indeterminate" : fmt(pAgg?.realizedExpectancyR, 3)}</td>
+                          <td className="pr-3">{s.purged === undefined ? "—" : s.purged.unavailableReason !== undefined ? "—" : pCi !== undefined ? `[${fmt(pCi.lower, 2)}…${fmt(pCi.upper, 2)}] (${pCi.method}, n=${pCi.n})` : "refused"}</td>
+                          <td>{fmt(s.aggregate.totalR, 3)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </CardContent>
+            </Card>
+          )}
+
+          {result.walkForward && (
+            <Card>
+              <CardHeader className="pb-2"
+                title={`Boundary diagnostics — walk-forward status: ${result.walkForward.status}`} />
+              <CardContent className="overflow-x-auto text-xs">
+                {result.walkForward.boundaries[0]?.basis !== undefined && (
+                  <p className="mb-2 text-[11px] text-muted-foreground">
+                    boundary basis — {result.walkForward.boundaries[0].basis}
+                  </p>
+                )}
+                <table className="w-full min-w-[560px]">
+                  <thead><tr className="border-b border-border text-left text-muted-foreground">
+                    <th className="py-1 pr-3">boundary →</th><th className="pr-3">first held-out bar</th><th className="pr-3">boundary time</th>
+                    <th className="pr-3">per-series boundaries</th><th className="pr-3">examined</th><th className="pr-3">contaminated</th>
+                    <th className="pr-3">% of earlier</th><th className="pr-3">anchors hit</th><th className="pr-3">later bars touched</th>
+                    <th className="pr-3">unverifiable</th><th>status</th>
+                  </tr></thead>
+                  <tbody>
+                    {result.walkForward.boundaries.map((b) => (
+                      <tr key={`${b.toCohort}-${b.boundaryIndex}`} className="border-b border-border/50">
+                        <td className="py-1 pr-3 font-medium">→ {b.toCohort}</td>
+                        <td className="pr-3">{b.boundaryBar ?? "—"}</td>
+                        <td className="pr-3 text-muted-foreground">{(b.boundaryTime ?? "—").slice(0, 16)}</td>
+                        <td className="pr-3 text-muted-foreground">
+                          {(b.perSeries ?? []).map((p) => `${p.series}:${p.boundaryAnchorBar + 1}`).join(" · ") || "—"}
+                        </td>
+                        <td className="pr-3">{b.earlierEvaluableCount}</td>
+                        <td className="pr-3">{b.contaminatedCount}</td>
+                        <td className="pr-3">{b.contaminatedPct !== undefined ? `${(b.contaminatedPct * 100).toFixed(0)}%` : "—"}</td>
+                        <td className="pr-3">{b.affectedAnchors}</td>
+                        <td className="pr-3">{b.laterBarsTouched ?? "—"}</td>
+                        <td className="pr-3">{b.unverifiableCount ?? 0}</td>
+                        <td>{b.status === "clean" ? "absent (clean)" : b.status === "leakage_detected" ? "present (leakage)" : "indeterminate"}{b.note ? ` — ${b.note}` : ""}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {result.walkForward.boundaries.some((b) => b.contamination.length > 0) && (
+                  <p className="mt-2 text-[11px] text-muted-foreground">
+                    contaminated scenarios: {result.walkForward.boundaries
+                      .flatMap((b) => b.contamination.map((c) => `${c.setupId}(${c.series ?? "?"}, ${c.fromCohort}, +${c.barsIntoLaterCohort}b)`))
+                      .join(" · ")}
+                  </p>
+                )}
+                {result.splits?.some((s) => (s.purged?.purgeReasons?.length ?? 0) > 0) && (
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    purged rows: {result.splits.flatMap((s) =>
+                      (s.purged?.purgeReasons ?? []).map((r) => `${r.setupId}(${s.name} → ${r.intoCohort}, +${r.barsIntoLaterCohort}b)`))
+                      .join(" · ")}
+                  </p>
+                )}
+                {result.walkForward.notes.map((n, i) => <p key={i} className="mt-1 text-[11px] text-muted-foreground">· {n}</p>)}
+              </CardContent>
+            </Card>
+          )}
+
+          {result.sensitivity?.costs && (
+            <Card>
+              <CardHeader title="Cost sensitivity — same scenarios, repriced" className="pb-2" />
+              <CardContent className="overflow-x-auto text-xs">
+                <table className="w-full min-w-[620px]">
+                  <thead><tr className="border-b border-border text-left text-muted-foreground">
+                    <th className="py-1 pr-3">case</th><th className="pr-3">assumption (fee bps, slip bps, slip pts)</th>
+                    <th className="pr-3">net exp. R</th><th className="pr-3">Δ vs base</th><th className="pr-3">sign flips</th><th>classification</th>
+                  </tr></thead>
+                  <tbody>
+                    <tr className="border-b border-border/50 font-medium">
+                      <td className="py-1 pr-3">base</td>
+                      <td className="pr-3">{result.config?.costs ? JSON.stringify(result.config.costs) : "none configured"}</td>
+                      <td className="pr-3">{fmt(agg!.expectancyR, 3)}</td><td className="pr-3">—</td><td className="pr-3">—</td><td>reference</td>
+                    </tr>
+                    {result.sensitivity.costs.map((c) => (
+                      <tr key={c.label} className="border-b border-border/50">
+                        <td className="py-1 pr-3">{c.label}</td>
+                        <td className="pr-3">{JSON.stringify(c.costs)}</td>
+                        <td className="pr-3">{fmt(c.aggregate.expectancyR, 3)}</td>
+                        <td className="pr-3">{fmt(c.expectancyDeltaR, 3)}</td>
+                        <td className="pr-3">{c.signFlips}</td>
+                        <td className={c.expectancySignChange ? "font-medium text-amber-500" : ""}>
+                          {c.expectancySignChange ? "EXPECTANCY SIGN FLIPPED" : "unchanged"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </CardContent>
+            </Card>
+          )}
+
+          {result.sensitivity?.horizons && (
+            <Card>
+              <CardHeader title="Horizon sensitivity — same scenarios, re-windowed" className="pb-2" />
+              <CardContent className="overflow-x-auto text-xs">
+                <table className="w-full min-w-[620px]">
+                  <thead><tr className="border-b border-border text-left text-muted-foreground">
+                    <th className="py-1 pr-3">horizon</th><th className="pr-3">filled</th><th className="pr-3">net exp. R</th>
+                    <th className="pr-3">statuses</th><th>changes vs base</th>
+                  </tr></thead>
+                  <tbody>
+                    <tr className="border-b border-border/50 font-medium">
+                      <td className="py-1 pr-3">{result.config?.horizonBars as number} (base)</td>
+                      <td className="pr-3">{agg!.filledCount}</td><td className="pr-3">{fmt(agg!.expectancyR, 3)}</td>
+                      <td className="pr-3">{Object.entries(agg!.counts).filter(([, v]) => v > 0).map(([k, v]) => `${k}:${v}`).join(" ")}</td>
+                      <td>reference</td>
+                    </tr>
+                    {result.sensitivity.horizons.map((h) => (
+                      <tr key={h.horizonBars} className="border-b border-border/50">
+                        <td className="py-1 pr-3">{h.horizonBars}</td>
+                        <td className="pr-3">{h.aggregate.filledCount}{h.aggregate.filledCount !== agg!.filledCount ? " ⚠" : ""}</td>
+                        <td className="pr-3">{fmt(h.aggregate.expectancyR, 3)}</td>
+                        <td className="pr-3">{Object.entries(h.aggregate.counts).filter(([, v]) => v > 0).map(([k, v]) => `${k}:${v}`).join(" ")}</td>
+                        <td className="text-muted-foreground">
+                          {h.changedCount === 0 ? "none" : Object.entries(h.statusTransitions).map(([k, v]) => `${k}×${v}`).join(", ")}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -320,10 +538,49 @@ export function HistoricalValidationWorkspace() {
               <ul className="list-disc space-y-0.5 pl-4">
                 {result.assumptions.map((a, i) => <li key={i}>{a}</li>)}
               </ul>
+              {result.methodology && (
+                <div className="space-y-1 border-t border-border/50 pt-2">
+                  <p><span className="font-medium text-foreground">Uncertainty:</span> {result.methodology.uncertaintyMethod}</p>
+                  <p><span className="font-medium text-foreground">Cohorts:</span> {result.methodology.cohortBoundaries}</p>
+                  <details>
+                    <summary className="cursor-pointer font-medium text-foreground">Metric denominators</summary>
+                    <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                      {Object.entries(result.methodology.metricDefinitions).map(([k, v]) => (
+                        <li key={k}><code>{k}</code> — {v}</li>
+                      ))}
+                    </ul>
+                  </details>
+                </div>
+              )}
               <div className="pt-1">
                 contract <code>{result.contractVersion}</code> · config <code>{result.configVersion ?? "—"}</code> ·
                 fingerprint <code className="break-all">{result.fingerprint}</code>
               </div>
+              <div className="flex items-center gap-2 border-t border-border/50 pt-2">
+                <label className="cursor-pointer text-xs font-medium text-foreground">
+                  Compare with an exported run…
+                  <input type="file" accept=".json,application/json" className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (!f) return;
+                      f.text().then((t) => { try { setComparison(JSON.parse(t) as Result); } catch { setError("comparison file is not a validation export JSON"); } });
+                    }} />
+                </label>
+                {comparison && <Button variant="outline" size="sm" onClick={() => setComparison(undefined)}>clear</Button>}
+              </div>
+              {comparison && (
+                <div className="space-y-1 text-xs">
+                  <p>fingerprint: <code>{comparison.fingerprint.slice(0, 12)}…</code>{" "}
+                    {comparison.fingerprint === result.fingerprint
+                      ? <span className="text-emerald-500">identical run</span>
+                      : <span className="text-amber-500">differs — check assumptions/sample below</span>}</p>
+                  <p>config equal: {JSON.stringify(comparison.config) === JSON.stringify(result.config)
+                    ? "yes" : <span className="text-amber-500">NO — assumption change, not necessarily an outcome change</span>}</p>
+                  <p>scenarios: {comparison.scenarioCount} vs {result.scenarioCount} ·
+                     filled: {comparison.aggregate.filledCount} vs {result.aggregate.filledCount} ·
+                     net exp: {fmt(comparison.aggregate.expectancyR, 3)} vs {fmt(result.aggregate.expectancyR, 3)}</p>
+                </div>
+              )}
             </CardContent>
           </Card>
         </>
