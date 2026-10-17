@@ -101,6 +101,14 @@ export function runBacktest(input: {
   selection?: BacktestSelection;
   runId?: string;
   config: EngineConfig;
+  /**
+   * Additive recording hook (spec-26 compatible): invoked once per observed
+   * setup during phase A with the terminal `Setup` artifact the outcome pass
+   * measured. Lets product layers re-window spec-17 measurement (e.g. a
+   * configured evaluation horizon) without re-running detection or forking
+   * the pipeline. Optional — absent = zero behavioral change.
+   */
+  onMeasuredSetup?: (setup: Setup) => void;
 }): EngineResult<SystemBacktestResult> {
   const { cells, window, selection, runId, config } = input;
   const methodVersion = config.backtest?.methodVersion ?? "";
@@ -379,6 +387,7 @@ export function runBacktest(input: {
     //      spec-29 already established, nothing recomputed. ----
     for (const s of setups) {
       if (!observedSetupIds.has(s.id)) continue; // only setups the system actually observed
+      input.onMeasuredSetup?.(s); // additive recording hook — never alters measurement
       const cb = num(s.metadata?.confirmBar);
       const db = num(s.metadata?.candidateBar);
       let scoreAtConfirmation: number | undefined;
