@@ -9,7 +9,7 @@
  * engine's detection (already proven by the canonical suites).
  */
 import { describe, expect, it } from "vitest";
-import type { BacktestCell, Candle, Setup, SystemBacktestResult } from "@/lib/types";
+import type { BacktestCell, Candle, CandleSeries, Setup, SystemBacktestResult } from "@/lib/types";
 import {
   aggregateScenarios,
   analyzeBoundaryLeakage,
@@ -1465,5 +1465,149 @@ describe("boundary invariants — table-driven", () => {
     });
     expect(r.scenarios.map((s) => s.setupId)).toEqual(["syn1", "alt1"]); // time order
     expect(r.splits![0].aggregate.scenarioCount).toBe(1); // train = earlier ANCHOR TIME
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sign-off fixture — one end-to-end run, every stage asserted against values
+// computed by hand from the canonical contracts (specs 04/10/17 + hv1).
+// ---------------------------------------------------------------------------
+
+describe("end-to-end integrity fixture", () => {
+  /**
+   * Two compatible series on the same bar grid: AAA and BBB @1m, 40 bars each,
+   * flat drift (bar i closes at 100 + 0.5(i+1)). horizonBars=25 so terminal
+   * stamps through bar 25 stay observable.
+   *
+   *   s5  AAA no confirmBar            -> unevaluable, consumed nothing
+   *   s1  AAA cb=2  active=3  tgt=20   -> target, netR=(110-101)/3 = 3
+   *   s3  BBB cb=5  active=6  inv=7    -> stop, remainder exits close[7]=104 -> netR=1
+   *   s2  AAA cb=8  active=9  no term  -> censored @hEnd=33, m2m netR=(117-101)/3=5.3333
+   *   s6  AAA cb=10 no activeBar       -> not_filled, consumed (10,35]
+   *   s7  BBB cb=18 active=19 inv=25   -> stop, exits close[25]=113 -> netR=4
+   *
+   * Anchor-time order: s5(BASE fallback), s1(t2), s3(t5), s2(t8), s6(t10), s7(t18).
+   * split 0.5/0.17 -> train=[0,3) val=[3,4) test=[4,6): s1's window (2,20] crosses
+   * BOTH later partitions -> deliberate contamination, two purge reasons.
+   */
+  const candles = series(40);
+  const mkCell = (symbol: string, frames?: BacktestCell["frames"]): BacktestCell => ({
+    symbol, timeframe: "1m",
+    series: { symbol, timeframe: "1m", candles } as CandleSeries,
+    ...(frames !== undefined ? { frames } : {}),
+  });
+  const lv = (cb: number) => ({ confirmBar: cb, entryBandLow: 100, entryBandHigh: 101, invalidation: 98, targets: "110" });
+  const setups: Setup[] = [
+    mkSetup(lv(2), { id: "s1", symbol: "AAA", metadata: { ...lv(2), activeBar: 3, targetReachedBar: 20, targetBars: "20" } }),
+    mkSetup({}, { id: "s5", symbol: "AAA" }),
+    mkSetup(lv(5), { id: "s3", symbol: "BBB", metadata: { ...lv(5), activeBar: 6, invalidatedBar: 7 } }),
+    mkSetup(lv(8), { id: "s2", symbol: "AAA", metadata: { ...lv(8), activeBar: 9 } }),
+    mkSetup(lv(10), { id: "s6", symbol: "AAA" }),
+    mkSetup(lv(18), { id: "s7", symbol: "BBB", metadata: { ...lv(18), activeBar: 19, invalidatedBar: 25 } }),
+  ];
+  const frame: CandleSeries = { symbol: "AAA", timeframe: "4h", candles: series(12) } as CandleSeries;
+  let engineCells: BacktestCell[] | undefined;
+  const run: typeof import("@/lib/engines/backtest").runBacktest = (input) => {
+    engineCells = input.cells;
+    for (const s of setups) input.onMeasuredSetup?.(s);
+    return { ok: true as const, data: fakeEngineResult([]), errors: [], meta: { stage: "x", paramsVersion: "", barsConsumed: { from: 0, to: 0 }, events: [] } };
+  };
+  const cfg: ValidationRunConfig = { horizonBars: 25, split: { trainPct: 0.5, validationPct: 0.17 }, purgeBoundaries: true };
+  const deps = { config: defaultConfig(), run };
+
+  it("every stage agrees — provenance through fingerprint", () => {
+    const r = runHistoricalValidation({ cells: [mkCell("AAA", { htf: frame }), mkCell("BBB")], config: cfg, deps });
+
+    // (1) Parsed input & series identity — both datasets recorded verbatim.
+    expect(r.datasets.map((d) => `${d.symbol}@${d.timeframe}:${d.bars}`)).toEqual(["AAA@1m:40", "BBB@1m:40"]);
+
+    // (2) Causal frame availability — the transport delivered the htf frame intact.
+    expect(engineCells?.[0].frames?.htf?.candles).toHaveLength(12);
+
+    // (3) Scenario eligibility & outcome — canonical statuses, exact netR.
+    const byId = new Map(r.scenarios.map((s) => [s.setupId, s]));
+    expect(r.scenarios.map((s) => s.setupId)).toEqual(["s5", "s1", "s3", "s2", "s6", "s7"]);
+    expect(byId.get("s5")!.status).toBe("unevaluable");
+    expect(byId.get("s1")!.status).toBe("target");
+    expect(byId.get("s1")!.netR).toBeCloseTo(3, 4);
+    expect(byId.get("s3")!.status).toBe("stop");
+    expect(byId.get("s3")!.netR).toBeCloseTo(1, 4);
+    expect(byId.get("s2")!.status).toBe("censored");
+    expect(byId.get("s2")!.netR).toBeCloseTo(5.3333, 3);
+    expect(byId.get("s6")!.status).toBe("not_filled");
+    expect(byId.get("s7")!.status).toBe("stop");
+    expect(byId.get("s7")!.netR).toBeCloseTo(4, 4);
+
+    // (4) Raw cohort aggregates — contiguous, hand-computed membership.
+    expect(r.splits!.map((s) => s.aggregate.scenarioCount)).toEqual([3, 1, 2]);
+    expect(r.aggregate.filledCount).toBe(4); // s1,s3,s2,s7 activated
+    expect(r.aggregate.realizedCount).toBe(3); // censored s2 excluded
+    expect(r.aggregate.mtmCount).toBe(1);
+    expect(r.aggregate.realizedWinRate).toBe(1); // 3/3 realized are wins
+    expect(r.aggregate.realizedExpectancyR).toBeCloseTo(8 / 3, 4); // (3+1+4)/3
+
+    // (5) Boundary diagnostics — per-series, two deliberate contaminations.
+    const [bv, bt] = r.walkForward!.boundaries;
+    expect(bv.toCohort).toBe("validation");
+    expect(bv.contaminatedCount).toBe(1);
+    expect(bv.contamination[0]).toMatchObject({
+      setupId: "s1", scenarioIndex: 1, series: "AAA@1m",
+      boundaryAnchorBar: 8, barsIntoLaterCohort: 12, fromCohort: "train",
+    });
+    expect(bv.laterBarsTouched).toBe(12); // (2,20] intersect s2's consumed [9,33]
+    expect(bt.contaminatedCount).toBe(2); // s1 AND s2 reach the test partition
+    expect(bt.laterBarsTouched).toBe(23); // merged [11,33] on AAA; BBB untouched
+    expect(bt.perSeries.map((p) => `${p.series}:${p.boundaryAnchorBar}`))
+      .toEqual(["AAA@1m:10", "BBB@1m:18"]);
+    expect(r.walkForward!.status).toBe("purged");
+
+    // (6) Purged membership — s1 removed from train for BOTH crossings, once.
+    const trainP = r.splits![0].purged!;
+    expect(trainP.purgedCount).toBe(1);
+    expect(trainP.retainedCount).toBe(2);
+    expect(trainP.purgeReasons.map((p) => p.intoCohort)).toEqual(["validation", "test"]);
+    expect(trainP.aggregate!.realizedExpectancyR).toBeCloseTo(1, 4); // only s3 realized
+    const valP = r.splits![1].purged!;
+    expect(valP.purgedCount).toBe(1); // s2 leaks into test -> purged from validation
+    expect(valP.aggregate!.scenarioCount).toBe(0);
+
+    // (7) Realized vs censored denominators in the purged train aggregate.
+    expect(trainP.aggregate!.realizedCount).toBe(1);
+    expect(trainP.aggregate!.mtmCount).toBe(0);
+
+    // (8) Dependence — AAA {s1,s2,s6} overlap transitively; BBB rows never pair
+    //     with AAA rows; s5 (no window) closes nothing and counts anchor -1.
+    expect(r.aggregate.dependence).toMatchObject({
+      uniqueAnchors: 6, overlappingPairs: 3, overlappingWindows: 2,
+      clusters: 3, largestCluster: 3,
+    });
+
+    // (9) Uncertainty — n_realized=3 < 8: bootstrap refused, labelled fallbacks.
+    const u = r.aggregate.uncertainty!;
+    expect(u.winRate!.method).toBe("wilson-score");
+    expect(u.winRate!.point).toBe(1);
+    expect(u.winRate!.n).toBe(3);
+    expect(u.expectancyR!.method).toBe("student-t");
+    expect(u.expectancyR!.caveat).toMatch(/iid assumption violated/);
+    expect(u.notes.some((n) => /bootstrap refused/i.test(n))).toBe(true);
+
+    // (10) Fingerprint + repeat-run equality (evaluatedAt is wall-clock run
+    //      metadata — excluded from the content fingerprint by design).
+    const again = runHistoricalValidation({ cells: [mkCell("AAA", { htf: frame }), mkCell("BBB")], config: cfg, deps });
+    expect(again.fingerprint).toBe(r.fingerprint);
+    expect(again.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(again.scenarios)).toBe(JSON.stringify(r.scenarios));
+    expect(JSON.stringify(again.walkForward)).toBe(JSON.stringify(r.walkForward));
+  });
+
+  it("fingerprint binds frame OHLC — a high/low change with identical closes changes the run identity", () => {
+    const frames = (open: number): BacktestCell["frames"] => ({
+      htf: { symbol: "AAA", timeframe: "4h", candles: series(12).map((c, i) => i === 5 ? { ...c, open, high: open + 0.2 } : c) } as CandleSeries,
+    });
+    // Before the fix only time+close were hashed — these two frames hash alike
+    // despite different candles feeding structure/momentum analysis.
+    const a = runHistoricalValidation({ cells: [mkCell("AAA", frames(200)), mkCell("BBB")], config: cfg, deps });
+    const b = runHistoricalValidation({ cells: [mkCell("AAA", frames(300)), mkCell("BBB")], config: cfg, deps });
+    expect(a.fingerprint).not.toBe(b.fingerprint);
   });
 });

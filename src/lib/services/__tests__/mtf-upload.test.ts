@@ -106,6 +106,18 @@ describe("assignMtfRoles", () => {
     expect(assignMtfRoles(["4h", "15m"], "1h").ok).toBe(false);
   });
 
+  it("rejects duplicate timeframes — ambiguous sources are never silently merged or dropped", () => {
+    // Two files declaring the same timeframe made one vanish silently: the
+    // Set dedupe hid the duplicate, the resolver Map kept the LAST upload for
+    // frames while the anchor lookup kept the FIRST for the cell series —
+    // inconsistent which file served the run.
+    const r = assignMtfRoles(["4h", "1h", "1h"], "1h");
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain("1h");
+    expect(assignMtfRoles(["15m", "15m"], "15m").ok).toBe(false);
+  });
+
   it("anchor at a boundary (no tf above) → htf placeholder cannot equal the anchor", () => {
     const r = assignMtfRoles(["1M", "1D"], "1M");
     expect(r.ok).toBe(true);

@@ -1506,7 +1506,9 @@ export function runHistoricalValidation(input: {
       dataHash.update(`${k.time},${k.open},${k.high},${k.low},${k.close},${k.volume ?? ""};`);
     }
     for (const [role, f] of Object.entries(c.frames ?? {})) {
-      for (const k of f.candles) dataHash.update(`${role}:${k.time},${k.close};`);
+      // Full OHLCV — frame bars drive structure/momentum analysis; a close-only
+      // hash would let materially different frames collide to one fingerprint.
+      for (const k of f.candles) dataHash.update(`${role}:${k.time},${k.open},${k.high},${k.low},${k.close},${k.volume ?? ""};`);
     }
   }
   const fp = createHash("sha256")

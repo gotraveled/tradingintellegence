@@ -7,7 +7,13 @@
  * the engine; these tests verify the route never lets an invalid or ambiguous
  * combination reach it.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// Route tests run full engine pipelines (canonical MTF analysis, not stubs) —
+// several seconds per case is normal; the 5s default flakes under parallel
+// fork contention. Scoped file-level timeout, same convention as
+// src/lib/engines/__tests__/mtf-composition.test.ts.
+vi.setConfig({ testTimeout: 30_000 });
 import { POST } from "../route";
 import type { Timeframe } from "@/lib/types";
 

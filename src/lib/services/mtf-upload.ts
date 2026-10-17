@@ -78,6 +78,15 @@ export function assignMtfRoles(
     return { ok: false, error: "anchor timeframe must be one of the uploaded datasets." };
   }
   const unique = [...new Set(uploaded)];
+  if (unique.length !== uploaded.length) {
+    const dups = [...new Set(uploaded.filter((t, i) => uploaded.indexOf(t) !== i))];
+    return {
+      ok: false,
+      error:
+        `duplicate uploaded timeframe(s): ${dups.join(", ")} — supply exactly one ` +
+        "dataset per timeframe; ambiguous sources are never silently merged or dropped.",
+    };
+  }
   const above = unique.filter((t) => rank(t) > rank(anchor)).sort((a, b) => rank(a) - rank(b));
   const below = unique.filter((t) => rank(t) < rank(anchor)).sort((a, b) => rank(b) - rank(a));
 

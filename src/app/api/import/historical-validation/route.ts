@@ -27,35 +27,13 @@
  * Rights & provenance: uploads are analyzed for the uploader's session only,
  * `source.kind: "file"`, never persisted, never served onward.
  */
-import { parseOhlcCsv, inferIntervalHint } from "@/lib/services/csv-ohlc";
-import { toUploadedSeries, type UploadedSeries } from "@/lib/services/uploaded-provider";
 import { defaultConfig } from "@/lib/services/engine-defaults";
-import {
-  assignMtfRoles,
-  isCanonicalTimeframe,
-  mtfFrameResolver,
-  withMtfSet,
-} from "@/lib/services/mtf-upload";
+import { withMtfSet } from "@/lib/services/mtf-upload";
+import { parseUploadForm } from "@/lib/services/csv-upload";
 import { runHistoricalValidation, type ValidationRunConfig } from "@/lib/services/historical-validation";
-import { TIMEFRAME_MS } from "@/lib/market-data/timeframes";
-import type { BacktestCell, Timeframe } from "@/lib/types";
 
 function json(status: number, body: unknown): Response {
   return Response.json(body, { status });
-}
-
-const HV_MIN_FILES = 1;
-const HV_MAX_FILES = 4;
-
-const intervalToTimeframe = (ms: number): Timeframe | undefined =>
-  ([...Object.keys(TIMEFRAME_MS), "1M"] as Timeframe[]).find(
-    (tf) => tf !== "1M" && TIMEFRAME_MS[tf as keyof typeof TIMEFRAME_MS] === ms,
-  );
-
-interface FileMeta {
-  symbol?: string;
-  timeframe?: string;
-  is24x7?: boolean;
 }
 
 function parseConfig(raw: string | undefined): ValidationRunConfig | { error: string } {
@@ -133,127 +111,17 @@ export async function POST(req: Request): Promise<Response> {
     return json(400, { error: { message: "Malformed multipart body." } });
   }
 
-  const files = form.getAll("files").filter((f): f is File => f instanceof File);
-  if (files.length < HV_MIN_FILES || files.length > HV_MAX_FILES) {
-    return json(400, {
-      error: { message: `supply ${HV_MIN_FILES}–${HV_MAX_FILES} CSV files in repeated 'files' fields (got ${files.length}).` },
-    });
-  }
-
-  let metas: FileMeta[];
-  const metaRaw = form.get("meta")?.toString();
-  if (metaRaw !== undefined) {
-    try {
-      const parsed: unknown = JSON.parse(metaRaw);
-      if (!Array.isArray(parsed) || parsed.length !== files.length) {
-        return json(400, { error: { message: "meta must be a JSON array with one entry per uploaded file." } });
-      }
-      metas = parsed as FileMeta[];
-    } catch {
-      return json(400, { error: { message: "meta is not valid JSON." } });
-    }
-  } else {
-    metas = files.map(() => ({}));
-  }
-
-  const symbol = (form.get("symbol") ?? "").toString().trim().toUpperCase();
-  if (symbol === "") {
-    return json(400, { error: { message: "symbol is required — one instrument label for the whole run." } });
-  }
-  for (let i = 0; i < metas.length; i += 1) {
-    const ms = metas[i].symbol?.trim();
-    if (ms !== undefined && ms !== "" && ms.toUpperCase() !== symbol) {
-      return json(422, {
-        error: {
-          message: `file ${i + 1} (${files[i].name}) declares '${ms}' but the run symbol is '${symbol}'. Datasets for different instruments cannot be combined.`,
-        },
-      });
-    }
-  }
-
-  const anchor = (form.get("anchor") ?? "").toString().trim();
-  if (!isCanonicalTimeframe(anchor)) {
-    return json(400, { error: { message: "anchor must be one of the canonical timeframe set." } });
-  }
-  const htfRaw = form.get("htf")?.toString().trim();
-  const etfRaw = form.get("etf")?.toString().trim();
-  const overrides = {
-    ...(htfRaw !== undefined && htfRaw !== "" ? { htf: htfRaw as Timeframe } : {}),
-    ...(etfRaw !== undefined && etfRaw !== "" ? { etf: etfRaw as Timeframe } : {}),
-  };
-
   const cfg = parseConfig(form.get("config")?.toString());
   if ("error" in cfg) return json(400, { error: { message: cfg.error } });
 
-  // ---- Parse every upload through the canonical CSV pipeline. ----
-  const seriesList: UploadedSeries[] = [];
-  const parseWarnings: string[] = [];
-  for (let i = 0; i < files.length; i += 1) {
-    const file = files[i];
-    const meta = metas[i];
-    const text = await file.text();
-    const probe = parseOhlcCsv(text, { symbol });
-    if (!probe.ok) {
-      return json(422, { error: { message: `file ${i + 1} (${file.name}): ${probe.error}` }, file: file.name, issues: probe.issues ?? [] });
-    }
-    const hint = inferIntervalHint(probe.dataset.candles);
-    let timeframe: Timeframe | undefined;
-    const declared = meta.timeframe?.trim();
-    if (declared !== undefined && declared !== "") {
-      if (!isCanonicalTimeframe(declared)) {
-        return json(400, { error: { message: `file ${i + 1} (${file.name}): timeframe '${declared}' is not in the canonical set.` } });
-      }
-      timeframe = declared;
-    } else {
-      const hinted = hint !== undefined ? intervalToTimeframe(hint) : undefined;
-      if (hinted === undefined) {
-        return json(422, {
-          error: { message: `file ${i + 1} (${file.name}): timeframe is required — the median interval does not map unambiguously to a canonical timeframe. Set it in meta.` },
-        });
-      }
-      timeframe = hinted;
-    }
-    const final = parseOhlcCsv(text, { symbol, timeframe, is24x7: meta.is24x7 === true });
-    if (!final.ok) {
-      return json(422, { error: { message: `file ${i + 1} (${file.name}): ${final.error}` }, file: file.name, issues: final.issues ?? [] });
-    }
-    for (const f of final.validationIssues) {
-      if (f.severity !== "info") parseWarnings.push(`${file.name}: ${f.severity} — ${f.message}`);
-    }
-    seriesList.push(toUploadedSeries({ symbol, timeframe, candles: final.dataset.candles, is24x7: meta.is24x7 === true }));
-  }
-
-  // ---- Role assignment + cell assembly (spec-31 transport; single-file runs
-  //      have no aux frames — baseline behavior, bit-identical). ----
-  const uploaded = seriesList.map((s) => s.timeframe);
-  const assign = assignMtfRoles(uploaded, anchor, overrides);
-  if (!assign.ok) return json(400, { error: { message: assign.error } });
-  const { roles, set, unused } = assign.assignment;
-  if (unused.length > 0) {
-    parseWarnings.push(`uploaded timeframe(s) not bound to a role and unused: ${unused.join(", ")}`);
-  }
-
-  const anchorSeries = seriesList.find((s) => s.timeframe === anchor);
-  if (anchorSeries === undefined) {
-    return json(400, { error: { message: `anchor '${anchor}' must be one of the uploaded timeframes.` } });
-  }
-  const resolveFrames = mtfFrameResolver({ symbol, anchor, roles, datasets: seriesList });
-  const cell: BacktestCell = {
-    symbol,
-    timeframe: anchor,
-    series: {
-      symbol,
-      timeframe: anchor,
-      candles: anchorSeries.candles,
-    },
-  };
-  const frames = resolveFrames({ symbol }, anchor);
-  if (frames !== undefined) cell.frames = frames;
+  const parsed = await parseUploadForm(form);
+  if (!parsed.ok) return json(parsed.status, parsed.body);
+  const { cells, warnings: parseWarnings, set } = parsed.upload;
 
   const config = withMtfSet(defaultConfig(), set);
   try {
     const result = runHistoricalValidation({
-      cells: [cell],
+      cells,
       config: cfg,
       deps: { config },
     });
