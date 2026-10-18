@@ -45,6 +45,16 @@ import {
   type ReplayComparisonReport,
 } from "@/lib/services/replay-bundle";
 import type { StrategyComparisonResult } from "@/lib/services/strategy-comparison";
+import {
+  archiveStatus,
+  archiveSummary,
+  browserArchiveStore,
+  buildArchivedBundle,
+  clearArchive,
+  deleteArchived,
+  type ArchiveSummary,
+  type RecordArchiveStatus,
+} from "@/lib/services/input-archive";
 
 const STATUS_LABEL: Record<string, string> = {
   repeat: "exact repeat",
@@ -98,6 +108,9 @@ export function ExperimentRegistryPanel() {
 
   const [verify, setVerify] = useState<{ recordId: string; report: VerificationReport } | undefined>();
   const [verifyNotices, setVerifyNotices] = useState<string[]>([]);
+  const [archive, setArchive] = useState<ArchiveSummary | undefined>();
+  const [openArchive, setOpenArchive] = useState<RecordArchiveStatus | undefined>();
+  const [archiveMsg, setArchiveMsg] = useState<string | undefined>();
   const [bundle, setBundle] = useState<{ b: ReplayBundle; v: BundleVerification; notices: string[] } | undefined>();
   const [replayErr, setReplayErr] = useState<string | undefined>();
   const [replayReport, setReplayReport] = useState<ReplayComparisonReport | undefined>();
@@ -141,6 +154,62 @@ export function ExperimentRegistryPanel() {
   const open = records.find((r) => r.recordId === openId);
   const pair = selected.map((id) => records.find((r) => r.recordId === id)).filter((r): r is ExperimentRecord => r !== undefined);
   const diff = pair.length === 2 ? diffRecords(pair[0], pair[1]) : undefined;
+
+  const refreshArchive = async () => {
+    setArchive(await archiveSummary(browserArchiveStore()));
+  };
+
+  // Archive summary refreshes with the registry — the workspace dispatches
+  // the same event after an opt-in archive write.
+  useEffect(() => {
+    queueMicrotask(() => void refreshArchive()); // async — no sync setState in effects
+  }, [records]);
+
+  // Per-record archive status for the open detail row.
+  useEffect(() => {
+    if (open === undefined) {
+      queueMicrotask(() => setOpenArchive(undefined)); // async — no sync setState in effects
+      return;
+    }
+    const store = browserArchiveStore();
+    let cancelled = false;
+    void archiveStatus(store, open).then((s) => { if (!cancelled) setOpenArchive(s); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open?.recordId, archive]);
+
+  const exportArchivedBundle = async () => {
+    if (open === undefined) return;
+    const out = await buildArchivedBundle(browserArchiveStore(), open);
+    if (!out.ok || out.bundle === undefined) {
+      setArchiveMsg(out.error ?? "archive export failed");
+      return;
+    }
+    const blob = new Blob([exportBundle(out.bundle)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `replay-bundle-${open.recordId.slice(0, 8)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    const v = out.verification;
+    setArchiveMsg(v !== undefined && v.ineligible.length > 0
+      ? `Bundle exported but not replay-eligible: ${v.ineligible.join("; ")}`
+      : "Full replay bundle exported from archived inputs (verified).");
+  };
+
+  const removeArchived = async () => {
+    if (open === undefined) return;
+    const r = await deleteArchived(browserArchiveStore(), open.recordId);
+    setArchiveMsg(r.ok ? "Archived inputs deleted — experiment metadata unchanged." : r.error);
+    await refreshArchive();
+  };
+
+  const wipeArchive = async () => {
+    const r = await clearArchive(browserArchiveStore());
+    setArchiveMsg(r.ok ? "Input archive cleared — experiment metadata unchanged." : r.error);
+    await refreshArchive();
+  };
 
   const toggleSelect = (id: string) =>
     setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id].slice(-2)));
@@ -215,6 +284,30 @@ export function ExperimentRegistryPanel() {
           </Notice>
         )}
 
+        {/* ---- Local input archive (V1.1, opt-in) ---- */}
+        {archive !== undefined && (
+          <div className="rounded-md border border-border bg-surface-elevated p-2 text-xs">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span className="font-medium">Input archive</span>
+              <span className="text-muted-foreground">
+                {archive.persistent ? "persistent (IndexedDB)" : "NOT persistent"} ·
+                {archive.experiments === 0
+                  ? " no archived inputs"
+                  : ` ${archive.experiments} experiment(s) · ${(archive.totalBytes / 1024).toFixed(1)} KiB`}
+              </span>
+              {archive.experiments > 0 && (
+                <Button size="sm" variant="outline" onClick={() => void wipeArchive()}>
+                  clear archive
+                </Button>
+              )}
+            </div>
+            <div className="mt-1 text-[11px] text-muted-foreground">{archive.limitation}</div>
+            {archiveMsg !== undefined && (
+              <div className="mt-1 text-[11px]">{archiveMsg}</div>
+            )}
+          </div>
+        )}
+
         {visible.length === 0 ? (
           <p className="text-xs text-muted-foreground">
             {records.length === 0
@@ -248,7 +341,10 @@ export function ExperimentRegistryPanel() {
                     <td className="py-1.5 pr-3 whitespace-nowrap">{r.createdAt.slice(0, 19).replace("T", " ")}</td>
                     <td className="py-1.5 pr-3">
                       <code className="text-[11px]">{r.fingerprint.slice(0, 12)}…</code>
-                      <div className="text-[10px] text-muted-foreground">record {r.recordId.slice(0, 8)}… · {r.protocolVersion}</div>
+                      <div className="text-[10px] text-muted-foreground">
+                        record {r.recordId.slice(0, 8)}… · {r.protocolVersion}
+                        {archive?.byRecord.has(r.recordId) === true && " · inputs archived"}
+                      </div>
                     </td>
                     <td className="py-1.5 pr-3">{r.strategies.map((s) => s.id).join(", ")}</td>
                     <td className="py-1.5 pr-3 text-[11px]">{r.testPeriod
@@ -402,6 +498,45 @@ export function ExperimentRegistryPanel() {
                 <div className="mt-1 text-[11px] text-muted-foreground">{verify.report.caveat}</div>
               </Notice>
             )}
+
+            {/* ---- Archived inputs (V1.1) ---- */}
+            <div className="mt-2 rounded-md border border-border p-2">
+              <div className="mb-1 font-medium">Archived inputs</div>
+              {openArchive === undefined ? (
+                <div className="text-muted-foreground">checking…</div>
+              ) : openArchive.state === "archived" ? (
+                <>
+                  <div className="text-muted-foreground">
+                    {openArchive.files} file(s) · {(openArchive.totalBytes / 1024).toFixed(1)} KiB —
+                    digests verified on restore
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-2">
+                    <Button size="sm" variant="outline" onClick={() => void exportArchivedBundle()}>
+                      export bundle (archived inputs)
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => void removeArchived()}>
+                      delete archived inputs
+                    </Button>
+                  </div>
+                </>
+              ) : openArchive.state === "none" ? (
+                <div className="text-muted-foreground">
+                  no archived inputs — original CSVs were not stored for this experiment
+                  {openArchive.detail !== undefined ? ` (${openArchive.detail})` : ""}
+                </div>
+              ) : (
+                <>
+                  <div className="text-warning">
+                    {openArchive.state} — {openArchive.detail ?? "archived inputs failed verification"}
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-2">
+                    <Button size="sm" variant="outline" onClick={() => void removeArchived()}>
+                      delete archived inputs
+                    </Button>
+                  </div>
+                </>
+              )}
+            </div>
 
             <p className="mt-2 text-muted-foreground">{open.exposure.note}</p>
             <div className="mt-2 overflow-x-auto">

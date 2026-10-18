@@ -17,8 +17,9 @@ const K = new Uint32Array([
 
 const rrot = (x: number, n: number) => (x >>> n) | (x << (32 - n));
 
-export function sha256Hex(message: string): string {
-  const bytes = new TextEncoder().encode(message);
+/** SHA-256 over raw bytes — the primitive both string and byte callers use.
+ *  Byte digests bind exactly the supplied content: no encoding normalization. */
+export function sha256BytesHex(bytes: Uint8Array): string {
   const bitLen = bytes.length * 8;
   // Padded length: message + 0x80 + zeros + 8-byte big-endian length, multiple of 64.
   const padded = new Uint8Array(Math.ceil((bytes.length + 9) / 64) * 64);
@@ -70,4 +71,8 @@ export function sha256Hex(message: string): string {
   }
 
   return Array.from(h, (x) => x.toString(16).padStart(8, "0")).join("");
+}
+
+export function sha256Hex(message: string): string {
+  return sha256BytesHex(new TextEncoder().encode(message));
 }

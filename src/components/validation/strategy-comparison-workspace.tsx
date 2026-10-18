@@ -22,6 +22,10 @@ import {
   type ExposureReport,
 } from "@/lib/services/experiment-registry";
 import { buildBundle, exportBundle } from "@/lib/services/replay-bundle";
+import {
+  archiveInputs,
+  browserArchiveStore,
+} from "@/lib/services/input-archive";
 import type { StrategyComparisonResult } from "@/lib/services/strategy-comparison";
 
 const TIMEFRAMES = [...Object.keys(TIMEFRAME_MS), "1M"] as Timeframe[];
@@ -103,6 +107,8 @@ export function StrategyComparisonWorkspace() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [record, setRecord] = useState<ExperimentRecord | undefined>();
+  const [archiveOptIn, setArchiveOptIn] = useState(false); // explicit opt-in only
+  const [archiveNote, setArchiveNote] = useState<string | undefined>();
   const [result, setResult] = useState<ComparisonResult | undefined>();
   const [exposure, setExposure] = useState<ExposureReport | undefined>();
   const [view, setView] = useState<"raw" | "purged">("raw");
@@ -164,6 +170,26 @@ export function StrategyComparisonWorkspace() {
         store.save(history);
         setExposure(record.exposure);
         setRecord(record);
+        // Opt-in only: archive the original upload text beside this record so
+        // a full replay bundle can be exported after a reload. Failures are
+        // surfaced — never silently claimed as persisted.
+        if (archiveOptIn && files.length > 0) {
+          const payloads = await Promise.all(files.map(async (f, i) => ({
+            name: f.name, content: await f.arrayBuffer(), // original bytes — no text normalization
+            ...(metas[i]?.timeframe !== undefined ? { timeframe: metas[i].timeframe } : {}),
+            ...(metas[i]?.is24x7 === true ? { is24x7: true } : {}),
+          })));
+          const archived = await archiveInputs(browserArchiveStore(), {
+            record,
+            inputs: { symbol: symbol.trim().toUpperCase(), anchor },
+            files: payloads,
+          });
+          setArchiveNote(archived.ok
+            ? "Inputs archived in this browser — a full replay bundle can be exported after reload."
+            : `Inputs were NOT archived: ${archived.error ?? "storage unavailable"}`);
+        } else {
+          setArchiveNote(undefined);
+        }
         window.dispatchEvent(new Event("ti-registry-changed"));
       } catch {
         setExposure(undefined);
@@ -246,6 +272,16 @@ export function StrategyComparisonWorkspace() {
               </div>
             ))}
           </div>
+          <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border p-2 text-xs text-muted-foreground">
+            <input type="checkbox" className="mt-0.5" checked={archiveOptIn}
+              onChange={(e) => setArchiveOptIn(e.target.checked)} />
+            <span>
+              <span className="font-medium text-foreground">Archive inputs locally (opt-in).</span>{" "}
+              Keep the uploaded CSV text in this browser (IndexedDB) so a full replay bundle can
+              be exported after reload. Nothing is uploaded anywhere; files stay on this device
+              and are lost if site data is cleared.
+            </span>
+          </label>
         </CardContent>
       </Card>
 
@@ -525,6 +561,9 @@ export function StrategyComparisonWorkspace() {
               <Button size="sm" variant="outline" onClick={() => void exportReplay()} disabled={!record}>
                 <Download className="mr-1 h-4 w-4" /> Export replay bundle
               </Button>
+              {archiveNote !== undefined && (
+                <p className="text-[11px] text-muted-foreground">{archiveNote}</p>
+              )}
             </CardContent>
           </Card>
         </>
