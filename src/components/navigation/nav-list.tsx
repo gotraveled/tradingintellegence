@@ -36,7 +36,7 @@ function NavLink({
 }
 
 const GROUP_LABEL: Record<string, string> = {
-  available: "Research tools",
+  available: "Workspace",
   preview: "Provider-gated",
   sample: "Sample data",
   planned: "Planned",

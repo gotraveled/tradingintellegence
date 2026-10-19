@@ -52,20 +52,6 @@ export const NAV_ITEMS: NavItem[] = [
     description: "Live Binance and Kraken quotes, candles, and signals — venue-specific public data, no credentials.",
     availability: "available",
   },
-  {
-    title: "Markets",
-    href: ROUTES.markets,
-    icon: LineChart,
-    description: "Instrument universe across global asset classes.",
-    availability: "preview",
-    children: [
-      { title: "Global Markets", href: ROUTES.markets },
-      ...MARKET_SEGMENTS.map((segment) => ({
-        title: segment.label,
-        href: marketSegmentHref(segment.id),
-      })),
-    ],
-  },
   // Upload-driven analysis — separate from the live chart surface.
   {
     title: "Chart Analyst",
@@ -80,6 +66,20 @@ export const NAV_ITEMS: NavItem[] = [
     icon: Newspaper,
     description: "Official filings, central-bank releases, and economic statistics — attributed and linked.",
     availability: "available",
+  },
+  {
+    title: "Markets",
+    href: ROUTES.markets,
+    icon: LineChart,
+    description: "Instrument universe across global asset classes.",
+    availability: "preview",
+    children: [
+      { title: "Global Markets", href: ROUTES.markets },
+      ...MARKET_SEGMENTS.map((segment) => ({
+        title: segment.label,
+        href: marketSegmentHref(segment.id),
+      })),
+    ],
   },
 ];
 

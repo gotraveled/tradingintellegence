@@ -66,7 +66,9 @@ function normalizeCssColor(value: string): string | undefined {
   if (value === "") return undefined;
   if (value.startsWith("#") || value.startsWith("rgb")) return value;
   if (colorCanvas === undefined) {
-    colorCanvas = document.createElement("canvas").getContext("2d");
+    colorCanvas = document
+      .createElement("canvas")
+      .getContext("2d", { willReadFrequently: true });
   }
   if (colorCanvas === null) return undefined;
   colorCanvas.clearRect(0, 0, 1, 1);
@@ -158,7 +160,9 @@ function makeZonePrimitive(
               });
             },
           }),
-          zOrder: "bottom" as const,
+          // v5 API: zOrder is a METHOD on the pane view (not a property) —
+          // the pane calls view.zOrder() while ordering renderers.
+          zOrder: () => "bottom" as const,
         },
       ];
     },
