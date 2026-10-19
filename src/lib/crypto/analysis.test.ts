@@ -42,6 +42,24 @@ function range(n = 120): Candle[] {
   return out;
 }
 
+/**
+ * Trend that dies into a tight flat — EMA50 still trails well below so the
+ * EMA-spread test alone would call this "bullish". Only the efficiency
+ * ratio recognises the last 20 bars as sideways chop.
+ */
+function deadAfterTrend(): Candle[] {
+  const candles = uptrend(80, 100);
+  const last = candles[candles.length - 1];
+  const base = last.close;
+  for (let i = 0; i < 25; i += 1) {
+    const mid = base + Math.sin(i / 2) * 0.3; // ±0.3 rotation, zero travel
+    candles.push(
+      candle(last.time + (i + 1) * 60_000, mid - 0.05, mid + 0.15, mid - 0.15, mid + 0.05),
+    );
+  }
+  return candles;
+}
+
 /** Pullback-into-demand pattern: uptrend, then dip to the prior swing low zone. */
 function pullbackToDemand(): Candle[] {
   const candles = uptrend(90, 100);
@@ -84,6 +102,15 @@ describe("analyzeCandles — deterministic signal engine", () => {
     expect(result!.trend.direction).toBe("ranging");
     expect(result!.signal.direction).toBe("wait");
     expect(result!.signal.entry).toBeUndefined();
+  });
+
+  it("vetoes sideways tape even when EMAs are still separated", () => {
+    const result = analyzeCandles(deadAfterTrend());
+    expect(result).toBeDefined();
+    // Efficiency ratio is the sideways detector — EMA spread alone lies here.
+    expect(result!.volatility.er20).toBeLessThan(0.3);
+    expect(result!.trend.direction).toBe("ranging");
+    expect(result!.signal.direction).toBe("wait");
   });
 
   it("emits entry/SL/TP only when confluence meets the bar — and RR ≥ 1", () => {

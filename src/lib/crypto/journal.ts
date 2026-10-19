@@ -46,6 +46,8 @@ export interface TradeRecord {
   targets: TradeTarget[];
   /** Confluence points at signal time (0–100). */
   confidence: number;
+  /** US dollars risked (≈1% of equity at booking — 1R in money terms). */
+  riskUsd?: number;
   /** Wall-clock ms when the signal was booked. */
   openedAt: number;
   /** Open-time (ms) of the bar the signal was emitted on. */
@@ -71,6 +73,8 @@ export interface DailyStats {
   losses: number;
   flats: number;
   netR: number;
+  /** Net closed profit/loss in USD for the day. */
+  netUsd: number;
   winPct: number;
 }
 
@@ -80,6 +84,47 @@ const MAX_TRADES = 400;
 const DEDUP_BARS = 24;
 /** Bars a trade may run before it is closed at market. */
 const EXPIRY_BARS = 200;
+
+/** Virtual account — $10k paper capital. */
+export const ACCOUNT_CAPITAL_USD = 10_000;
+/** Risked per trade as a fraction of current equity (compounding, capped). */
+export const RISK_PCT = 0.01;
+const MAX_RISK_USD = 1_000;
+const DEFAULT_RISK_USD = Math.round(ACCOUNT_CAPITAL_USD * RISK_PCT);
+
+/**
+ * Timeframes the journal trades: 5m or 15m, whichever carries the best
+ * setup. 1m scalping is a separate mode the user enables later.
+ */
+export const TRADE_TIMEFRAMES: readonly Timeframe[] = ["5m", "15m"];
+
+/**
+ * Minimum confluence score to book a trade. Signals need ≥4/5 factors to
+ * fire at all, so 80 is the effective floor — the gate documents that the
+ * journal only trades top-quality setups, never marginal ones.
+ */
+export const MIN_ENTRY_SCORE = 80;
+
+/** USD the trade risked at booking (legacy rows predate stamping → default). */
+function usdOf(t: TradeRecord): number {
+  return t.riskUsd ?? DEFAULT_RISK_USD;
+}
+
+/** Realized equity = starting capital + every closed trade's realized R × its risked $. */
+export function equityOf(trades: TradeRecord[]): number {
+  let eq = ACCOUNT_CAPITAL_USD;
+  for (const t of trades) {
+    if (t.status === "closed" && t.realizedR !== undefined) {
+      eq += t.realizedR * usdOf(t);
+    }
+  }
+  return Math.round(eq * 100) / 100;
+}
+
+/** Risk for a new trade: 1% of current equity, min $1, capped. */
+export function nextRiskUsd(trades: TradeRecord[]): number {
+  return Math.min(MAX_RISK_USD, Math.max(1, Math.round(equityOf(trades) * RISK_PCT)));
+}
 
 export const TF_MS: Record<Timeframe, number> = {
   "1m": 60_000,
@@ -134,14 +179,17 @@ export function registerSignal(
     signal.direction === "wait" ||
     signal.entry === undefined ||
     signal.stopLoss === undefined ||
-    signal.targets.length === 0
+    signal.targets.length === 0 ||
+    signal.confidence < MIN_ENTRY_SCORE
   ) {
     return { trades };
   }
-  const key = journalKey(venue, symbol, timeframe);
-  if (trades.some((t) => t.status === "open" && tradeKey(t) === key)) {
-    return { trades }; // one position per market at a time
+  // One open trade per PAIR (venue+symbol), not per timeframe — a trader
+  // picks the best chart for a pair and stays out until it resolves.
+  if (trades.some((t) => t.status === "open" && t.venue === venue && t.symbol === symbol)) {
+    return { trades };
   }
+  const key = journalKey(venue, symbol, timeframe);
   const tfMs = TF_MS[timeframe];
   const lastSame = [...trades]
     .reverse()
@@ -160,6 +208,7 @@ export function registerSignal(
     initialStopLoss: signal.stopLoss,
     targets: signal.targets.map((t) => ({ ...t })),
     confidence: signal.confidence,
+    riskUsd: nextRiskUsd(trades),
     openedAt: now,
     entryBarTime: barTime,
     lastProcessedBarTime: barTime,
@@ -168,6 +217,35 @@ export function registerSignal(
     status: "open",
   };
   return { trades: [...trades, rec].slice(-MAX_TRADES), added: rec };
+}
+
+/**
+ * Multi-timeframe entry selection. Candidates are the same pair's signals
+ * across timeframes; the journal books at most ONE — the best risk:reward,
+ * confidence breaking ties — so a pair never carries stacked positions.
+ */
+export function registerBestSignal(
+  trades: TradeRecord[],
+  candidates: readonly {
+    venue: string;
+    symbol: string;
+    timeframe: Timeframe;
+    signal: TradeSignal;
+    barTime: number;
+  }[],
+  now: number,
+): { trades: TradeRecord[]; added?: TradeRecord } {
+  if (candidates.length === 0) return { trades };
+  const { venue, symbol } = candidates[0];
+  // Same-pair only — callers group candidates per pair, but never rank a
+  // foreign symbol into this pair's decision.
+  const own = candidates.filter((c) => c.venue === venue && c.symbol === symbol);
+  const best = [...own].sort(
+    (a, b) =>
+      (b.signal.riskReward ?? 0) - (a.signal.riskReward ?? 0) ||
+      b.signal.confidence - a.signal.confidence,
+  )[0];
+  return registerSignal(trades, { ...best, now });
 }
 
 function finish(
@@ -241,6 +319,36 @@ export function evaluateTrade(rec: TradeRecord, closedBars: Candle[]): TradeReco
   return t;
 }
 
+/**
+ * Signed price distance covered by a trade — "points captured" for a
+ * closed trade, live points for an open one at `mark`. Positive in the
+ * trade's favour regardless of side.
+ */
+export function pointsCaptured(t: TradeRecord, mark?: Price): number {
+  const end = t.status === "closed" ? t.exitPrice : mark;
+  if (end === undefined) return 0;
+  return t.direction === "bullish" ? end - t.entry : t.entry - end;
+}
+
+/** Floating $ P&L of an open trade at a mark = unrealized R × $ risked. */
+export function unrealizedUsd(t: TradeRecord, mark: Price): number {
+  return Math.round(unrealizedR(t, mark) * usdOf(t) * 100) / 100;
+}
+
+/** Total floating $ P&L across open trades, keyed marks (tradeKey → price). */
+export function floatingPnlUsd(
+  trades: TradeRecord[],
+  markOf: (t: TradeRecord) => Price | undefined,
+): number {
+  let sum = 0;
+  for (const t of trades) {
+    if (t.status !== "open") continue;
+    const mark = markOf(t);
+    if (mark !== undefined) sum += unrealizedUsd(t, mark);
+  }
+  return Math.round(sum * 100) / 100;
+}
+
 /** Unrealized R of an open trade at a mark price (live P&L readout). */
 export function unrealizedR(t: TradeRecord, mark: Price): number {
   const risk = Math.abs(t.entry - t.initialStopLoss);
@@ -262,7 +370,7 @@ export function dailyStats(trades: TradeRecord[], days = 14): DailyStats[] {
     ).padStart(2, "0")}`;
     let row = byDay.get(day);
     if (row === undefined) {
-      row = { day, trades: 0, wins: 0, losses: 0, flats: 0, netR: 0, winPct: 0 };
+      row = { day, trades: 0, wins: 0, losses: 0, flats: 0, netR: 0, netUsd: 0, winPct: 0 };
       byDay.set(day, row);
     }
     row.trades += 1;
@@ -271,10 +379,73 @@ export function dailyStats(trades: TradeRecord[], days = 14): DailyStats[] {
     else if (outcome === "loss") row.losses += 1;
     else row.flats += 1;
     row.netR = Math.round((row.netR + (t.realizedR ?? 0)) * 100) / 100;
+    row.netUsd = Math.round((row.netUsd + (t.realizedR ?? 0) * usdOf(t)) * 100) / 100;
     const decided = row.wins + row.losses;
     row.winPct = decided === 0 ? 0 : Math.round((row.wins / decided) * 1000) / 10;
   }
   return [...byDay.values()].sort((a, b) => (a.day < b.day ? 1 : -1)).slice(0, days);
+}
+
+export interface SymbolStats {
+  venue: string;
+  symbol: string;
+  open: number;
+  closed: number;
+  wins: number;
+  losses: number;
+  flats: number;
+  netR: number;
+  /** Net closed profit/loss in USD for this pair. */
+  netUsd: number;
+  winPct: number;
+}
+
+/**
+ * Per-market rollup across all timeframes — answers "which pair is the
+ * engine most consistent on?". Sorted: markets with resolved trades first
+ * (by win%, netR tiebreak), then markets with only running trades.
+ */
+export function symbolStats(trades: TradeRecord[]): SymbolStats[] {
+  const map = new Map<string, SymbolStats>();
+  for (const t of trades) {
+    const key = `${t.venue}|${t.symbol}`;
+    let row = map.get(key);
+    if (row === undefined) {
+      row = {
+        venue: t.venue,
+        symbol: t.symbol,
+        open: 0,
+        closed: 0,
+        wins: 0,
+        losses: 0,
+        flats: 0,
+        netR: 0,
+        netUsd: 0,
+        winPct: 0,
+      };
+      map.set(key, row);
+    }
+    if (t.status === "open") {
+      row.open += 1;
+      continue;
+    }
+    row.closed += 1;
+    const outcome = tradeOutcome(t);
+    if (outcome === "win") row.wins += 1;
+    else if (outcome === "loss") row.losses += 1;
+    else row.flats += 1;
+    row.netR = Math.round((row.netR + (t.realizedR ?? 0)) * 100) / 100;
+    row.netUsd = Math.round((row.netUsd + (t.realizedR ?? 0) * usdOf(t)) * 100) / 100;
+    const decided = row.wins + row.losses;
+    row.winPct = decided === 0 ? 0 : Math.round((row.wins / decided) * 1000) / 10;
+  }
+  return [...map.values()].sort((a, b) => {
+    const aRanked = a.closed > 0 ? 1 : 0;
+    const bRanked = b.closed > 0 ? 1 : 0;
+    if (aRanked !== bRanked) return bRanked - aRanked;
+    if (a.winPct !== b.winPct) return b.winPct - a.winPct;
+    return b.netR - a.netR;
+  });
 }
 
 // ---------- persistence (localStorage — a local journal, not an account) ----------

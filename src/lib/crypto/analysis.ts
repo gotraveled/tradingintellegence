@@ -67,7 +67,15 @@ export interface SignalAnalysis {
   candlesRead: number;
   trend: { fastEma: number; slowEma: number; direction: Direction | "ranging" };
   momentum: { rsi14: number };
-  volatility: { atr14: number };
+  volatility: {
+    atr14: number;
+    /**
+     * Kaufman efficiency ratio over ER_PERIOD closes — net move / total
+     * path, 0..1. Low = sideways chop, high = directional. The sideways
+     * veto lives here.
+     */
+    er20: number;
+  };
   structure: { note: string; bullish: number; bearish: number };
   zones: SignalZone[];
   signal: TradeSignal;
@@ -82,6 +90,13 @@ const EMA_SLOW = 50;
 const SL_ATR_BUFFER = 0.5;
 const ZONE_MAX_AGE = 80; // bars
 const ZONE_PROXIMITY_ATR = 1.5; // entry must sit within this ATR distance of the zone
+const ER_PERIOD = 20;
+/**
+ * Below this efficiency ratio the tape is dead — price covers under a
+ * quarter of its own path. Deliberately strict: trend pullbacks can
+ * legitimately score ~0.3 and are judged by structure instead.
+ */
+const MIN_ER = 0.25;
 
 function ema(values: number[], period: number): number[] {
   if (values.length < period) return [];
@@ -119,6 +134,23 @@ function rsi(closes: number[], period: number): number {
   if (loss === 0) return 100;
   const rs = gain / loss;
   return 100 - 100 / (1 + rs);
+}
+
+/**
+ * Kaufman efficiency ratio: |net change| / sum(|bar changes|) over `period`
+ * closes. ~1 = clean directional travel; ~0 = back-and-forth chop where
+ * every gain is handed back — the classic sideways signature EMA spacing
+ * alone can't catch.
+ */
+function efficiencyRatio(closes: number[], period: number): number {
+  const n = closes.length;
+  if (n < period + 1) return 1; // insufficient history → don't veto
+  const net = Math.abs(closes[n - 1] - closes[n - 1 - period]);
+  let path = 0;
+  for (let i = n - period; i < n; i += 1) {
+    path += Math.abs(closes[i] - closes[i - 1]);
+  }
+  return path === 0 ? 0 : net / path;
 }
 
 interface Pivot {
@@ -211,8 +243,16 @@ export function analyzeCandles(candles: Candle[]): SignalAnalysis | undefined {
   // Scale-free trend test: EMA separation relative to ATR — a fixed percent
   // threshold misreads flat tape on high-priced symbols as a trend.
   const emaSpreadAtr = atr14 > 0 ? Math.abs(emaF - emaS) / atr14 : 0;
+  // Sideways veto #2: efficiency ratio catches rotating tape the EMAs
+  // can't — a slow drift with EMAs apart but every leg retraced still
+  // reads "ranging" here.
+  const er20 = efficiencyRatio(closes, ER_PERIOD);
   const trendDir: Direction | "ranging" =
-    atr14 === 0 || emaSpreadAtr < 0.5 ? "ranging" : emaF >= emaS ? "bullish" : "bearish";
+    atr14 === 0 || emaSpreadAtr < 0.5 || er20 < MIN_ER
+      ? "ranging"
+      : emaF >= emaS
+        ? "bullish"
+        : "bearish";
 
   // Structure from the two most recent swing highs and lows.
   const swingHighs = piv.filter((p) => p.kind === "high").slice(-2);
@@ -246,7 +286,9 @@ export function analyzeCandles(candles: Candle[]): SignalAnalysis | undefined {
     signal.reasons.push(
       atr14 === 0
         ? "Volatility could not be measured — no signal proposed."
-        : "EMA20/50 are intertwined — ranging tape, no directional edge proposed.",
+        : er20 < MIN_ER
+          ? `Sideways market — price travelled only ${(er20 * 100).toFixed(0)}% of its path over ${ER_PERIOD} bars; rotating structure, no trade.`
+          : "EMA20/50 are intertwined — ranging tape, no directional edge proposed.",
     );
   } else {
     const side: Direction = trendDir;
@@ -341,8 +383,17 @@ export function analyzeCandles(candles: Candle[]): SignalAnalysis | undefined {
     signal.confidence = signal.factors.reduce((sum, f) => sum + f.points, 0);
     signal.reasons = reasons;
 
-    // Only propose when location, reward, and at least 4/5 factors agree.
-    if (nearEntry && entryZone && rrOk && agreed >= 4 && stopLoss !== undefined) {
+    // Only propose when location, reward, structure and ≥4/5 factors
+    // agree. Structure is MANDATORY — trading against rotating or opposing
+    // swings is exactly the sideways/no-edge behaviour this engine avoids.
+    if (
+      nearEntry &&
+      entryZone &&
+      rrOk &&
+      agreed >= 4 &&
+      structAgrees &&
+      stopLoss !== undefined
+    ) {
       signal.direction = side;
       signal.entry = entry;
       signal.stopLoss = stopLoss;
@@ -351,6 +402,10 @@ export function analyzeCandles(candles: Candle[]): SignalAnalysis | undefined {
         { label: "TP1", price: tp1, rr: Math.round(rr1 * 10) / 10 },
         { label: "TP2", price: tp2, rr: 2.5 },
       ];
+    } else if (agreed >= 4 && !structAgrees) {
+      signal.reasons.push(
+        `Setup scores ${agreed}/5 but swing structure is ${structureNote} — no trade against rotating structure.`,
+      );
     } else if (agreed >= 4 && !nearEntry) {
       signal.reasons.push(
         `Direction agrees (${agreed}/5 factors) but price is not at a ${side === "bullish" ? "demand" : "supply"} zone — entry location missing, so no signal.`,
@@ -368,7 +423,7 @@ export function analyzeCandles(candles: Candle[]): SignalAnalysis | undefined {
     candlesRead: candles.length,
     trend: { fastEma: emaF, slowEma: emaS, direction: trendDir },
     momentum: { rsi14 },
-    volatility: { atr14 },
+    volatility: { atr14, er20 },
     structure: { note: structureNote, bullish: structBull, bearish: structBear },
     zones,
     signal,

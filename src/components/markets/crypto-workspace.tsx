@@ -19,17 +19,24 @@ import type { ChartOverlay } from "@/components/charts/chart-types";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader } from "@/components/ui/card";
 import { Notice } from "@/components/ui/notice";
-import { analyzeCandles, type SignalAnalysis } from "@/lib/crypto/analysis";
+import { analyzeCandles, type SignalAnalysis, type TradeSignal } from "@/lib/crypto/analysis";
 import {
+  ACCOUNT_CAPITAL_USD,
   clearTrades,
   dailyStats,
+  equityOf,
   evaluateTrade,
+  floatingPnlUsd,
   journalKey,
   loadTrades,
-  registerSignal,
+  pointsCaptured,
+  registerBestSignal,
   saveTrades,
+  symbolStats,
   tradeKey,
+  TRADE_TIMEFRAMES,
   unrealizedR,
+  unrealizedUsd,
   type TradeRecord,
 } from "@/lib/crypto/journal";
 import { analyzeTechnicals } from "@/lib/crypto/technicals";
@@ -208,6 +215,21 @@ function fmtPrice(value: number | undefined, precision: number): string {
     minimumFractionDigits: precision,
     maximumFractionDigits: precision,
   });
+}
+
+function fmtUsd(value: number): string {
+  return `$${value.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+/** Signed USD P&L — "+$123.40" / "-$55.00". */
+function fmtUsdPnl(value: number): string {
+  return `${value >= 0 ? "+" : "-"}$${Math.abs(value).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
 }
 
 /** "in 4h 12m" / "in 7m" countdown for upcoming calendar events. */
@@ -394,6 +416,10 @@ export function CryptoMarketsWorkspace() {
 
   // Intraday scan: analyze the other scan timeframes over REST, refreshed
   // every minute. The selected timeframe's row comes from the live analysis.
+  // Live marks: last close per venue|symbol|tf, fed by every kline fetch
+  // (global scan, MTF scan, live chart) — drives floating P&L per trade.
+  const [marks, setMarks] = useState<Record<string, number>>({});
+
   useEffect(() => {
     let cancelled = false;
     const run = () => {
@@ -408,26 +434,18 @@ export function CryptoMarketsWorkspace() {
               ? { state: "ready", analysis: rowAnalysis }
               : { state: "error", error: res.error.message },
           }));
-          // Journal the scan's signals and carry open trades on this
-          // timeframe forward — every scan bar is a management update.
-          if (res.ok && rowAnalysis !== undefined && res.data.candles.length > 0) {
+          // Management only — entry selection is centralized in the
+          // global scan (one trade per pair, best timeframe wins).
+          if (res.ok && res.data.candles.length > 0) {
             const set = res.data.candles;
             const closed = res.data.hasFormingCandle ? set.slice(0, -1) : set;
             const key = journalKey(venue.id, symbol, tf);
-            updateTrades((prev) => {
-              let next = registerSignal(prev, {
-                venue: venue.id,
-                symbol,
-                timeframe: tf,
-                signal: rowAnalysis.signal,
-                barTime: set[set.length - 1].time,
-                now: Date.now(),
-              }).trades;
-              next = next.map((t) =>
+            setMarks((m) => ({ ...m, [key]: set[set.length - 1].close }));
+            updateTrades((prev) =>
+              prev.map((t) =>
                 t.status === "open" && tradeKey(t) === key ? evaluateTrade(t, closed) : t,
-              );
-              return next;
-            });
+              ),
+            );
           }
         });
       }
@@ -439,6 +457,88 @@ export function CryptoMarketsWorkspace() {
       clearInterval(timer);
     };
   }, [venue, symbol, timeframe, updateTrades]);
+
+  // Global scan: every listed pair on BOTH venues, all tradeable
+  // timeframes (15m+ — 5m scalping is a separate mode), every minute.
+  // Per pair the journal books at most ONE position: all timeframe
+  // candidates are compared and the best risk:reward chart takes the
+  // trade; the rest are ignored until that position resolves.
+  useEffect(() => {
+    let cancelled = false;
+    const run = () => {
+      for (const vId of VENUE_ORDER) {
+        const v = VENUES[vId];
+        for (const s of v.symbols) {
+          const sym = s.symbol;
+          void Promise.all(
+            TRADE_TIMEFRAMES.map((tf) => v.fetchKlines(sym, tf).then((res) => ({ tf, res }))),
+          ).then((rows) => {
+            if (cancelled) return;
+            const candidates: {
+              venue: string;
+              symbol: string;
+              timeframe: Timeframe;
+              signal: TradeSignal;
+              barTime: number;
+            }[] = [];
+            const tfSets = new Map<string, Candle[]>();
+            const markEntries: Record<string, number> = {};
+            for (const { tf, res } of rows) {
+              if (!res.ok || res.data.candles.length === 0) continue;
+              const set = res.data.candles;
+              const closed = res.data.hasFormingCandle ? set.slice(0, -1) : set;
+              const key = journalKey(vId, sym, tf);
+              tfSets.set(key, closed);
+              markEntries[key] = set[set.length - 1].close;
+              // Entries are decided on CLOSED bars only — a pro waits for
+              // the candle to print, never trades a half-formed signal.
+              const a = analyzeCandles(closed);
+              if (a !== undefined && a.signal.direction !== "wait") {
+                // SMC gate: the ICT engine suite must not contradict the
+                // signal — a "range" verdict or opposing structure trend
+                // vetoes the candidate outright.
+                const tech = analyzeTechnicals(closed, sym, tf);
+                const dir = a.signal.direction;
+                const smcBlocks =
+                  tech !== undefined &&
+                  (tech.trend === "range" ||
+                    (dir === "bullish" && tech.trend === "downtrend") ||
+                    (dir === "bearish" && tech.trend === "uptrend"));
+                if (!smcBlocks) {
+                  candidates.push({
+                    venue: vId,
+                    symbol: sym,
+                    timeframe: tf,
+                    signal: a.signal,
+                    barTime: closed[closed.length - 1].time,
+                  });
+                }
+              }
+            }
+            updateTrades((prev) => {
+              // Manage every open trade of this pair on its own timeframe's bars.
+              const next = prev.map((t) => {
+                if (t.status !== "open") return t;
+                const set = tfSets.get(tradeKey(t));
+                return set === undefined ? t : evaluateTrade(t, set);
+              });
+              const pairBusy = next.some(
+                (t) => t.status === "open" && t.venue === vId && t.symbol === sym,
+              );
+              return pairBusy ? next : registerBestSignal(next, candidates, Date.now()).trades;
+            });
+            setMarks((m) => ({ ...m, ...markEntries }));
+          });
+        }
+      }
+    };
+    run();
+    const timer = setInterval(run, SCAN_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [updateTrades]);
 
   const candles = candlesSet?.candles;
   const analysis = useMemo(
@@ -491,12 +591,13 @@ export function CryptoMarketsWorkspace() {
       if (seededRef.current) {
         for (const t of trades) {
           const p = prev.get(t.id);
+          const pr = VENUES[t.venue as VenueId]?.symbolInfo(t.symbol)?.pricePrecision ?? 2;
           if (p === undefined && t.status === "open") {
             events.push({
               id: `${t.id}:open`,
               at: Date.now(),
               tone: t.direction,
-              text: `New ${t.direction === "bullish" ? "BUY" : "SELL"} ${t.symbol} ${t.timeframe} @ ${t.entry} — SL ${t.stopLoss}`,
+              text: `New ${t.direction === "bullish" ? "BUY" : "SELL"} ${t.symbol} ${t.timeframe} @ ${fmtPrice(t.entry, pr)} — SL ${fmtPrice(t.stopLoss, pr)}`,
             });
           } else if (p !== undefined && p.status === "open" && t.status === "closed") {
             const r = t.realizedR ?? 0;
@@ -504,7 +605,7 @@ export function CryptoMarketsWorkspace() {
               id: `${t.id}:closed`,
               at: Date.now(),
               tone: r > 0.01 ? "bullish" : r < -0.01 ? "bearish" : "neutral",
-              text: `Closed ${t.symbol} ${t.timeframe}: ${t.exitReason} @ ${t.exitPrice} (${r >= 0 ? "+" : ""}${r}R)`,
+              text: `Closed ${t.symbol} ${t.timeframe}: ${t.exitReason} @ ${fmtPrice(t.exitPrice, pr)} (${r >= 0 ? "+" : ""}${r}R)`,
             });
           }
         }
@@ -532,40 +633,43 @@ export function CryptoMarketsWorkspace() {
     void Notification.requestPermission().then((p) => setNotifyOn(p === "granted"));
   };
 
-  // Paper-trade journal: book the live signal once per setup, then carry
-  // every open trade on this market forward over newly closed bars.
+  // Carry the open trade on this market forward over newly closed bars.
+  // Entries are centralized in the global scan (one trade per pair, best
+  // timeframe); this effect only keeps management up to tick speed.
   // Deferred: journal bookkeeping isn't render-critical and the lint rules
   // forbid synchronous setState inside an effect body.
   useEffect(() => {
-    if (!analysis || candles === undefined || candles.length === 0) return;
-    const lastBar = candles[candles.length - 1];
+    if (candles === undefined || candles.length === 0) return;
     const closed = candlesSet?.hasFormingCandle ? candles.slice(0, -1) : candles;
     const key = journalKey(venueId, symbol, timeframe);
-    const signal = analysis.signal;
     const id = setTimeout(() => {
-      updateTrades((prev) => {
-        let next = registerSignal(prev, {
-          venue: venueId,
-          symbol,
-          timeframe,
-          signal,
-          barTime: lastBar.time,
-          now: Date.now(),
-        }).trades;
-        next = next.map((t) =>
+      setMarks((m) => ({ ...m, [key]: candles[candles.length - 1].close }));
+      updateTrades((prev) =>
+        prev.map((t) =>
           t.status === "open" && tradeKey(t) === key ? evaluateTrade(t, closed) : t,
-        );
-        return next;
-      });
+        ),
+      );
     }, 0);
     return () => clearTimeout(id);
-  }, [analysis, candles, candlesSet?.hasFormingCandle, venueId, symbol, timeframe, updateTrades]);
+  }, [candles, candlesSet?.hasFormingCandle, venueId, symbol, timeframe, updateTrades]);
 
   const currentKey = journalKey(venueId, symbol, timeframe);
   const openTrade = trades.find((t) => t.status === "open" && tradeKey(t) === currentKey);
   const openTrades = trades.filter((t) => t.status === "open");
   const stats = dailyStats(trades);
+  const byPair = symbolStats(trades);
+  const balance = equityOf(trades); // realized equity — closed trades only
+  const closedTrades = [...trades]
+    .filter((t) => t.status === "closed")
+    .sort((a, b) => (b.exitTime ?? 0) - (a.exitTime ?? 0))
+    .slice(0, 8);
   const lastClose = candles?.[candles.length - 1]?.close;
+  const markOf = (t: TradeRecord): number | undefined =>
+    tradeKey(t) === currentKey && lastClose !== undefined
+      ? lastClose
+      : marks[tradeKey(t)];
+  const floating = floatingPnlUsd(trades, markOf);
+  const liveEquity = Math.round((balance + floating) * 100) / 100;
 
   // High-impact events: released in the last 30m or coming within 48h.
   const upcomingNews = news.events
@@ -985,7 +1089,7 @@ export function CryptoMarketsWorkspace() {
       <Card>
         <CardHeader
           title="Paper trades"
-          description="Every proposed entry is journaled and managed on real bars — TP1 banks half, the stop moves to breakeven, then trails 1R behind the close. A bar touching both stop and target counts the stop first (conservative)."
+          description="Virtual $10,000 terminal — 1% of equity risked per trade, one position per pair. Entries need a confluence score of 80+ and fire on the better of 5m/15m by risk:reward. TP1 banks half, the stop moves to breakeven then trails 1R; a bar touching both stop and target counts the stop first."
           action={
             <div className="flex items-center gap-2">
               <button
@@ -1012,11 +1116,35 @@ export function CryptoMarketsWorkspace() {
             </div>
           }
         />
+        <div className="mb-4 grid gap-3 sm:grid-cols-4">
+          {[
+            { label: "Balance", text: fmtUsd(balance), tone: "text-foreground" },
+            {
+              label: "Floating P&L",
+              text: fmtUsdPnl(floating),
+              tone: floating >= 0 ? "text-bullish" : "text-bearish",
+            },
+            {
+              label: "Equity",
+              text: fmtUsd(liveEquity),
+              tone:
+                liveEquity - ACCOUNT_CAPITAL_USD >= 0 ? "text-bullish" : "text-bearish",
+            },
+            { label: "Open positions", text: String(openTrades.length), tone: "text-foreground" },
+          ].map((tile) => (
+            <div key={tile.label} className="rounded-md border border-border p-3">
+              <div className="text-xs text-subtle-foreground">{tile.label}</div>
+              <div className={cn("numeric mt-1 text-sm font-semibold", tile.tone)}>
+                {tile.text}
+              </div>
+            </div>
+          ))}
+        </div>
         {trades.length === 0 ? (
           <p className="text-sm text-subtle-foreground">
-            No trades yet — the engine books a paper trade the moment a signal fires on any
-            scanned timeframe, and manages it on every closed bar while that market is being
-            watched or scanned.
+            No trades yet — every listed pair on Binance and Kraken is scanned each minute on
+            5m and 15m; the engine books at most one position per pair, only on setups
+            scoring 80+ confluence, on the timeframe with the best risk:reward.
           </p>
         ) : (
           <div className="space-y-4">
@@ -1046,17 +1174,21 @@ export function CryptoMarketsWorkspace() {
             )}
             {openTrades.length > 0 && (
               <div>
-                <h3 className="mb-1.5 text-sm font-medium text-foreground">Running trades</h3>
+                <h3 className="mb-1.5 text-sm font-medium text-foreground">Open positions</h3>
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[680px] text-sm">
+                  <table className="w-full min-w-[820px] text-sm">
                     <thead>
                       <tr className="border-b border-border text-left text-xs text-subtle-foreground">
-                        <th className="py-2 pr-3 font-medium">Market</th>
-                        <th className="py-2 pr-3 font-medium">Side</th>
+                        <th className="py-2 pr-3 font-medium">Symbol</th>
+                        <th className="py-2 pr-3 font-medium">Type</th>
+                        <th className="py-2 pr-3 font-medium">Score</th>
                         <th className="py-2 pr-3 font-medium">Entry</th>
-                        <th className="py-2 pr-3 font-medium">Stop (live)</th>
-                        <th className="py-2 pr-3 font-medium">TP1</th>
-                        <th className="py-2 font-medium">Open R</th>
+                        <th className="py-2 pr-3 font-medium">S/L</th>
+                        <th className="py-2 pr-3 font-medium">T/P</th>
+                        <th className="py-2 pr-3 font-medium">Price</th>
+                        <th className="py-2 pr-3 font-medium">Pts</th>
+                        <th className="py-2 pr-3 font-medium">Risked</th>
+                        <th className="py-2 font-medium">Profit</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1066,13 +1198,13 @@ export function CryptoMarketsWorkspace() {
                         const tp1 = t.targets[0]?.price;
                         const stopNote = t.tp1Hit
                           ? t.stopLoss === t.entry
-                            ? "breakeven"
-                            : "trailing"
-                          : "initial";
-                        const r =
-                          tradeKey(t) === currentKey && lastClose !== undefined
-                            ? unrealizedR(t, lastClose)
-                            : undefined;
+                            ? "BE"
+                            : "trail"
+                          : "";
+                        const mark = markOf(t);
+                        const r = mark !== undefined ? unrealizedR(t, mark) : undefined;
+                        const pnl = mark !== undefined ? unrealizedUsd(t, mark) : undefined;
+                        const pts = mark !== undefined ? pointsCaptured(t, mark) : undefined;
                         const meta = DIR_META[t.direction];
                         return (
                           <tr key={t.id} className="border-b border-border last:border-b-0">
@@ -1083,14 +1215,19 @@ export function CryptoMarketsWorkspace() {
                               </span>
                             </td>
                             <td className="py-2.5 pr-3">
-                              <Badge tone={meta.tone}>{meta.label}</Badge>
+                              <Badge tone={meta.tone}>
+                                {t.direction === "bullish" ? "BUY" : "SELL"}
+                              </Badge>
                             </td>
+                            <td className="numeric py-2.5 pr-3">{t.confidence}</td>
                             <td className="numeric py-2.5 pr-3">{fmtPrice(t.entry, p)}</td>
                             <td className="numeric py-2.5 pr-3">
                               {fmtPrice(t.stopLoss, p)}
-                              <span className="ml-1 text-xs text-subtle-foreground">
-                                {stopNote}
-                              </span>
+                              {stopNote !== "" && (
+                                <span className="ml-1 text-xs text-subtle-foreground">
+                                  {stopNote}
+                                </span>
+                              )}
                             </td>
                             <td className="numeric py-2.5 pr-3">
                               {fmtPrice(tp1, p)}
@@ -1098,13 +1235,33 @@ export function CryptoMarketsWorkspace() {
                                 <span className="ml-1 text-xs text-bullish">banked</span>
                               )}
                             </td>
+                            <td className="numeric py-2.5 pr-3 text-foreground">
+                              {mark !== undefined ? fmtPrice(mark, p) : "—"}
+                            </td>
+                            <td
+                              className={cn(
+                                "numeric py-2.5 pr-3",
+                                pts !== undefined &&
+                                  (pts >= 0 ? "text-bullish" : "text-bearish"),
+                              )}
+                            >
+                              {pts === undefined
+                                ? "—"
+                                : `${pts >= 0 ? "+" : ""}${fmtPrice(pts, p)}`}
+                            </td>
+                            <td className="numeric py-2.5 pr-3">
+                              {t.riskUsd !== undefined ? fmtUsd(t.riskUsd) : "—"}
+                            </td>
                             <td
                               className={cn(
                                 "numeric py-2.5 font-semibold",
-                                r !== undefined && (r >= 0 ? "text-bullish" : "text-bearish"),
+                                pnl !== undefined &&
+                                  (pnl >= 0 ? "text-bullish" : "text-bearish"),
                               )}
                             >
-                              {r === undefined ? "—" : `${r >= 0 ? "+" : ""}${r}R`}
+                              {pnl === undefined
+                                ? "—"
+                                : `${fmtUsdPnl(pnl)} (${r! >= 0 ? "+" : ""}${r}R)`}
                             </td>
                           </tr>
                         );
@@ -1113,9 +1270,93 @@ export function CryptoMarketsWorkspace() {
                   </table>
                 </div>
                 <p className="mt-1.5 text-xs text-subtle-foreground">
-                  Open R updates live only for the market on the chart; other running trades
-                  update when their market is viewed or scanned each minute.
+                  Price and profit tick live for the market on the chart; every other position
+                  re-marks each minute on its own timeframe&apos;s bars.
                 </p>
+              </div>
+            )}
+            {closedTrades.length > 0 && (
+              <div>
+                <h3 className="mb-1.5 text-sm font-medium text-foreground">
+                  Trade history — profit & loss
+                </h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[820px] text-sm">
+                    <thead>
+                      <tr className="border-b border-border text-left text-xs text-subtle-foreground">
+                        <th className="py-2 pr-3 font-medium">Symbol</th>
+                        <th className="py-2 pr-3 font-medium">Type</th>
+                        <th className="py-2 pr-3 font-medium">Entry → Exit</th>
+                        <th className="py-2 pr-3 font-medium">Closed by</th>
+                        <th className="py-2 pr-3 font-medium">Bars</th>
+                        <th className="py-2 pr-3 font-medium">Points</th>
+                        <th className="py-2 pr-3 font-medium">R</th>
+                        <th className="py-2 font-medium">Profit</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {closedTrades.map((t) => {
+                        const info = VENUES[t.venue as VenueId]?.symbolInfo(t.symbol);
+                        const p = info?.pricePrecision ?? precision;
+                        const r = t.realizedR ?? 0;
+                        const pnl = r * (t.riskUsd ?? 0);
+                        const pts = pointsCaptured(t);
+                        return (
+                          <tr key={t.id} className="border-b border-border last:border-b-0">
+                            <td className="py-2.5 pr-3 font-medium text-foreground">
+                              {info?.label ?? t.symbol} · {t.timeframe}
+                              <span className="ml-1.5 text-xs font-normal text-subtle-foreground">
+                                {VENUES[t.venue as VenueId]?.label ?? t.venue}
+                              </span>
+                            </td>
+                            <td className="py-2.5 pr-3">
+                              <Badge tone={DIR_META[t.direction].tone}>
+                                {t.direction === "bullish" ? "BUY" : "SELL"}
+                              </Badge>
+                            </td>
+                            <td className="numeric py-2.5 pr-3">
+                              {fmtPrice(t.entry, p)} → {fmtPrice(t.exitPrice, p)}
+                            </td>
+                            <td className="py-2.5 pr-3 text-subtle-foreground">
+                              {t.exitReason}
+                            </td>
+                            <td className="numeric py-2.5 pr-3">{t.barsHeld}</td>
+                            <td
+                              className={cn(
+                                "numeric py-2.5 pr-3",
+                                pts > 0 ? "text-bullish" : pts < 0 ? "text-bearish" : "",
+                              )}
+                            >
+                              {pts >= 0 ? "+" : ""}
+                              {fmtPrice(pts, p)}
+                            </td>
+                            <td
+                              className={cn(
+                                "numeric py-2.5 pr-3",
+                                r > 0.01 ? "text-bullish" : r < -0.01 ? "text-bearish" : "",
+                              )}
+                            >
+                              {r >= 0 ? "+" : ""}
+                              {r}R
+                            </td>
+                            <td
+                              className={cn(
+                                "numeric py-2.5 font-semibold",
+                                pnl > 0.01
+                                  ? "text-bullish"
+                                  : pnl < -0.01
+                                    ? "text-bearish"
+                                    : "",
+                              )}
+                            >
+                              {fmtUsdPnl(pnl)}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
             {stats.length > 0 ? (
@@ -1131,7 +1372,8 @@ export function CryptoMarketsWorkspace() {
                         <th className="py-2 pr-3 font-medium">Losses</th>
                         <th className="py-2 pr-3 font-medium">Flat</th>
                         <th className="py-2 pr-3 font-medium">Win %</th>
-                        <th className="py-2 font-medium">Net R</th>
+                        <th className="py-2 pr-3 font-medium">Net R</th>
+                        <th className="py-2 font-medium">Net $</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1156,6 +1398,14 @@ export function CryptoMarketsWorkspace() {
                             {d.netR >= 0 ? "+" : ""}
                             {d.netR}R
                           </td>
+                          <td
+                            className={cn(
+                              "numeric py-2.5 font-semibold",
+                              d.netUsd >= 0 ? "text-bullish" : "text-bearish",
+                            )}
+                          >
+                            {fmtUsdPnl(d.netUsd)}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -1172,6 +1422,86 @@ export function CryptoMarketsWorkspace() {
                 No closed trades yet — the daily win/loss record appears once the first paper
                 trade resolves.
               </p>
+            )}
+            {byPair.length > 0 && (
+              <div>
+                <h3 className="mb-1.5 text-sm font-medium text-foreground">
+                  By pair — where is the engine most consistent?
+                </h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[640px] text-sm">
+                    <thead>
+                      <tr className="border-b border-border text-left text-xs text-subtle-foreground">
+                        <th className="py-2 pr-3 font-medium">Pair</th>
+                        <th className="py-2 pr-3 font-medium">Venue</th>
+                        <th className="py-2 pr-3 font-medium">Trades</th>
+                        <th className="py-2 pr-3 font-medium">Open</th>
+                        <th className="py-2 pr-3 font-medium">W</th>
+                        <th className="py-2 pr-3 font-medium">L</th>
+                        <th className="py-2 pr-3 font-medium">Flat</th>
+                        <th className="py-2 pr-3 font-medium">Win %</th>
+                        <th className="py-2 pr-3 font-medium">Net R</th>
+                        <th className="py-2 font-medium">Net $</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {byPair.map((r) => {
+                        const info = VENUES[r.venue as VenueId]?.symbolInfo(r.symbol);
+                        return (
+                          <tr
+                            key={`${r.venue}|${r.symbol}`}
+                            className="border-b border-border last:border-b-0"
+                          >
+                            <td className="py-2.5 pr-3 font-medium text-foreground">
+                              {info?.label ?? r.symbol}
+                            </td>
+                            <td className="py-2.5 pr-3 text-subtle-foreground">
+                              {VENUES[r.venue as VenueId]?.label ?? r.venue}
+                            </td>
+                            <td className="numeric py-2.5 pr-3">{r.closed}</td>
+                            <td className="numeric py-2.5 pr-3">{r.open}</td>
+                            <td className="numeric py-2.5 pr-3 text-bullish">{r.wins}</td>
+                            <td className="numeric py-2.5 pr-3 text-bearish">{r.losses}</td>
+                            <td className="numeric py-2.5 pr-3">{r.flats}</td>
+                            <td className="numeric py-2.5 pr-3 font-semibold text-foreground">
+                              {r.closed > 0 ? `${r.winPct}%` : "—"}
+                            </td>
+                            <td
+                              className={cn(
+                                "numeric py-2.5 font-semibold",
+                                r.closed === 0
+                                  ? "text-subtle-foreground"
+                                  : r.netR >= 0
+                                    ? "text-bullish"
+                                    : "text-bearish",
+                              )}
+                            >
+                              {r.closed > 0 ? `${r.netR >= 0 ? "+" : ""}${r.netR}R` : "—"}
+                            </td>
+                            <td
+                              className={cn(
+                                "numeric py-2.5 font-semibold",
+                                r.closed === 0
+                                  ? "text-subtle-foreground"
+                                  : r.netUsd >= 0
+                                    ? "text-bullish"
+                                    : "text-bearish",
+                              )}
+                            >
+                              {r.closed > 0 ? fmtUsdPnl(r.netUsd) : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="mt-1.5 text-xs text-subtle-foreground">
+                  All listed pairs on Binance and Kraken are scanned every minute; pairs with
+                  closed trades rank first by win %. A few trades is noise — judge a pair
+                  after a meaningful sample.
+                </p>
+              </div>
             )}
           </div>
         )}
