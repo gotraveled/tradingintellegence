@@ -1,13 +1,24 @@
 import Link from "next/link";
 import { BrandMark } from "@/components/navigation/brand";
-import { PUBLIC_ROUTES, RISK_DISCLAIMER, SITE } from "@/lib/constants";
+import { PUBLIC_ROUTES, RISK_DISCLAIMER, ROUTES, SITE } from "@/lib/constants";
 
 const COLUMNS: { heading: string; links: { href: string; label: string }[] }[] = [
+  {
+    heading: "Platform",
+    links: [
+      { href: ROUTES.dataImport, label: "Data Import" },
+      { href: ROUTES.chartAnalyst, label: "Chart Analyst" },
+      { href: ROUTES.validation, label: "Historical Validation" },
+      { href: ROUTES.comparison, label: "Comparison Lab" },
+    ],
+  },
   {
     heading: "Product",
     links: [
       { href: PUBLIC_ROUTES.features, label: "Features" },
       { href: PUBLIC_ROUTES.methodology, label: "Methodology" },
+      { href: "/#how-it-works", label: "How it works" },
+      { href: "/#faq", label: "FAQ" },
       { href: PUBLIC_ROUTES.markets, label: "Markets" },
       { href: PUBLIC_ROUTES.pricing, label: "Pricing" },
     ],
@@ -33,7 +44,7 @@ export function SiteFooter() {
   return (
     <footer className="border-t border-border">
       <div className="mx-auto max-w-6xl space-y-8 px-4 py-10 sm:px-6">
-        <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-5">
           <div className="space-y-2.5">
             <div className="flex items-center gap-2.5">
               <BrandMark className="size-5" />

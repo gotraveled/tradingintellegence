@@ -2,19 +2,26 @@
 
 import { Menu, X } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { buttonVariants } from "@/components/ui/button";
 import { ROUTES } from "@/lib/constants";
+import type { NavEntry } from "./site-nav";
 
-interface SiteMobileNavProps {
-  links: readonly { href: string; label: string }[];
-}
-
-/** Collapsible marketing nav for viewports below md. Client-side only for the toggle. */
-export function SiteMobileNav({ links }: SiteMobileNavProps) {
+/** Collapsible marketing nav for viewports below lg. Client-side only for the toggle. */
+export function SiteMobileNav({ items }: { items: readonly NavEntry[] }) {
   const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open]);
+
   return (
-    <div className="md:hidden">
+    <div className="lg:hidden">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -30,17 +37,38 @@ export function SiteMobileNav({ links }: SiteMobileNavProps) {
           className="absolute inset-x-0 top-full border-b border-border bg-background/95 px-4 py-4 backdrop-blur"
         >
           <ul className="space-y-1">
-            {links.map((link) => (
-              <li key={link.href}>
-                <Link
-                  href={link.href}
-                  onClick={() => setOpen(false)}
-                  className="block rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-surface-elevated hover:text-foreground"
-                >
-                  {link.label}
-                </Link>
-              </li>
-            ))}
+            {items.map((entry) =>
+              entry.type === "link" ? (
+                <li key={entry.href}>
+                  <Link
+                    href={entry.href}
+                    onClick={() => setOpen(false)}
+                    className="block rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-surface-elevated hover:text-foreground"
+                  >
+                    {entry.label}
+                  </Link>
+                </li>
+              ) : (
+                <li key={entry.label}>
+                  <p className="px-3 pt-3 pb-1 text-[11px] font-medium tracking-wide text-subtle-foreground uppercase">
+                    {entry.label}
+                  </p>
+                  <ul className="space-y-1">
+                    {entry.items.map((item) => (
+                      <li key={item.href + item.label}>
+                        <Link
+                          href={item.href}
+                          onClick={() => setOpen(false)}
+                          className="block rounded-md py-2 pr-3 pl-5 text-sm text-muted-foreground transition-colors hover:bg-surface-elevated hover:text-foreground"
+                        >
+                          {item.label}
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              ),
+            )}
             <li className="pt-2">
               <Link
                 href={ROUTES.dataImport}

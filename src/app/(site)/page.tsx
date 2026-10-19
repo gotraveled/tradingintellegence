@@ -2,6 +2,7 @@ import {
   Archive,
   ArrowRight,
   ChartCandlestick,
+  Check,
   FileUp,
   Fingerprint,
   History,
@@ -68,6 +69,18 @@ const JOURNEY: { title: string; text: string; href: string; cta: string }[] = [
     text: "Freeze 2–6 configurations and run them side-by-side on the same data under one shared protocol.",
     href: ROUTES.comparison,
     cta: "Open the lab",
+  },
+  {
+    title: "Record experiments",
+    text: "Completed comparisons register automatically — fingerprinted, timestamped, and checked against prior test-window exposure.",
+    href: ROUTES.comparison,
+    cta: "Open the registry",
+  },
+  {
+    title: "Export & replay",
+    text: "Export portable rb1 bundles, archive inputs locally, and rerun a record to reproduce its exact fingerprint.",
+    href: ROUTES.comparison,
+    cta: "Replay a record",
   },
 ];
 
@@ -189,6 +202,106 @@ const FEATURES: { heading: string; intro: string; rows: FeatureRow[] }[] = [
   },
 ];
 
+const SHOWCASES: {
+  title: string;
+  href: string;
+  cta: string;
+  lead: string;
+  points: string[];
+  outputs: string[];
+}[] = [
+  {
+    title: "Market Data Import",
+    href: ROUTES.dataImport,
+    cta: "Import a dataset",
+    lead: "Every upload-driven workflow starts here. Drop an OHLCV CSV — or up to four timeframes of the same instrument — and the validator reports exactly what it found before anything runs.",
+    points: [
+      "Delimiter and column detection, per-row issue reporting, and gap, duplicate, and ordering checks.",
+      "Timeframe hinting plus explicit multi-timeframe role binding (HTF / ITF / ETF).",
+      "Provenance is recorded on every run — the file itself is never stored or sent anywhere.",
+    ],
+    outputs: [
+      "Row & rejection counts",
+      "Gap and duplicate report",
+      "Preview table",
+      "Timeframe hint",
+      "Provenance string",
+    ],
+  },
+  {
+    title: "Chart Analyst",
+    href: ROUTES.chartAnalyst,
+    cta: "Analyze a screenshot",
+    lead: "Point it at a chart screenshot and it reads the pixels — candle geometry, trend direction, demand/supply zones, and axis ticks — deterministically. No OCR guesses at your price levels: calibration uses anchors you supply.",
+    points: [
+      "Structured report: candles read, bull/bear split, trend, levels with touch counts, scenarios.",
+      "Optional user-anchored price-axis calibration — otherwise levels stay labelled visual estimates.",
+      "A local vision runtime (Ollama) can add a narrative; nothing leaves your deployment either way.",
+    ],
+    outputs: [
+      "Verdict and reasoning",
+      "Levels with touches",
+      "Supply/demand zones",
+      "Scenarios & invalidations",
+      "Calibration status",
+    ],
+  },
+  {
+    title: "Historical Validation",
+    href: ROUTES.validation,
+    cta: "Validate an idea",
+    lead: "Replay the engine's scenarios chronologically over your candles and measure what actually happened — win rates ship with sample sizes and confidence intervals, never naked percentages.",
+    points: [
+      "Causal evaluation with explicit horizon, entry deadline, fees, and slippage assumptions.",
+      "Chronological 60/20/20 splits with optional purged-boundary evaluation.",
+      "Sensitivity grids for costs and horizons; results export as JSON or CSV.",
+    ],
+    outputs: [
+      "Realized W/L/BE with n",
+      "Expectancy R with 95% CI",
+      "Cohort splits & purge counts",
+      "Dependence diagnostics",
+      "Run fingerprint",
+    ],
+  },
+  {
+    title: "Strategy Comparison Lab",
+    href: ROUTES.comparison,
+    cta: "Compare strategies",
+    lead: "Freeze 2–6 configuration presets and evaluate them on the same dataset under one shared protocol — differences in outcome are attributable to the configuration, nothing else.",
+    points: [
+      "Identical snapshots are rejected; differing opportunity counts are reported, not reconciled.",
+      "Fairness and test-set exposure warnings appear before the results table.",
+      "Per-instrument and per-cohort breakdowns where the data supports them.",
+    ],
+    outputs: [
+      "Side-by-side metrics",
+      "Uncertainty intervals",
+      "Exposure notice",
+      "Fairness warnings",
+      "JSON export",
+    ],
+  },
+  {
+    title: "Experiment Registry & Replay",
+    href: ROUTES.comparison,
+    cta: "Open the registry",
+    lead: "Completed comparisons register automatically — configuration, protocol, datasets, exposure, fingerprint. Archived inputs restore byte-identical, and exported bundles replay to the same fingerprint on demand.",
+    points: [
+      "Every record carries a fingerprinted identity plus prior test-window exposure.",
+      "Opt-in archive stores original upload bytes in IndexedDB, digests verified on restore.",
+      "rb1 bundles are portable: import, verify, replay — verification distinguishes file integrity from proof that an experiment was valid.",
+    ],
+    outputs: [
+      "Fingerprinted records",
+      "Exposure status",
+      "Digest-verified archive",
+      "rb1 bundle export/import",
+      "Replay match report",
+    ],
+  },
+];
+
 const STEPS = [
   {
     n: "01",
@@ -264,6 +377,14 @@ const FAQ: { q: string; a: string }[] = [
     q: "Does the platform trade or place orders?",
     a: "No. This is a research and analysis tool. There is no broker connection, no order execution, and no signal service — and the AI Assistant is a planned feature, not a live agent.",
   },
+  {
+    q: "Does my research persist between sessions?",
+    a: "Experiment records persist in browser localStorage; archived CSV bytes persist in IndexedDB — both opt-in and device-local. Export bundles before clearing site data.",
+  },
+  {
+    q: "What is a replay bundle?",
+    a: "An rb1 JSON file containing the experiment record plus the original input files. Import one to verify digests, check replay eligibility, and rerun the canonical comparison — a matching fingerprint proves identical inputs and configuration.",
+  },
 ];
 
 export default function HomePage() {
@@ -278,7 +399,7 @@ export default function HomePage() {
             </p>
             <div className="space-y-5">
               <h1 className="text-4xl leading-[1.05] font-semibold tracking-tight text-balance sm:text-6xl">
-                Research-grade market analysis, on your data.
+                Research the markets. Test your edge. Understand the evidence.
               </h1>
               <p className="max-w-xl text-base leading-relaxed text-muted-foreground sm:text-lg">
                 Import your candles, analyze a chart, validate an idea, and compare frozen
@@ -394,8 +515,63 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* How it works */}
+      {/* Deep showcases — the working tools, in detail */}
       <section className="border-b border-border">
+        <div className="mx-auto max-w-6xl space-y-14 px-4 py-16 sm:px-6">
+          <div className="space-y-3">
+            <p className="text-xs font-medium tracking-[0.16em] text-info uppercase">
+              Working tools
+            </p>
+            <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">
+              Five tools, one research loop.
+            </h2>
+          </div>
+          {SHOWCASES.map((s, i) => (
+            <div
+              key={s.title}
+              className={`grid gap-8 lg:grid-cols-2 lg:items-center ${i % 2 === 1 ? "" : ""}`}
+            >
+              <div className={`space-y-4 ${i % 2 === 1 ? "lg:order-2" : ""}`}>
+                <div className="flex items-center gap-3">
+                  <AvailabilityBadge availability="available" />
+                </div>
+                <h3 className="text-xl font-semibold tracking-tight">{s.title}</h3>
+                <p className="text-sm leading-relaxed text-muted-foreground">{s.lead}</p>
+                <ul className="space-y-2">
+                  {s.points.map((p) => (
+                    <li key={p} className="flex gap-2 text-sm text-muted-foreground">
+                      <Check className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
+                      <span>{p}</span>
+                    </li>
+                  ))}
+                </ul>
+                <Link href={s.href} className={buttonVariants({ size: "sm" })}>
+                  {s.cta}
+                  <ArrowRight aria-hidden="true" />
+                </Link>
+              </div>
+              <div className={`rounded-lg border border-border bg-surface-elevated p-5 ${i % 2 === 1 ? "lg:order-1" : ""}`}>
+                <p className="text-[11px] font-medium tracking-wide text-subtle-foreground uppercase">
+                  What the run returns
+                </p>
+                <ul className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {s.outputs.map((o) => (
+                    <li
+                      key={o}
+                      className="rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted-foreground"
+                    >
+                      {o}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* How it works */}
+      <section id="how-it-works" className="scroll-mt-16 border-b border-border">
         <div className="mx-auto max-w-6xl space-y-8 px-4 py-16 sm:px-6">
           <div className="space-y-3">
             <p className="text-xs font-medium tracking-[0.16em] text-info uppercase">How it works</p>
@@ -527,7 +703,7 @@ export default function HomePage() {
       </section>
 
       {/* FAQ */}
-      <section className="border-b border-border">
+      <section id="faq" className="scroll-mt-16 border-b border-border">
         <div className="mx-auto max-w-6xl space-y-8 px-4 py-16 sm:px-6">
           <div className="space-y-3">
             <p className="text-xs font-medium tracking-[0.16em] text-info uppercase">FAQ</p>
