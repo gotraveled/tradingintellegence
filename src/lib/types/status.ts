@@ -20,4 +20,12 @@ export type ConnectionStatus =
   | "unverified"
   | "not_configured";
 
-export type ModuleAvailability = "available" | "preview" | "planned";
+export type ModuleAvailability =
+  /** Fully working — e.g. the upload-driven research tools. */
+  | "available"
+  /** Implemented UI; the provider-backed data path is gated/unavailable. */
+  | "preview"
+  /** Functional UI populated with synthetic sample data — never claimed as live. */
+  | "sample"
+  /** Not yet implemented. */
+  | "planned";

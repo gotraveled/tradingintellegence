@@ -26,6 +26,10 @@ export function NavItemContent({ item, active }: { item: NavItem; active: boolea
         <span className="ml-auto text-[10px] font-medium tracking-wide text-subtle-foreground uppercase">
           Soon
         </span>
+      ) : item.availability === "sample" ? (
+        <span className="ml-auto text-[10px] font-medium tracking-wide text-warning uppercase">
+          Sample
+        </span>
       ) : null}
     </>
   );

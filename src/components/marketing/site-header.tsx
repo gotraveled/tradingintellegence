@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Brand } from "@/components/navigation/brand";
 import { buttonVariants } from "@/components/ui/button";
 import { PUBLIC_ROUTES, ROUTES } from "@/lib/constants";
+import { SiteMobileNav } from "./site-mobile-nav";
 
 const LINKS = [
   { href: PUBLIC_ROUTES.features, label: "Features" },
@@ -9,7 +10,7 @@ const LINKS = [
   { href: PUBLIC_ROUTES.markets, label: "Markets" },
   { href: PUBLIC_ROUTES.pricing, label: "Pricing" },
   { href: PUBLIC_ROUTES.about, label: "About" },
-];
+] as const;
 
 export function SiteHeader() {
   return (
@@ -27,12 +28,15 @@ export function SiteHeader() {
             </Link>
           ))}
         </nav>
-        <Link
-          href={ROUTES.dashboard}
-          className={buttonVariants({ size: "sm", className: "ml-auto" })}
-        >
-          Open platform
-        </Link>
+        <div className="ml-auto flex items-center gap-2">
+          <Link
+            href={ROUTES.dataImport}
+            className={buttonVariants({ size: "sm", className: "hidden sm:inline-flex" })}
+          >
+            Analyze your data
+          </Link>
+          <SiteMobileNav links={LINKS} />
+        </div>
       </div>
     </header>
   );

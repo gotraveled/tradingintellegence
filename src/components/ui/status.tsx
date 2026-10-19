@@ -2,6 +2,7 @@ import {
   CircleCheck,
   CircleDashed,
   CircleMinus,
+  FlaskConical,
   Info,
   TrendingDown,
   TrendingUp,
@@ -64,6 +65,7 @@ const AVAILABILITY_META: Record<
 > = {
   available: { tone: "bullish", label: "Available", icon: CircleCheck },
   preview: { tone: "neutral", label: "Preview", icon: Info },
+  sample: { tone: "developing", label: "Sample data", icon: FlaskConical },
   planned: { tone: "inactive", label: "Planned", icon: CircleDashed },
 };
 
