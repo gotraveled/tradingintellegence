@@ -29,7 +29,7 @@ export interface TradeTarget {
   rr: number;
 }
 
-export type TradeExitReason = "stop" | "target" | "expired";
+export type TradeExitReason = "stop" | "target" | "expired" | "manual";
 export type TradeOutcome = "win" | "loss" | "flat";
 
 export interface TradeRecord {
@@ -97,6 +97,66 @@ const DEFAULT_RISK_USD = Math.round(ACCOUNT_CAPITAL_USD * RISK_PCT);
  * setup. 1m scalping is a separate mode the user enables later.
  */
 export const TRADE_TIMEFRAMES: readonly Timeframe[] = ["5m", "15m"];
+
+/**
+ * Higher timeframe consulted for directional bias — never fight it.
+ */
+export const BIAS_TIMEFRAME: Timeframe = "1h";
+
+/** Bar durations — used for sweep recency and session math. */
+export function timeframeMs(tf: Timeframe): number {
+  return TF_MS[tf];
+}
+
+/**
+ * Session filter (UTC hours). Crypto flow concentrates in the EU/US overlap;
+ * overnight chop is where 5m/15m scalps bleed. Entries allowed 06:00–21:59 UTC.
+ */
+export const ENTRY_SESSION_UTC: readonly [number, number] = [6, 22];
+/** Stop taking entries for the rest of the day at cumulative −3R. */
+export const DAILY_STOP_R = 3;
+/** After this many consecutive losses, cool down before re-entering. */
+export const LOSS_STREAK_LIMIT = 3;
+export const LOSS_COOLDOWN_MS = 4 * 60 * 60 * 1000;
+
+/**
+ * Account-level circuit breakers — a pro stops when the day isn't his.
+ * Returns WHY entries are blocked, or undefined when the account may trade.
+ */
+export function entryBlockReason(
+  trades: readonly TradeRecord[],
+  now: number,
+): string | undefined {
+  const hour = new Date(now).getUTCHours();
+  if (hour < ENTRY_SESSION_UTC[0] || hour >= ENTRY_SESSION_UTC[1]) {
+    return `outside ${ENTRY_SESSION_UTC[0]}:00–${ENTRY_SESSION_UTC[1]}:00 UTC session`;
+  }
+  const day = new Date(now).toISOString().slice(0, 10);
+  const todayR = trades
+    .filter(
+      (t) =>
+        t.exitTime !== undefined &&
+        new Date(t.exitTime).toISOString().slice(0, 10) === day,
+    )
+    .reduce((s, t) => s + (t.realizedR ?? 0), 0);
+  if (todayR <= -DAILY_STOP_R) return `daily stop −${DAILY_STOP_R}R reached`;
+  const closed = trades
+    .filter((t) => t.status === "closed" && t.exitTime !== undefined)
+    .sort((a, b) => b.exitTime! - a.exitTime!);
+  let streak = 0;
+  for (const t of closed) {
+    if ((t.realizedR ?? 0) < 0) streak += 1;
+    else break;
+  }
+  if (
+    streak >= LOSS_STREAK_LIMIT &&
+    closed[0] !== undefined &&
+    now - closed[0].exitTime! < LOSS_COOLDOWN_MS
+  ) {
+    return `cooldown after ${streak} consecutive losses`;
+  }
+  return undefined;
+}
 
 /**
  * Minimum confluence score to book a trade. Signals need ≥4/5 factors to
@@ -180,7 +240,8 @@ export function registerSignal(
     signal.entry === undefined ||
     signal.stopLoss === undefined ||
     signal.targets.length === 0 ||
-    signal.confidence < MIN_ENTRY_SCORE
+    signal.confidence < MIN_ENTRY_SCORE ||
+    entryBlockReason(trades, now) !== undefined
   ) {
     return { trades };
   }
@@ -232,6 +293,8 @@ export function registerBestSignal(
     timeframe: Timeframe;
     signal: TradeSignal;
     barTime: number;
+    /** Situational bonus added to RR when ranking (e.g. fresh liquidity sweep). */
+    edge?: number;
   }[],
   now: number,
 ): { trades: TradeRecord[]; added?: TradeRecord } {
@@ -242,10 +305,37 @@ export function registerBestSignal(
   const own = candidates.filter((c) => c.venue === venue && c.symbol === symbol);
   const best = [...own].sort(
     (a, b) =>
-      (b.signal.riskReward ?? 0) - (a.signal.riskReward ?? 0) ||
+      (b.signal.riskReward ?? 0) + (b.edge ?? 0) -
+        ((a.signal.riskReward ?? 0) + (a.edge ?? 0)) ||
       b.signal.confidence - a.signal.confidence,
   )[0];
   return registerSignal(trades, { ...best, now });
+}
+
+/**
+ * Close one open position at a supplied mark — the trading-desk "flatten"
+ * button. `mark` should be the latest price for the trade's timeframe; the
+ * caller falls back to entry when no mark exists (scratch exit, R = 0).
+ * TP1 banking still applies — a post-TP1 manual close blends like any exit.
+ */
+export function closePosition(
+  t: TradeRecord,
+  mark: Price | undefined,
+  now: number,
+): TradeRecord {
+  if (t.status !== "open") return t;
+  const risk = Math.abs(t.entry - t.initialStopLoss);
+  const price = mark ?? t.entry;
+  return finish(t, price, now, "manual", risk);
+}
+
+/** Flatten every open position — one mark lookup per trade. */
+export function closeAllPositions(
+  trades: TradeRecord[],
+  markOf: (t: TradeRecord) => Price | undefined,
+  now: number,
+): TradeRecord[] {
+  return trades.map((t) => (t.status === "open" ? closePosition(t, markOf(t), now) : t));
 }
 
 function finish(

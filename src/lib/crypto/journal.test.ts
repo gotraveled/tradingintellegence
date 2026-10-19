@@ -3,7 +3,10 @@ import type { Candle } from "@/lib/types";
 import type { TradeSignal } from "./analysis";
 import {
   ACCOUNT_CAPITAL_USD,
+  closeAllPositions,
+  closePosition,
   dailyStats,
+  entryBlockReason,
   equityOf,
   evaluateTrade,
   floatingPnlUsd,
@@ -31,7 +34,8 @@ function candle(time: number, o: number, h: number, l: number, c: number): Candl
 const BAR = 60_000;
 /** 5m bar spacing — matches the timeframe used by reg(). */
 const TF_BAR = 300_000;
-const T0 = 1_000_000;
+/** Noon UTC Tuesday — inside the 06:00–22:00 entry session the journal enforces. */
+const T0 = Date.UTC(2024, 0, 2, 12);
 
 function signal(direction: "bullish" | "bearish" = "bullish"): TradeSignal {
   return direction === "bullish"
@@ -153,6 +157,51 @@ describe("registerSignal — booking and dedup", () => {
     expect(trades.length).toBe(0);
     const ok = reg([], { signal: { ...signal(), confidence: MIN_ENTRY_SCORE } });
     expect(ok.added).toBeDefined();
+  });
+
+  it("blocks entries outside the UTC session", () => {
+    const night = Date.UTC(2024, 0, 2, 23); // 23:00 UTC — dead hours
+    const day = Date.UTC(2024, 0, 2, 12); // noon UTC — EU/US overlap
+    expect(entryBlockReason([], night)).toContain("session");
+    expect(entryBlockReason([], day)).toBeUndefined();
+    expect(reg([], { now: night }).added).toBeUndefined();
+    expect(reg([], { now: day }).added).toBeDefined();
+  });
+
+  it("stops the day after −3R cumulative", () => {
+    const losers = [1, 2, 3].map((i) => ({
+      ...reg([]).added!,
+      id: `L${i}`,
+      status: "closed" as const,
+      exitPrice: 95,
+      exitReason: "stop" as const,
+      exitTime: T0 + i * TF_BAR,
+      realizedR: -1,
+    }));
+    // 3 × −1R today → daily stop reached.
+    expect(entryBlockReason(losers, T0 + 4 * TF_BAR)).toContain("daily stop");
+    expect(reg(losers, { now: T0 + 4 * TF_BAR }).added).toBeUndefined();
+  });
+
+  it("cools down after 3 consecutive losses, resets after a win", () => {
+    const mk = (i: number, r: number, exitTime: number): TradeRecord => ({
+      ...reg([]).added!,
+      id: `C${i}`,
+      status: "closed",
+      exitPrice: r < 0 ? 95 : 110,
+      exitReason: r < 0 ? "stop" : "target",
+      exitTime,
+      realizedR: r,
+    });
+    // −0.5R each: streak fires without tripping the −3R daily stop first.
+    const three = [mk(1, -0.5, T0), mk(2, -0.5, T0 + TF_BAR), mk(3, -0.5, T0 + 2 * TF_BAR)];
+    const soon = T0 + 3 * TF_BAR; // minutes after the 3rd loss
+    expect(entryBlockReason(three, soon)).toContain("cooldown");
+    // Cooldown window passed (4h+ later) → allowed again.
+    expect(entryBlockReason(three, T0 + 5 * 60 * 60_000)).toBeUndefined();
+    // A win after the streak resets it.
+    const withWin = [...three, mk(4, 1.5, T0 + 3 * TF_BAR)];
+    expect(entryBlockReason(withWin, T0 + 4 * TF_BAR)).toBeUndefined();
   });
 
   it("allows the opposite direction immediately", () => {
@@ -289,6 +338,46 @@ describe("dailyStats — the win/loss record", () => {
 
   it("ignores open trades", () => {
     expect(dailyStats([reg([]).added!]).length).toBe(0);
+  });
+});
+
+describe("manual exits — flatten buttons", () => {
+  it("closePosition books realizedR at the supplied mark", () => {
+    const t = reg([]).added!; // entry 100, risk 5
+    const closed = closePosition(t, 110, T0 + TF_BAR);
+    expect(closed.status).toBe("closed");
+    expect(closed.exitReason).toBe("manual");
+    expect(closed.exitPrice).toBe(110);
+    expect(closed.realizedR).toBe(2);
+    const loser = closePosition(t, 97.5, T0 + TF_BAR);
+    expect(loser.realizedR).toBe(-0.5);
+  });
+
+  it("no mark → scratch exit at entry; closed trades untouched", () => {
+    const open = reg([]).added!;
+    expect(closePosition(open, undefined, T0).realizedR).toBe(0);
+    const done = closePosition(open, 110, T0 + TF_BAR);
+    expect(closePosition(done, 50, T0 + 2 * TF_BAR)).toBe(done); // no re-close
+  });
+
+  it("closeAllPositions flattens only open trades, one mark each", () => {
+    const open = reg([]).added!;
+    const other = reg([], { symbol: "ETHUSDT" }).added!;
+    const closedPrev: TradeRecord = {
+      ...reg([], { symbol: "SOLUSDT" }).added!,
+      status: "closed",
+      exitPrice: 110,
+      exitReason: "target",
+      realizedR: 2,
+    };
+    const next = closeAllPositions(
+      [open, other, closedPrev],
+      (t) => (t.id === open.id ? 110 : 90),
+      T0 + TF_BAR,
+    );
+    expect(next.find((t) => t.id === open.id)?.realizedR).toBe(2);
+    expect(next.find((t) => t.id === other.id)?.realizedR).toBe(-2);
+    expect(next.find((t) => t.id === closedPrev.id)?.exitReason).toBe("target");
   });
 });
 

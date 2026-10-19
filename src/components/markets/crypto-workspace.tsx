@@ -23,16 +23,20 @@ import { analyzeCandles, type SignalAnalysis, type TradeSignal } from "@/lib/cry
 import {
   ACCOUNT_CAPITAL_USD,
   clearTrades,
+  closeAllPositions,
+  closePosition,
   dailyStats,
   equityOf,
   evaluateTrade,
   floatingPnlUsd,
+  BIAS_TIMEFRAME,
   journalKey,
   loadTrades,
   pointsCaptured,
   registerBestSignal,
   saveTrades,
   symbolStats,
+  timeframeMs,
   tradeKey,
   TRADE_TIMEFRAMES,
   unrealizedR,
@@ -40,6 +44,7 @@ import {
   type TradeRecord,
 } from "@/lib/crypto/journal";
 import { analyzeTechnicals } from "@/lib/crypto/technicals";
+import { backtestCandles, type BacktestStats } from "@/lib/crypto/backtest";
 import type { CalendarEvent } from "@/app/api/economic-calendar/route";
 import { fetchCryptoKlines, fetchCryptoQuotes } from "@/lib/crypto/binance/client";
 import {
@@ -259,6 +264,8 @@ export function CryptoMarketsWorkspace() {
   const [scan, setScan] = useState<ScanState>({});
   const [trades, setTrades] = useState<TradeRecord[]>([]);
   const [alerts, setAlerts] = useState<TradeAlert[]>([]);
+  const [bt, setBt] = useState<{ key: string; stats: BacktestStats } | undefined>(undefined);
+  const [btBusy, setBtBusy] = useState(false);
   const [notifyOn, setNotifyOn] = useState(false);
   const [news, setNews] = useState<{ events: CalendarEvent[]; error?: string }>({ events: [] });
   const [now, setNow] = useState(0);
@@ -285,6 +292,13 @@ export function CryptoMarketsWorkspace() {
       return next;
     });
   }, []);
+
+  // The global scan reads open trades' timeframes without re-subscribing —
+  // legacy positions on non-entry timeframes must still be managed.
+  const tradesRef = useRef(trades);
+  useEffect(() => {
+    tradesRef.current = trades;
+  }, [trades]);
 
   const pendingCandle = useRef<Candle | undefined>(undefined);
   const flushTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -470,8 +484,22 @@ export function CryptoMarketsWorkspace() {
         const v = VENUES[vId];
         for (const s of v.symbols) {
           const sym = s.symbol;
+          // Entries trade Binance Spot only — Kraken pairs are the same
+          // markets, so this venue is manage-only (legacy trades still
+          // resolve on their own timeframe's bars; nothing new opens).
+          const trading = vId === "binance";
+          const legacyTfs = tradesRef.current
+            .filter((t) => t.status === "open" && t.venue === vId && t.symbol === sym)
+            .map((t) => t.timeframe);
+          if (!trading && legacyTfs.length === 0) continue;
+          const fetchTfs = [
+            ...new Set<Timeframe>([
+              ...(trading ? [...TRADE_TIMEFRAMES, BIAS_TIMEFRAME] : []),
+              ...legacyTfs,
+            ]),
+          ];
           void Promise.all(
-            TRADE_TIMEFRAMES.map((tf) => v.fetchKlines(sym, tf).then((res) => ({ tf, res }))),
+            fetchTfs.map((tf) => v.fetchKlines(sym, tf).then((res) => ({ tf, res }))),
           ).then((rows) => {
             if (cancelled) return;
             const candidates: {
@@ -480,9 +508,19 @@ export function CryptoMarketsWorkspace() {
               timeframe: Timeframe;
               signal: TradeSignal;
               barTime: number;
+              edge?: number;
             }[] = [];
             const tfSets = new Map<string, Candle[]>();
             const markEntries: Record<string, number> = {};
+            // Higher-timeframe bias first — never take a scalp against the
+            // 1h trend. "ranging" or unreadable HTF passes no judgment.
+            let bias: Direction | "ranging" | undefined;
+            const biasRow = rows.find((r) => r.tf === BIAS_TIMEFRAME);
+            if (biasRow !== undefined && biasRow.res.ok && biasRow.res.data.candles.length > 0) {
+              const s = biasRow.res.data.candles;
+              const c = biasRow.res.data.hasFormingCandle ? s.slice(0, -1) : s;
+              bias = analyzeCandles(c)?.trend.direction;
+            }
             for (const { tf, res } of rows) {
               if (!res.ok || res.data.candles.length === 0) continue;
               const set = res.data.candles;
@@ -490,27 +528,42 @@ export function CryptoMarketsWorkspace() {
               const key = journalKey(vId, sym, tf);
               tfSets.set(key, closed);
               markEntries[key] = set[set.length - 1].close;
+              if (!trading || !TRADE_TIMEFRAMES.includes(tf)) continue; // context/manage only
               // Entries are decided on CLOSED bars only — a pro waits for
               // the candle to print, never trades a half-formed signal.
               const a = analyzeCandles(closed);
               if (a !== undefined && a.signal.direction !== "wait") {
+                const dir = a.signal.direction;
+                // HTF gate — never fight the higher-timeframe trend.
+                if (bias === "bullish" || bias === "bearish" ? bias !== dir : false) continue;
                 // SMC gate: the ICT engine suite must not contradict the
                 // signal — a "range" verdict or opposing structure trend
                 // vetoes the candidate outright.
                 const tech = analyzeTechnicals(closed, sym, tf);
-                const dir = a.signal.direction;
                 const smcBlocks =
                   tech !== undefined &&
                   (tech.trend === "range" ||
                     (dir === "bullish" && tech.trend === "downtrend") ||
                     (dir === "bearish" && tech.trend === "uptrend"));
                 if (!smcBlocks) {
+                  // Liquidity edge: a fresh confirmed sweep on the
+                  // supporting side (sell-side taken → long) is where
+                  // reversals are born — worth +0.5R in the ranking.
+                  const lastBar = closed[closed.length - 1].time;
+                  const sweepSupport =
+                    tech !== undefined &&
+                    tech.sweeps.some(
+                      (sw) =>
+                        (dir === "bullish" ? sw.side === "sell_side" : sw.side === "buy_side") &&
+                        lastBar - Date.parse(sw.at) < 20 * timeframeMs(tf),
+                    );
                   candidates.push({
                     venue: vId,
                     symbol: sym,
                     timeframe: tf,
                     signal: a.signal,
-                    barTime: closed[closed.length - 1].time,
+                    barTime: lastBar,
+                    edge: sweepSupport ? 0.5 : 0,
                   });
                 }
               }
@@ -1113,6 +1166,35 @@ export function CryptoMarketsWorkspace() {
                   Clear journal
                 </button>
               )}
+              <button
+                type="button"
+                disabled={btBusy}
+                onClick={() => {
+                  setBtBusy(true);
+                  void venue
+                    .fetchKlines(symbol, timeframe)
+                    .then((res) => {
+                      if (res.ok) {
+                        const closed = res.data.hasFormingCandle
+                          ? res.data.candles.slice(0, -1)
+                          : res.data.candles;
+                        setBt({
+                          key: `${venueId}|${symbol}|${timeframe}`,
+                          stats: backtestCandles(closed, {
+                            venue: venueId,
+                            symbol,
+                            timeframe,
+                            smc: true,
+                          }),
+                        });
+                      }
+                    })
+                    .finally(() => setBtBusy(false));
+                }}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs text-subtle-foreground transition-colors hover:bg-surface-hover hover:text-foreground disabled:opacity-50"
+              >
+                {btBusy ? "Backtesting…" : "Backtest"}
+              </button>
             </div>
           }
         />
@@ -1140,11 +1222,47 @@ export function CryptoMarketsWorkspace() {
             </div>
           ))}
         </div>
+        {bt !== undefined && (
+          <div className="mb-4 rounded-md border border-border bg-surface p-3 text-xs">
+            <div className="mb-1 font-medium text-foreground">
+              Backtest — {bt.key.split("|")[1]} {bt.key.split("|")[2]} ·{" "}
+              {bt.stats.evaluatedBars} bars replayed through the live engine
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-subtle-foreground">
+              <span>
+                {bt.stats.trades} trades
+                {bt.stats.openAtEnd > 0 ? ` (+${bt.stats.openAtEnd} open)` : ""}
+              </span>
+              <span className={bt.stats.winPct >= 50 ? "text-bullish" : "text-bearish"}>
+                {bt.stats.winPct}% win
+              </span>
+              <span className={bt.stats.netR >= 0 ? "text-bullish" : "text-bearish"}>
+                {bt.stats.netR >= 0 ? "+" : ""}
+                {bt.stats.netR}R net
+              </span>
+              <span>
+                PF {bt.stats.profitFactor === Infinity ? "∞" : bt.stats.profitFactor}
+              </span>
+              <span>avg win {bt.stats.avgWinR}R / avg loss {bt.stats.avgLossR}R</span>
+              <span>max DD {bt.stats.maxDrawdownR}R</span>
+              <span>
+                exits: {Object.entries(bt.stats.exits).map(([k, n]) => `${k} ${n}`).join(" · ")}
+              </span>
+            </div>
+            <div className="mt-1 text-subtle-foreground">
+              Expectancy {bt.stats.expectancyR >= 0 ? "+" : ""}
+              {bt.stats.expectancyR}R per trade — the number that decides whether an edge is
+              real. Past replay ≠ future results.
+            </div>
+          </div>
+        )}
         {trades.length === 0 ? (
           <p className="text-sm text-subtle-foreground">
-            No trades yet — every listed pair on Binance and Kraken is scanned each minute on
-            5m and 15m; the engine books at most one position per pair, only on setups
-            scoring 80+ confluence, on the timeframe with the best risk:reward.
+            No trades yet — every Binance Spot pair is scanned each minute on
+            5m and 15m. An entry needs all of: trending tape (efficiency-ratio sideways veto),
+            agreeing swing structure, a fresh zone entry, score 80+, 1h bias on-side, SMC
+            structure confirmation — inside the 06:00–22:00 UTC session, with circuit breakers
+            stopping the day at −3R. Best RR timeframe wins; one position per pair.
           </p>
         ) : (
           <div className="space-y-4">
@@ -1174,7 +1292,18 @@ export function CryptoMarketsWorkspace() {
             )}
             {openTrades.length > 0 && (
               <div>
-                <h3 className="mb-1.5 text-sm font-medium text-foreground">Open positions</h3>
+                <div className="mb-1.5 flex items-center justify-between">
+                  <h3 className="text-sm font-medium text-foreground">Open positions</h3>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      updateTrades((prev) => closeAllPositions(prev, markOf, Date.now()))
+                    }
+                    className="rounded-md border border-bearish/40 px-2.5 py-1 text-xs font-medium text-bearish transition-colors hover:bg-bearish/10"
+                  >
+                    Exit all
+                  </button>
+                </div>
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[820px] text-sm">
                     <thead>
@@ -1188,7 +1317,8 @@ export function CryptoMarketsWorkspace() {
                         <th className="py-2 pr-3 font-medium">Price</th>
                         <th className="py-2 pr-3 font-medium">Pts</th>
                         <th className="py-2 pr-3 font-medium">Risked</th>
-                        <th className="py-2 font-medium">Profit</th>
+                        <th className="py-2 pr-3 font-medium">Profit</th>
+                        <th className="py-2 font-medium">Exit</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1262,6 +1392,21 @@ export function CryptoMarketsWorkspace() {
                               {pnl === undefined
                                 ? "—"
                                 : `${fmtUsdPnl(pnl)} (${r! >= 0 ? "+" : ""}${r}R)`}
+                            </td>
+                            <td className="py-2.5">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updateTrades((prev) =>
+                                    prev.map((x) =>
+                                      x.id === t.id ? closePosition(x, mark, Date.now()) : x,
+                                    ),
+                                  )
+                                }
+                                className="rounded border border-border px-2 py-0.5 text-xs text-subtle-foreground transition-colors hover:border-bearish/40 hover:text-bearish"
+                              >
+                                Exit
+                              </button>
                             </td>
                           </tr>
                         );
@@ -1497,7 +1642,7 @@ export function CryptoMarketsWorkspace() {
                   </table>
                 </div>
                 <p className="mt-1.5 text-xs text-subtle-foreground">
-                  All listed pairs on Binance and Kraken are scanned every minute; pairs with
+                  Every Binance Spot pair is scanned every minute; pairs with
                   closed trades rank first by win %. A few trades is noise — judge a pair
                   after a meaningful sample.
                 </p>
