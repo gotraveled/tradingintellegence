@@ -32,11 +32,27 @@ export interface SignalZone {
   ageBars: number;
 }
 
+/** One scored confluence factor — the unit of the signal's points breakdown. */
+export interface SignalFactor {
+  /** Short factor name, e.g. "EMA trend". */
+  label: string;
+  /** True when the measured factor agrees with the proposed direction. */
+  agrees: boolean;
+  /** Points contributed — `weight` when agreeing, 0 otherwise. */
+  points: number;
+  /** Maximum points this factor can contribute. */
+  weight: number;
+  /** One-line measured evidence, e.g. "EMA20 above EMA50 (+2.1 ATR)". */
+  note: string;
+}
+
 export interface TradeSignal {
   /** "wait" = no directional edge met the minimum bar; levels are undefined. */
   direction: Direction | "wait";
-  /** Confluence score 0–100 — count of agreeing measured factors. */
+  /** Confluence score 0–100 — sum of agreeing factor points. */
   confidence: number;
+  /** Per-factor breakdown behind `confidence` — auditable, not a win rate. */
+  factors: SignalFactor[];
   reasons: string[];
   entry?: Price;
   stopLoss?: Price;
@@ -211,7 +227,13 @@ export function analyzeCandles(candles: Candle[]): SignalAnalysis | undefined {
     : structBear > structBull ? "weakening — latest swing low is lower"
     : "mixed / rotating swings";
 
-  const signal: TradeSignal = { direction: "wait", confidence: 0, reasons: [], targets: [] };
+  const signal: TradeSignal = {
+    direction: "wait",
+    confidence: 0,
+    factors: [],
+    reasons: [],
+    targets: [],
+  };
   const caveats: string[] = [
     "Confluence score counts agreeing measured factors — it is not a win-rate prediction.",
     "Levels derive from the visible window only; higher-timeframe context is not consulted.",
@@ -244,10 +266,45 @@ export function analyzeCandles(candles: Candle[]): SignalAnalysis | undefined {
       reasons.push(`Price is inside/near a ${entryZone.kind} zone (${entryZone.ageBars} bars old)`);
     }
 
-    // Confidence = share of agreeing measured factors (0–100).
-    const factors = [trendDir === side, side === "bullish" ? structBull > structBear : structBear > structBull, mom === side, nearEntry];
-    const agreed = factors.filter(Boolean).length;
-    signal.confidence = Math.round((agreed / factors.length) * 100);
+    // Confidence = share of agreeing measured factors (0–100), exposed as a
+    // named points breakdown so the UI can show exactly what agreed.
+    const structAgrees =
+      side === "bullish" ? structBull > structBear : structBear > structBull;
+    const factorWeights: Omit<SignalFactor, "points">[] = [
+      {
+        label: "EMA trend",
+        agrees: true, // trendDir === side by construction inside this branch
+        weight: 25,
+        note: `EMA20 ${side === "bullish" ? "above" : "below"} EMA50 (${emaSpreadAtr.toFixed(1)} ATR apart)`,
+      },
+      {
+        label: "Swing structure",
+        agrees: structAgrees,
+        weight: 25,
+        note: structureNote,
+      },
+      {
+        label: "Momentum",
+        agrees: mom === side,
+        weight: 25,
+        note: `RSI14 ${rsi14.toFixed(0)} — ${mom}`,
+      },
+      {
+        label: "Entry at zone",
+        agrees: nearEntry,
+        weight: 25,
+        note:
+          nearEntry && entryZone
+            ? `Inside/near ${entryZone.kind} zone (${entryZone.ageBars} bars old)`
+            : `Not near a ${side === "bullish" ? "demand" : "supply"} zone`,
+      },
+    ];
+    signal.factors = factorWeights.map((f) => ({
+      ...f,
+      points: f.agrees ? f.weight : 0,
+    }));
+    const agreed = signal.factors.filter((f) => f.agrees).length;
+    signal.confidence = signal.factors.reduce((sum, f) => sum + f.points, 0);
     signal.reasons = reasons;
 
     // Only propose when location + trend + at least structure OR momentum agree.

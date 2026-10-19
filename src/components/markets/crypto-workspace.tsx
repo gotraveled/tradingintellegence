@@ -1,9 +1,10 @@
 "use client";
 
 import {
-  ImageUp,
-  LineChart,
+  ArrowDownRight,
+  ArrowUpRight,
   Loader2,
+  Minus,
   RefreshCw,
   TriangleAlert,
   Wifi,
@@ -13,11 +14,10 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CandlestickChart, type ChartMarker } from "@/components/charts/candlestick-chart";
 import type { ChartOverlay } from "@/components/charts/chart-types";
-import { ChartAnalystWorkspace } from "@/components/chart-analyst/chart-analyst-workspace";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader } from "@/components/ui/card";
 import { Notice } from "@/components/ui/notice";
-import { analyzeCandles } from "@/lib/crypto/analysis";
+import { analyzeCandles, type SignalAnalysis } from "@/lib/crypto/analysis";
 import { fetchCryptoKlines, fetchCryptoQuotes } from "@/lib/crypto/binance/client";
 import {
   binanceInterval,
@@ -26,25 +26,134 @@ import {
   cryptoSymbolInfo,
   DEFAULT_CRYPTO_SYMBOL,
   DEFAULT_CRYPTO_TIMEFRAME,
-  VENUE_LABEL,
+  VENUE_LABEL as BINANCE_VENUE,
 } from "@/lib/crypto/binance/constants";
 import { normalizeStreamKline, normalizeTicker } from "@/lib/crypto/binance/normalize";
 import { BinanceStream, klineStream, tickerStreams } from "@/lib/crypto/binance/stream";
-import type { CryptoQuote, FeedStatus } from "@/lib/crypto/types";
-import type { Candle, Timeframe, Tone } from "@/lib/types";
+import { fetchKrakenOhlc, fetchKrakenQuotes } from "@/lib/crypto/kraken/client";
+import {
+  DEFAULT_KRAKEN_SYMBOL,
+  KRAKEN_INTERVALS,
+  KRAKEN_SYMBOLS,
+  krakenIntervalMinutes,
+  krakenSymbolInfo,
+  VENUE_LABEL as KRAKEN_VENUE,
+} from "@/lib/crypto/kraken/constants";
+import { KrakenStream } from "@/lib/crypto/kraken/stream";
+import type { CryptoCandleSet, CryptoQuote, CryptoResult, FeedStatus } from "@/lib/crypto/types";
+import type { Candle, Direction, Timeframe, Tone } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /**
- * Crypto Markets workspace — the platform's live public-data surface. Quotes and
- * candles come from Binance Spot public endpoints only (REST for history and the
- * seed quote read; one combined WebSocket for updates). Fully separate from the
- * Polygon-gated provider layer: this feed never unlocks or feeds other modules.
+ * Live crypto workspace — venue-specific public feeds only (Binance Spot and
+ * Kraken Spot). REST seeds history and quotes; one WebSocket per venue streams
+ * updates. Fully separate from the Polygon-gated provider layer and from the
+ * chart-upload feature, which lives on its own surface.
  *
  * Honesty contract: the feed badge renders the stream's real status verbatim;
  * last-received values stay visible but labelled stale when the socket goes
- * silent; venue attribution and a venue-specific-prices disclosure accompany
- * every quote. No synthetic data ever appears here — an unmet fetch is an error.
+ * silent; every quote and candle is attributed to its venue — prices are never
+ * consolidated across venues and no synthetic data ever appears here.
  */
+
+// ---------- feed plumbing ----------
+
+type VenueId = "binance" | "kraken";
+
+interface VenueSymbol {
+  symbol: string;
+  label: string;
+  name: string;
+  pricePrecision: number;
+}
+
+interface VenueDef {
+  id: VenueId;
+  label: string;
+  symbols: readonly VenueSymbol[];
+  defaultSymbol: string;
+  intervals: { timeframe: Timeframe; label: string }[];
+  symbolInfo(symbol: string): VenueSymbol | undefined;
+  fetchQuotes(): Promise<CryptoResult<CryptoQuote[]>>;
+  fetchKlines(symbol: string, timeframe: Timeframe): Promise<CryptoResult<CryptoCandleSet>>;
+  /** Open the venue's live socket. Returns a handle whose close() tears down. */
+  connect(opts: {
+    symbol: string;
+    timeframe: Timeframe;
+    onQuote: (quote: CryptoQuote) => void;
+    onCandle: (candle: Candle, isClosed: boolean) => void;
+    onStatus: (status: FeedStatus, lastEventAt?: number) => void;
+  }): { close(): void };
+}
+
+const VENUES: Record<VenueId, VenueDef> = {
+  binance: {
+    id: "binance",
+    label: BINANCE_VENUE,
+    symbols: CRYPTO_SYMBOLS,
+    defaultSymbol: DEFAULT_CRYPTO_SYMBOL,
+    intervals: CRYPTO_INTERVALS.map((i) => ({ timeframe: i.timeframe, label: i.label })),
+    symbolInfo: cryptoSymbolInfo,
+    fetchQuotes: () => fetchCryptoQuotes(CRYPTO_SYMBOLS.map((s) => s.symbol)),
+    fetchKlines: (symbol, timeframe) => fetchCryptoKlines(symbol, timeframe),
+    connect({ symbol, timeframe, onQuote, onCandle, onStatus }) {
+      const streams = [...tickerStreams(CRYPTO_SYMBOLS.map((s) => s.symbol))];
+      const interval = binanceInterval(timeframe);
+      if (interval !== undefined) streams.push(klineStream(symbol, interval));
+      const feed = new BinanceStream({
+        streams,
+        onStatus,
+        onMessage: (envelope) => {
+          const [sym, channel] = envelope.stream.split("@");
+          const upper = sym.toUpperCase();
+          if (channel === "ticker") {
+            const quote = normalizeTicker(envelope.data, upper);
+            if (quote !== undefined) onQuote(quote);
+          } else if (channel.startsWith("kline") && upper === symbol) {
+            const update = normalizeStreamKline(envelope.data);
+            if (update !== undefined) onCandle(update.candle, update.isClosed);
+          }
+        },
+      });
+      feed.start();
+      return feed;
+    },
+  },
+  kraken: {
+    id: "kraken",
+    label: KRAKEN_VENUE,
+    symbols: KRAKEN_SYMBOLS,
+    defaultSymbol: DEFAULT_KRAKEN_SYMBOL,
+    intervals: KRAKEN_INTERVALS.map((i) => ({ timeframe: i.timeframe, label: i.label })),
+    symbolInfo: krakenSymbolInfo,
+    fetchQuotes: () => fetchKrakenQuotes(),
+    fetchKlines: (symbol, timeframe) => fetchKrakenOhlc(symbol, timeframe),
+    connect({ symbol, timeframe, onQuote, onCandle, onStatus }) {
+      const feed = new KrakenStream({
+        symbols: KRAKEN_SYMBOLS.map((s) => s.wsSymbol),
+        ohlcIntervalMinutes: krakenIntervalMinutes(timeframe),
+        onStatus,
+        onMessage: (event) => {
+          if (event.kind === "ticker") onQuote(event.quote);
+          else if (event.kind === "ohlc" && event.symbol === symbol) {
+            // Kraken pushes the forming bar per trade; a new interval_begin
+            // means the previous bar is complete — handled in applyCandle.
+            onCandle(event.candle, false);
+          }
+        },
+      });
+      feed.start();
+      return feed;
+    },
+  },
+};
+
+const VENUE_ORDER: VenueId[] = ["binance", "kraken"];
+
+/** Timeframes scanned continuously for intraday setups. */
+const SCAN_TIMEFRAMES: Timeframe[] = ["5m", "15m", "30m", "1h", "4h"];
+const SCAN_REFRESH_MS = 60_000;
+const CANDLE_FLUSH_MS = 700;
 
 const FEED_META: Record<FeedStatus, { tone: Tone; label: string; icon: LucideIcon }> = {
   connecting: { tone: "neutral", label: "Connecting", icon: Loader2 },
@@ -54,243 +163,206 @@ const FEED_META: Record<FeedStatus, { tone: Tone; label: string; icon: LucideIco
   offline: { tone: "inactive", label: "Offline", icon: WifiOff },
 };
 
-/** Asset-class tabs — only crypto has a live feed today; others stay honest. */
-const ASSET_TABS = [
-  { id: "crypto", label: "Crypto", note: "Live — Binance Spot" },
-  { id: "forex", label: "Forex", note: "Needs a licensed feed" },
-  { id: "india", label: "Indian markets", note: "Needs a licensed feed" },
-] as const;
-type AssetTab = (typeof ASSET_TABS)[number]["id"];
+const DIR_META: Record<Direction | "wait" | "ranging", { tone: Tone; label: string; icon: LucideIcon }> = {
+  bullish: { tone: "bullish", label: "BUY", icon: ArrowUpRight },
+  bearish: { tone: "bearish", label: "SELL", icon: ArrowDownRight },
+  wait: { tone: "neutral", label: "WAIT", icon: Minus },
+  ranging: { tone: "neutral", label: "Ranging", icon: Minus },
+};
 
-interface NewsItem {
-  title: string;
-  url: string;
-  source: string;
-  publishedAt?: number;
+interface ScanRow {
+  state: "loading" | "ready" | "error";
+  analysis?: SignalAnalysis;
+  error?: string;
 }
 
-/** "12m ago"-style relative stamp for headlines. */
-function relTime(ms: number): string {
-  const s = Math.max(0, Date.now() - ms) / 1000;
-  if (s < 90) return "just now";
-  const m = s / 60;
-  if (m < 90) return `${Math.round(m)}m ago`;
-  const h = m / 60;
-  if (h < 36) return `${Math.round(h)}h ago`;
-  return `${Math.round(h / 24)}d ago`;
-}
+type ScanState = Partial<Record<Timeframe, ScanRow>>;
 
-function fmtPrice(value: number, precision: number): string {
+function fmtPrice(value: number | undefined, precision: number): string {
+  if (value === undefined) return "—";
   return value.toLocaleString("en-US", {
     minimumFractionDigits: precision,
     maximumFractionDigits: precision,
   });
 }
 
-/** Provider event time → "14:03:22 UTC". */
-function fmtUtcTime(ms: number): string {
-  return new Date(ms).toISOString().slice(11, 19) + " UTC";
+function fmtSignedPct(value: number | undefined): string {
+  if (value === undefined) return "—";
+  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
-
-// Candle state is keyed by the selection it was fetched for — loading is a
-// derived property (key mismatch), so no synchronous setState is needed in the
-// fetch effect and a stale key never renders under a new selection.
-interface CandleSetState {
-  symbol: string;
-  timeframe: Timeframe;
-  candles: Candle[];
-  hasForming: boolean;
-  warnings: string[];
-}
-
-interface CandleErrorState {
-  symbol: string;
-  timeframe: Timeframe;
-  message: string;
-}
+// ---------- component ----------
 
 export function CryptoMarketsWorkspace() {
-  const [symbol, setSymbol] = useState<string>(DEFAULT_CRYPTO_SYMBOL);
+  const [venueId, setVenueId] = useState<VenueId>("binance");
+  const venue = VENUES[venueId];
+  const [symbol, setSymbol] = useState<string>(venue.defaultSymbol);
   const [timeframe, setTimeframe] = useState<Timeframe>(DEFAULT_CRYPTO_TIMEFRAME);
   const [quotes, setQuotes] = useState<Record<string, CryptoQuote>>({});
-  const [quotesError, setQuotesError] = useState<string | undefined>();
-  const [candlesSet, setCandlesSet] = useState<CandleSetState | undefined>(undefined);
-  const [candlesError, setCandlesError] = useState<CandleErrorState | undefined>(undefined);
+  const [candlesSet, setCandlesSet] = useState<CryptoCandleSet | undefined>();
+  const [restError, setRestError] = useState<string | undefined>();
   const [feedStatus, setFeedStatus] = useState<FeedStatus>("connecting");
   const [lastEventAt, setLastEventAt] = useState<number | undefined>();
-  const [restSeedTick, setRestSeedTick] = useState(0); // manual retry counter
-  const [asset, setAsset] = useState<AssetTab>("crypto");
-  const [mode, setMode] = useState<"live" | "upload">("live");
-  const [news, setNews] = useState<NewsItem[] | undefined>();
-  const [newsError, setNewsError] = useState<string | undefined>();
+  const [scan, setScan] = useState<ScanState>({});
 
-  // Pending forming-candle update — coalesced so a 250ms kline stream doesn't
-  // rebuild the chart on every message. Closed bars flush immediately.
   const pendingCandle = useRef<Candle | undefined>(undefined);
   const flushTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const feedRef = useRef<{ close(): void } | undefined>(undefined);
+
+  const symbolInfo = venue.symbolInfo(symbol) ?? venue.symbols[0];
+  const precision = symbolInfo.pricePrecision;
+
+  const switchVenue = (next: VenueId) => {
+    if (next === venueId) return;
+    setVenueId(next);
+    setSymbol(VENUES[next].defaultSymbol);
+    setQuotes({});
+    setCandlesSet(undefined);
+    setRestError(undefined);
+    setScan({});
+  };
+
+  const switchSymbol = (next: string) => {
+    if (next === symbol) return;
+    setSymbol(next);
+    setCandlesSet(undefined);
+    setRestError(undefined);
+    setScan({});
+  };
+
+  const switchTimeframe = (next: Timeframe) => {
+    if (next === timeframe) return;
+    setTimeframe(next);
+    setCandlesSet(undefined);
+    setRestError(undefined);
+  };
+
+  // Coalesced stream-candle application: replaces the forming bar, appends a
+  // new bar when the candle's open time advances, repairs a missed bar in
+  // place. Provider closed-flag only accelerates the flush.
+  const applyStreamCandle = useCallback((candle: Candle) => {
+    setCandlesSet((prev) => {
+      if (prev === undefined || prev.candles.length === 0) return prev;
+      const arr = prev.candles.slice();
+      const last = arr[arr.length - 1];
+      if (candle.time > last.time) arr.push(candle);
+      else if (candle.time === last.time) arr[arr.length - 1] = candle;
+      else {
+        const idx = arr.findIndex((c) => c.time === candle.time);
+        if (idx < 0) return prev;
+        arr[idx] = candle;
+      }
+      return { ...prev, candles: arr, hasFormingCandle: true };
+    });
+  }, []);
 
   const flushCandle = useCallback(() => {
-    const pending = pendingCandle.current;
+    flushTimer.current = undefined;
+    const candle = pendingCandle.current;
     pendingCandle.current = undefined;
-    if (pending === undefined) return;
-    setCandlesSet((state) => {
-      if (state === undefined || state.symbol !== symbol || state.timeframe !== timeframe) {
-        return state;
-      }
-      const candles = state.candles;
-      const last = candles[candles.length - 1];
-      let next: Candle[];
-      if (last !== undefined && pending.time === last.time) {
-        next = [...candles.slice(0, -1), pending];
-      } else if (last !== undefined && pending.time > last.time) {
-        next = [...candles.slice(-499), pending];
-      } else {
-        return state; // out-of-order stream frame — drop, never reorder history
-      }
-      return { ...state, candles: next, hasForming: true };
-    });
-  }, [symbol, timeframe]);
+    if (candle !== undefined) applyStreamCandle(candle);
+  }, [applyStreamCandle]);
 
-  // REST seed: quotes (all allowlisted symbols) + klines for the selection.
+  const onStreamCandle = useCallback(
+    (candle: Candle, isClosed: boolean) => {
+      pendingCandle.current = candle;
+      if (isClosed) {
+        if (flushTimer.current !== undefined) clearTimeout(flushTimer.current);
+        flushCandle();
+      } else if (flushTimer.current === undefined) {
+        flushTimer.current = setTimeout(flushCandle, CANDLE_FLUSH_MS);
+      }
+    },
+    [flushCandle],
+  );
+
+  // Seed quotes once per venue; the stream keeps them fresh afterwards.
+  // (Venue switches already clear `quotes` via the handler — no reset here.)
   useEffect(() => {
     let cancelled = false;
-    void fetchCryptoQuotes(CRYPTO_SYMBOLS.map((s) => s.symbol)).then((res) => {
-      if (cancelled) return;
-      if (res.ok) {
-        setQuotesError(undefined);
-        setQuotes((prev) => {
-          const next = { ...prev };
-          for (const q of res.data) next[q.symbol] = q;
-          return next;
-        });
-      } else {
-        setQuotesError(res.error.message);
-      }
+    void VENUES[venueId].fetchQuotes().then((res) => {
+      if (cancelled || !res.ok) return;
+      setQuotes(Object.fromEntries(res.data.map((q) => [q.symbol, q])));
     });
     return () => {
       cancelled = true;
     };
-  }, [restSeedTick]);
+  }, [venueId]);
 
+  // Seed candle history for the selected pair/timeframe. Selection handlers
+  // clear `candlesSet`/`restError`, so this effect only fetches and applies.
   useEffect(() => {
     let cancelled = false;
-    void fetchCryptoKlines(symbol, timeframe).then((res) => {
+    void venue.fetchKlines(symbol, timeframe).then((res) => {
       if (cancelled) return;
       if (res.ok) {
         setCandlesSet({
           symbol,
           timeframe,
           candles: res.data.candles,
-          hasForming: res.data.hasFormingCandle,
+          hasFormingCandle: res.data.hasFormingCandle,
           warnings: res.data.warnings,
         });
-        setCandlesError(undefined);
       } else {
-        setCandlesError({ symbol, timeframe, message: res.error.message });
+        setRestError(`${res.error.message}${res.error.detail ? ` — ${res.error.detail}` : ""}`);
       }
     });
     return () => {
       cancelled = true;
     };
-  }, [symbol, timeframe, restSeedTick]);
+  }, [venue, symbol, timeframe]);
 
-  // Public headlines — one cached server-side fetch, honest on failure.
+  // Live socket for the selected venue/symbol/timeframe.
   useEffect(() => {
-    let cancelled = false;
-    void fetch("/api/crypto-news")
-      .then(async (r) => {
-        const body = (await r.json()) as { items?: NewsItem[]; error?: { message?: string } };
-        if (cancelled) return;
-        if (!r.ok || !body.items) {
-          setNewsError(body.error?.message ?? `news failed (HTTP ${r.status})`);
-          setNews([]);
-        } else {
-          setNews(body.items);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setNewsError("news feed unreachable");
-          setNews([]);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Live feed — one combined stream: per-symbol tickers + selected kline.
-  // Rebuilt when the chart selection changes; torn down on unmount.
-  useEffect(() => {
-    const interval = binanceInterval(timeframe);
-    const streams = [...tickerStreams(CRYPTO_SYMBOLS.map((s) => s.symbol))];
-    if (interval !== undefined) streams.push(klineStream(symbol, interval));
-    const feed = new BinanceStream({
-      streams,
-      onStatus: (status, lastEvent) => {
+    feedRef.current?.close();
+    const feed = venue.connect({
+      symbol,
+      timeframe,
+      onQuote: (quote) =>
+        setQuotes((prev) => ({ ...prev, [quote.symbol]: quote })),
+      onCandle: onStreamCandle,
+      onStatus: (status, at) => {
         setFeedStatus(status);
-        if (lastEvent !== undefined) setLastEventAt(lastEvent);
-      },
-      onMessage: (envelope) => {
-        if (envelope.stream.endsWith("@ticker")) {
-          const sym = envelope.stream.split("@")[0].toUpperCase();
-          const quote = normalizeTicker(envelope.data, sym);
-          if (quote !== undefined) {
-            setQuotes((prev) => ({ ...prev, [sym]: quote }));
-          }
-          return;
-        }
-        if (envelope.stream.includes("@kline_")) {
-          const sym = envelope.stream.split("@")[0].toUpperCase();
-          if (sym !== symbol) return;
-          const update = normalizeStreamKline(envelope.data);
-          if (update === undefined) return;
-          pendingCandle.current = update.candle;
-          if (update.isClosed) {
-            if (flushTimer.current !== undefined) clearTimeout(flushTimer.current);
-            flushCandle();
-            setCandlesSet((state) =>
-              state !== undefined && state.symbol === symbol && state.timeframe === timeframe
-                ? { ...state, hasForming: false }
-                : state,
-            );
-            return;
-          }
-          if (flushTimer.current === undefined) {
-            flushTimer.current = setTimeout(() => {
-              flushTimer.current = undefined;
-              flushCandle();
-            }, 700);
-          }
-        }
+        if (at !== undefined) setLastEventAt(at);
       },
     });
-    feed.start();
-    return () => feed.close();
-  }, [symbol, timeframe, flushCandle]);
+    feedRef.current = feed;
+    return () => {
+      feed.close();
+      if (feedRef.current === feed) feedRef.current = undefined;
+    };
+  }, [venue, symbol, timeframe, onStreamCandle]);
 
-  const feedMeta = FEED_META[feedStatus];
-  const FeedIcon = feedMeta.icon;
-  const info = cryptoSymbolInfo(symbol);
-  const quotesStale = feedStatus === "stale" || feedStatus === "offline";
-  // Loading is derived: state exists only for a matching selection.
-  const candlesFresh =
-    candlesSet !== undefined && candlesSet.symbol === symbol && candlesSet.timeframe === timeframe
-      ? candlesSet
-      : undefined;
-  const candlesErrorFresh =
-    candlesError !== undefined &&
-    candlesError.symbol === symbol &&
-    candlesError.timeframe === timeframe
-      ? candlesError
-      : undefined;
+  // Intraday scan: analyze the other scan timeframes over REST, refreshed
+  // every minute. The selected timeframe's row comes from the live analysis.
+  useEffect(() => {
+    let cancelled = false;
+    const run = () => {
+      for (const tf of SCAN_TIMEFRAMES) {
+        if (tf === timeframe) continue;
+        void venue.fetchKlines(symbol, tf).then((res) => {
+          if (cancelled) return;
+          setScan((prev) => ({
+            ...prev,
+            [tf]: res.ok
+              ? { state: "ready", analysis: analyzeCandles(res.data.candles) }
+              : { state: "error", error: res.error.message },
+          }));
+        });
+      }
+    };
+    run();
+    const timer = setInterval(run, SCAN_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [venue, symbol, timeframe]);
 
-  // Deterministic signal analysis over the exact bars on screen — recomputed
-  // on every candle update so the live forming bar keeps the read honest.
+  const candles = candlesSet?.candles;
   const analysis = useMemo(
-    () => (candlesFresh && candlesFresh.candles.length >= 60 ? analyzeCandles(candlesFresh.candles) : undefined),
-    [candlesFresh],
+    () => (candles !== undefined ? analyzeCandles(candles) : undefined),
+    [candles],
   );
 
   const signalOverlays = useMemo<ChartOverlay[]>(() => {
@@ -311,13 +383,34 @@ export function CryptoMarketsWorkspace() {
     if (s.direction !== "wait") {
       const dir = s.direction;
       if (s.entry !== undefined) {
-        out.push({ kind: "level", id: "sig-entry", layer: "structure", price: s.entry, label: "Entry", direction: dir });
+        out.push({
+          kind: "level",
+          id: "sig-entry",
+          layer: "structure",
+          price: s.entry,
+          label: "Entry",
+          direction: dir,
+        });
       }
       if (s.stopLoss !== undefined) {
-        out.push({ kind: "level", id: "sig-sl", layer: "liquidity", price: s.stopLoss, label: "Stop loss", direction: dir });
+        out.push({
+          kind: "level",
+          id: "sig-sl",
+          layer: "liquidity",
+          price: s.stopLoss,
+          label: "Stop loss",
+          direction: dir,
+        });
       }
       s.targets.forEach((t, i) => {
-        out.push({ kind: "level", id: `sig-tp-${i}`, layer: "structure", price: t.price, label: `${t.label} · ${t.rr}R`, direction: dir });
+        out.push({
+          kind: "level",
+          id: `sig-tp-${i}`,
+          layer: "structure",
+          price: t.price,
+          label: `${t.label} · ${t.rr}R`,
+          direction: dir,
+        });
       });
     }
     return out;
@@ -325,348 +418,305 @@ export function CryptoMarketsWorkspace() {
 
   const signalMarkers = useMemo<ChartMarker[]>(() => {
     const s = analysis?.signal;
-    const lastCandle = candlesFresh?.candles[candlesFresh.candles.length - 1];
-    if (!analysis || s === undefined || s.direction === "wait" || lastCandle === undefined) return [];
+    const lastCandle = candles?.[candles.length - 1];
+    if (!analysis || s === undefined || s.direction === "wait" || lastCandle === undefined) {
+      return [];
+    }
     return [
       {
         time: lastCandle.time,
         position: s.direction === "bullish" ? "belowBar" : "aboveBar",
         shape: s.direction === "bullish" ? "arrowUp" : "arrowDown",
         color: s.direction,
-        text: `${s.direction === "bullish" ? "BUY" : "SELL"} ${s.confidence}%`,
+        text: `${s.direction === "bullish" ? "BUY" : "SELL"} ${s.confidence}pts`,
       },
     ];
-  }, [analysis, candlesFresh]);
+  }, [analysis, candles]);
 
-  const chipCls = (active: boolean) =>
-    cn(
-      "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-      active
-        ? "bg-primary-muted text-foreground"
-        : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
-    );
+  const feed = FEED_META[feedStatus];
+  const FeedIcon = feed.icon;
+  const signal = analysis?.signal;
+  const signalMeta = signal ? DIR_META[signal.direction] : DIR_META.wait;
+  const SignalIcon = signalMeta.icon;
+
+  const scanRowFor = (tf: Timeframe): ScanRow =>
+    tf === timeframe
+      ? { state: "ready", analysis }
+      : scan[tf] ?? { state: "loading" };
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[230px_minmax(0,1fr)]">
-      {/* Left rail — asset class picker + headlines */}
-      <div className="space-y-4">
-        <Card>
-          <CardHeader title="Markets" description="Pick an asset class." />
-          <div className="flex flex-col gap-1 px-2 pb-3" role="tablist" aria-label="Asset classes">
-            {ASSET_TABS.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                role="tab"
-                aria-selected={asset === t.id}
-                onClick={() => setAsset(t.id)}
-                className={cn(
-                  "flex flex-col rounded-md px-3 py-2 text-left transition-colors",
-                  asset === t.id
-                    ? "bg-primary-muted text-foreground"
-                    : "text-muted-foreground hover:bg-surface-hover",
-                )}
-              >
-                <span className="text-sm font-medium">{t.label}</span>
-                <span className="text-[11px] text-subtle-foreground">{t.note}</span>
-              </button>
-            ))}
-          </div>
-        </Card>
+    <div className="space-y-5">
+      {/* Venue + feed status */}
+      <div className="flex flex-wrap items-center gap-2">
+        {VENUE_ORDER.map((id) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => switchVenue(id)}
+            aria-pressed={venueId === id}
+            className={cn(
+              "rounded-md border px-3 py-1.5 text-sm font-medium transition-colors",
+              venueId === id
+                ? "border-accent bg-accent/10 text-foreground"
+                : "border-border text-subtle-foreground hover:bg-surface-hover hover:text-foreground",
+            )}
+          >
+            {VENUES[id].label}
+          </button>
+        ))}
+        <span className="ml-auto inline-flex items-center gap-1.5 text-xs text-subtle-foreground">
+          <FeedIcon
+            className={cn("size-3.5", feedStatus === "connecting" && "animate-spin")}
+            aria-hidden="true"
+          />
+          <Badge tone={feed.tone}>{feed.label}</Badge>
+          {lastEventAt !== undefined && (
+            <span className="numeric">
+              last update {new Date(lastEventAt).toLocaleTimeString()}
+            </span>
+          )}
+        </span>
+      </div>
 
-        <Card>
-          <CardHeader title="Market news" description="Public headlines — CryptoCompare, cached 5 min." />
-          <div className="px-3 pb-3">
-            {news === undefined ? (
-              <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
-                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> Loading headlines…
+      {/* Pair + timeframe selectors */}
+      <div className="flex flex-wrap items-center gap-2">
+        {venue.symbols.map((s) => {
+          const quote = quotes[s.symbol];
+          return (
+            <button
+              key={s.symbol}
+              type="button"
+              onClick={() => switchSymbol(s.symbol)}
+              aria-pressed={symbol === s.symbol}
+              className={cn(
+                "rounded-md border px-3 py-1.5 text-left transition-colors",
+                symbol === s.symbol
+                  ? "border-accent bg-accent/10"
+                  : "border-border hover:bg-surface-hover",
+              )}
+            >
+              <span className="block text-sm font-medium text-foreground">{s.label}</span>
+              <span className="numeric block text-xs text-subtle-foreground">
+                {quote ? `${fmtPrice(quote.last, s.pricePrecision)} ${fmtSignedPct(quote.changePct24h)}` : "—"}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        {venue.intervals.map((i) => (
+          <button
+            key={i.timeframe}
+            type="button"
+            onClick={() => switchTimeframe(i.timeframe)}
+            aria-pressed={timeframe === i.timeframe}
+            className={cn(
+              "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
+              timeframe === i.timeframe
+                ? "border-accent bg-accent/10 text-foreground"
+                : "border-border text-subtle-foreground hover:bg-surface-hover hover:text-foreground",
+            )}
+          >
+            {i.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Live chart with signal overlays */}
+      <Card>
+        <CardHeader
+          title={`${symbolInfo.label} · ${venue.intervals.find((i) => i.timeframe === timeframe)?.label ?? timeframe}`}
+          description={`${venue.label} public feed — candles, zones, and signal levels update live.`}
+        />
+        {restError !== undefined && (
+          <Notice tone="warning" title="Feed error" className="mb-3">
+            {restError}
+          </Notice>
+        )}
+        {candles === undefined || candles.length === 0 ? (
+          <div className="flex min-h-[420px] items-center justify-center text-sm text-subtle-foreground">
+            {restError === undefined ? "Loading candles…" : "No candle data."}
+          </div>
+        ) : (
+          <div className="min-h-[420px]">
+            <CandlestickChart
+              candles={candles}
+              timeframe={timeframe}
+              overlays={signalOverlays}
+              markers={signalMarkers}
+              pricePrecision={precision}
+            />
+          </div>
+        )}
+        <p className="mt-3 text-xs text-subtle-foreground">
+          Prices are {venue.label}-specific — other venues may trade at different levels.
+          {candlesSet?.hasFormingCandle ? " The right-most bar is still forming." : ""}
+        </p>
+      </Card>
+
+      {/* Signal detail — entry / SL / targets / reasoning / points */}
+      <Card>
+        <CardHeader
+          title="Signal analysis"
+          description="Deterministic read of the candles on the chart — same data, auditable factors."
+          action={
+            analysis !== undefined && (
+              <Badge tone={signalMeta.tone}>
+                <SignalIcon className="mr-1 inline size-3.5" aria-hidden="true" />
+                {signalMeta.label}
+                {signal && signal.direction !== "wait" ? ` · ${signal.confidence} pts` : ""}
+              </Badge>
+            )
+          }
+        />
+        {analysis === undefined || signal === undefined ? (
+          <p className="text-sm text-subtle-foreground">
+            {candles === undefined ? "Waiting for candles…" : "Not enough bars to analyze yet."}
+          </p>
+        ) : (
+          <div className="space-y-4">
+            {/* Levels */}
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+              {[
+                { label: "Entry", value: signal.entry },
+                { label: "Stop loss", value: signal.stopLoss },
+                { label: "TP1", value: signal.targets[0]?.price },
+                { label: "TP2", value: signal.targets[1]?.price },
+                {
+                  label: "Risk : reward",
+                  value: undefined,
+                  text:
+                    signal.riskReward !== undefined ? `${signal.riskReward}R` : "—",
+                },
+              ].map((cell) => (
+                <div key={cell.label} className="rounded-md border border-border p-3">
+                  <div className="text-xs text-subtle-foreground">{cell.label}</div>
+                  <div className="numeric mt-1 text-sm font-semibold text-foreground">
+                    {cell.text ?? fmtPrice(cell.value, precision)}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Points breakdown */}
+            <div>
+              <div className="mb-2 flex items-baseline justify-between">
+                <h3 className="text-sm font-medium text-foreground">Confluence points</h3>
+                <span className="numeric text-sm font-semibold text-foreground">
+                  {signal.confidence}/100
+                </span>
               </div>
-            ) : newsError !== undefined || news.length === 0 ? (
-              <p className="py-1 text-xs text-muted-foreground">
-                {newsError ?? "No headlines returned."}
-              </p>
-            ) : (
-              <ul className="space-y-2.5">
-                {news.map((n, i) => (
-                  <li key={i}>
-                    <a
-                      href={n.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="block text-xs leading-snug text-foreground hover:underline"
+              <ul className="divide-y divide-border rounded-md border border-border">
+                {signal.factors.map((f) => (
+                  <li key={f.label} className="flex items-center gap-3 px-3 py-2 text-sm">
+                    <span className="w-28 shrink-0 font-medium text-foreground">{f.label}</span>
+                    <span
+                      className={cn(
+                        "numeric w-12 shrink-0 text-right font-semibold",
+                        f.agrees ? "text-bullish" : "text-subtle-foreground",
+                      )}
                     >
-                      {n.title}
-                      <span className="mt-0.5 block text-[10px] text-subtle-foreground">
-                        {n.source}
-                        {n.publishedAt !== undefined ? ` · ${relTime(n.publishedAt)}` : ""}
-                      </span>
-                    </a>
+                      {f.points}/{f.weight}
+                    </span>
+                    <span className="truncate text-subtle-foreground">{f.note}</span>
                   </li>
                 ))}
               </ul>
-            )}
-          </div>
-        </Card>
-      </div>
-
-      {/* Main column */}
-      <div className="min-w-0 space-y-4">
-        <div className="flex gap-1.5" role="tablist" aria-label="Analysis mode">
-          <button type="button" role="tab" aria-selected={mode === "live"} onClick={() => setMode("live")} className={chipCls(mode === "live")}>
-            <LineChart className="size-3.5" aria-hidden="true" /> Live chart
-          </button>
-          <button type="button" role="tab" aria-selected={mode === "upload"} onClick={() => setMode("upload")} className={chipCls(mode === "upload")}>
-            <ImageUp className="size-3.5" aria-hidden="true" /> Upload a chart
-          </button>
-        </div>
-
-        {mode === "upload" ? (
-          <ChartAnalystWorkspace />
-        ) : asset !== "crypto" ? (
-          <Notice tone="info" title={`${ASSET_TABS.find((t) => t.id === asset)?.label ?? "This market"} — no live feed connected`}>
-            This platform has no licensed {asset === "forex" ? "forex" : "Indian market"} data feed, so
-            nothing is shown rather than unverified prices. You can still use{" "}
-            <button type="button" onClick={() => setMode("upload")} className="font-medium underline">
-              Upload a chart
-            </button>{" "}
-            to analyse a screenshot, or pick Crypto for the live Binance feed.
-          </Notice>
-        ) : (
-          <>
-            {/* Feed status strip — real stream state, verbatim. */}
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-border bg-surface px-4 py-3">
-              <Badge tone={feedMeta.tone}>
-                <FeedIcon
-                  className={cn(feedStatus === "connecting" && "animate-spin")}
-                  aria-hidden="true"
-                />
-                <span>{feedMeta.label}</span>
-              </Badge>
-              <span className="text-xs text-muted-foreground">
-                Source: <span className="font-medium text-foreground">{VENUE_LABEL}</span> public feed
-              </span>
-              {lastEventAt !== undefined ? (
-                <span className="numeric text-xs text-muted-foreground">
-                  Last update {fmtUtcTime(lastEventAt)}
-                  {quotesStale ? " — values are last-received" : ""}
-                </span>
-              ) : (
-                <span className="text-xs text-subtle-foreground">Awaiting first update</span>
-              )}
+              <p className="mt-1.5 text-xs text-subtle-foreground">
+                Points count agreeing measured factors — they are a confluence score, not a
+                win-rate probability.
+              </p>
             </div>
 
-            {quotesError !== undefined ? (
-              <Notice
-                tone="error"
-                title="Quotes unavailable"
-                action={
-                  <button
-                    type="button"
-                    onClick={() => setRestSeedTick((n) => n + 1)}
-                    className="rounded-md border border-border px-2.5 py-1 text-xs font-medium transition-colors hover:bg-surface-hover"
-                  >
-                    Retry
-                  </button>
-                }
-              >
-                {quotesError}. No substitute data is shown.
-              </Notice>
-            ) : null}
+            {/* Reasoning */}
+            {signal.reasons.length > 0 && (
+              <div>
+                <h3 className="mb-1.5 text-sm font-medium text-foreground">Why this trade</h3>
+                <ul className="list-inside list-disc space-y-1 text-sm text-muted-foreground">
+                  {signal.reasons.map((r) => (
+                    <li key={r}>{r}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
-            {/* Pair picker — compact chips with live last price + 24h change. */}
-            <div className="flex flex-wrap items-center gap-1.5" role="tablist" aria-label="Trading pairs">
-              {CRYPTO_SYMBOLS.map((s) => {
-                const q = quotes[s.symbol];
+            <ul className="space-y-0.5 text-xs text-subtle-foreground">
+              {analysis.caveats.map((c) => (
+                <li key={c}>· {c}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </Card>
+
+      {/* Intraday scan across 5m–4h */}
+      <Card>
+        <CardHeader
+          title="Intraday scan"
+          description={`${symbolInfo.label} on ${venue.label} — every scan timeframe re-analyzed each minute. A row shows a trade only when the engine's criteria are met.`}
+        />
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[560px] text-sm">
+            <thead>
+              <tr className="border-b border-border text-left text-xs text-subtle-foreground">
+                <th className="py-2 pr-3 font-medium">Timeframe</th>
+                <th className="py-2 pr-3 font-medium">Signal</th>
+                <th className="py-2 pr-3 font-medium">Points</th>
+                <th className="py-2 pr-3 font-medium">Entry</th>
+                <th className="py-2 pr-3 font-medium">Stop loss</th>
+                <th className="py-2 font-medium">TP1</th>
+              </tr>
+            </thead>
+            <tbody>
+              {SCAN_TIMEFRAMES.map((tf) => {
+                const row = scanRowFor(tf);
+                const a = row.analysis;
+                const s = a?.signal;
+                const dir = s?.direction ?? "wait";
+                const meta = DIR_META[dir];
+                const RowIcon = meta.icon;
                 return (
-                  <button
-                    key={s.symbol}
-                    type="button"
-                    role="tab"
-                    aria-selected={s.symbol === symbol}
-                    onClick={() => setSymbol(s.symbol)}
+                  <tr
+                    key={tf}
                     className={cn(
-                      "flex flex-col rounded-md border px-2.5 py-1.5 text-left transition-colors",
-                      s.symbol === symbol
-                        ? "border-primary/50 bg-primary-muted/40"
-                        : "border-border hover:bg-surface-hover",
+                      "border-b border-border last:border-b-0",
+                      tf === timeframe && "bg-accent/5",
                     )}
                   >
-                    <span className="text-xs font-semibold">{s.label}</span>
-                    <span className="numeric text-[11px] text-muted-foreground">
-                      {q ? fmtPrice(q.last, s.pricePrecision) : "—"}
-                      {q ? (
-                        <span className={q.changePct24h >= 0 ? " text-bullish" : " text-bearish"}>
-                          {" "}{q.changePct24h >= 0 ? "+" : ""}{q.changePct24h.toFixed(2)}%
+                    <td className="py-2.5 pr-3 font-medium text-foreground">
+                      {venue.intervals.find((i) => i.timeframe === tf)?.label ?? tf}
+                      {tf === timeframe && (
+                        <span className="ml-1.5 text-xs text-subtle-foreground">(live)</span>
+                      )}
+                    </td>
+                    <td className="py-2.5 pr-3">
+                      {row.state === "loading" ? (
+                        <span className="text-xs text-subtle-foreground">…</span>
+                      ) : row.state === "error" ? (
+                        <span className="text-xs text-subtle-foreground" title={row.error}>
+                          unavailable
                         </span>
-                      ) : null}
-                    </span>
-                  </button>
+                      ) : (
+                        <Badge tone={meta.tone}>
+                          <RowIcon className="mr-1 inline size-3" aria-hidden="true" />
+                          {meta.label}
+                        </Badge>
+                      )}
+                    </td>
+                    <td className="numeric py-2.5 pr-3">
+                      {s ? `${s.confidence}/100` : "—"}
+                    </td>
+                    <td className="numeric py-2.5 pr-3">{fmtPrice(s?.entry, precision)}</td>
+                    <td className="numeric py-2.5 pr-3">{fmtPrice(s?.stopLoss, precision)}</td>
+                    <td className="numeric py-2.5">{fmtPrice(s?.targets[0]?.price, precision)}</td>
+                  </tr>
                 );
               })}
-            </div>
-
-            {/* Live chart + signal overlays */}
-            <Card>
-              <CardHeader
-                title={`${info?.label ?? symbol} — ${VENUE_LABEL}`}
-                description="OHLCV from the provider's public klines endpoint; the final bar updates live while forming."
-                action={
-                  <div className="flex flex-wrap items-center gap-1" role="tablist" aria-label="Timeframes">
-                    {CRYPTO_INTERVALS.map((i) => (
-                      <button
-                        key={i.timeframe}
-                        type="button"
-                        role="tab"
-                        aria-selected={i.timeframe === timeframe}
-                        onClick={() => setTimeframe(i.timeframe)}
-                        className={chipCls(i.timeframe === timeframe)}
-                      >
-                        {i.label}
-                      </button>
-                    ))}
-                  </div>
-                }
-              />
-              <div className="flex min-h-[380px] flex-col p-2">
-                {candlesErrorFresh !== undefined ? (
-                  <div className="p-4">
-                    <Notice
-                      tone="error"
-                      title="Candles unavailable"
-                      action={
-                        <button
-                          type="button"
-                          onClick={() => setRestSeedTick((n) => n + 1)}
-                          className="rounded-md border border-border px-2.5 py-1 text-xs font-medium transition-colors hover:bg-surface-hover"
-                        >
-                          Retry
-                        </button>
-                      }
-                    >
-                      {candlesErrorFresh.message}. Historical values are not substituted.
-                    </Notice>
-                  </div>
-                ) : candlesFresh === undefined ? (
-                  <div className="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
-                    <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                    Loading {info?.label} candles…
-                  </div>
-                ) : candlesFresh.candles.length === 0 ? (
-                  <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-                    The provider returned no candles for this window.
-                  </div>
-                ) : (
-                  <>
-                    <CandlestickChart
-                      candles={candlesFresh.candles}
-                      timeframe={timeframe}
-                      overlays={signalOverlays}
-                      markers={signalMarkers}
-                      pricePrecision={info?.pricePrecision ?? 2}
-                    />
-                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 pb-2 text-[11px] text-subtle-foreground">
-                      <span>
-                        {candlesFresh.candles.length} bars · {VENUE_LABEL}
-                      </span>
-                      {candlesFresh.hasForming ? <span>Last bar still forming</span> : null}
-                      {candlesFresh.warnings.length > 0 ? (
-                        <span className="text-warning">
-                          {candlesFresh.warnings.length} normalization warning(s)
-                        </span>
-                      ) : null}
-                    </div>
-                  </>
-                )}
-              </div>
-            </Card>
-
-            {/* Signal card — deterministic read of the bars on screen. */}
-            <Card>
-              <CardHeader
-                title="Signal analysis"
-                description="Measured from the candles on this chart — EMA trend, swing structure, demand/supply zones, ATR sizing."
-                action={
-                  analysis !== undefined && analysis.signal.direction !== "wait" ? (
-                    <Badge tone={analysis.signal.direction === "bullish" ? "bullish" : "bearish"}>
-                      {analysis.signal.direction === "bullish" ? "BUY" : "SELL"} · confluence {analysis.signal.confidence}%
-                    </Badge>
-                  ) : analysis !== undefined ? (
-                    <Badge tone="neutral">WAIT · confluence {analysis.signal.confidence}%</Badge>
-                  ) : undefined
-                }
-              />
-              <div className="px-5 pb-5">
-                {candlesFresh === undefined || candlesFresh.candles.length < 60 ? (
-                  <p className="py-2 text-xs text-muted-foreground">
-                    {candlesFresh === undefined ? "Waiting for candles…" : "Need at least 60 bars for a structural read."}
-                  </p>
-                ) : analysis === undefined ? (
-                  <p className="py-2 text-xs text-muted-foreground">Analysing…</p>
-                ) : (
-                  <div className="space-y-4">
-                    {analysis.signal.direction !== "wait" ? (
-                      <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
-                        <div>
-                          <p className="text-subtle-foreground">Entry</p>
-                          <p className="numeric text-sm font-medium">{fmtPrice(analysis.signal.entry ?? 0, info?.pricePrecision ?? 2)}</p>
-                        </div>
-                        <div>
-                          <p className="text-subtle-foreground">Stop loss</p>
-                          <p className="numeric text-sm font-medium text-bearish">{fmtPrice(analysis.signal.stopLoss ?? 0, info?.pricePrecision ?? 2)}</p>
-                        </div>
-                        {analysis.signal.targets.map((t) => (
-                          <div key={t.label}>
-                            <p className="text-subtle-foreground">{t.label} ({t.rr}R)</p>
-                            <p className="numeric text-sm font-medium text-bullish">{fmtPrice(t.price, info?.pricePrecision ?? 2)}</p>
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-
-                    <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
-                      <div>
-                        <p className="text-subtle-foreground">Trend</p>
-                        <p className="font-medium capitalize">{analysis.trend.direction}</p>
-                      </div>
-                      <div>
-                        <p className="text-subtle-foreground">Structure</p>
-                        <p className="font-medium">{analysis.structure.note}</p>
-                      </div>
-                      <div>
-                        <p className="text-subtle-foreground">RSI (14)</p>
-                        <p className="numeric font-medium">{analysis.momentum.rsi14.toFixed(0)}</p>
-                      </div>
-                      <div>
-                        <p className="text-subtle-foreground">ATR (14)</p>
-                        <p className="numeric font-medium">{fmtPrice(analysis.volatility.atr14, info?.pricePrecision ?? 2)}</p>
-                      </div>
-                    </div>
-
-                    {analysis.signal.reasons.length > 0 ? (
-                      <div>
-                        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-subtle-foreground">Why</p>
-                        <ul className="list-disc space-y-0.5 pl-4 text-xs text-muted-foreground">
-                          {analysis.signal.reasons.map((r, i) => <li key={i}>{r}</li>)}
-                        </ul>
-                      </div>
-                    ) : null}
-
-                    <p className="text-[11px] leading-relaxed text-subtle-foreground">
-                      {analysis.caveats.join(" ")}
-                    </p>
-                  </div>
-                )}
-              </div>
-            </Card>
-
-            <Notice tone="info" title="Venue-specific prices">
-              Quotes and candles are {VENUE_LABEL} prices — they may differ from other exchanges and
-              are not a consolidated global price. Signals are deterministic measurements of the
-              chart you see, not financial advice.
-            </Notice>
-          </>
-        )}
-      </div>
+            </tbody>
+          </table>
+        </div>
+      </Card>
     </div>
   );
 }

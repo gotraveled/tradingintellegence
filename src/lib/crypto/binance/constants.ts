@@ -60,6 +60,7 @@ export const CRYPTO_INTERVALS: { timeframe: Timeframe; binance: string; label: s
   { timeframe: "1m", binance: "1m", label: "1m" },
   { timeframe: "5m", binance: "5m", label: "5m" },
   { timeframe: "15m", binance: "15m", label: "15m" },
+  { timeframe: "30m", binance: "30m", label: "30m" },
   { timeframe: "1h", binance: "1h", label: "1H" },
   { timeframe: "4h", binance: "4h", label: "4H" },
   { timeframe: "1D", binance: "1d", label: "1D" },

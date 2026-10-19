@@ -1,7 +1,14 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import type { ISeriesApi, UTCTimestamp } from "lightweight-charts";
+import { useEffect, useRef, useState } from "react";
+import type {
+  IChartApi,
+  IPriceLine,
+  ISeriesApi,
+  ISeriesMarkersPluginApi,
+  Time,
+  UTCTimestamp,
+} from "lightweight-charts";
 import type { Candle, Price, Timeframe } from "@/lib/types";
 import type { ChartOverlay, OverlayLayer } from "./chart-types";
 
@@ -11,8 +18,9 @@ import type { ChartOverlay, OverlayLayer } from "./chart-types";
  * the server bundle and the initial client chunk (code-split per route).
  *
  * The component is intentionally imperative: React owns props, the chart owns canvas.
- * A full rebuild per [candles, overlays, chartStyle] is deliberate — at ≤2000 bars it
- * is cheap and keeps data/overlay/lifecycle reasoning simple and leak-free.
+ * The instance is created once per [chartStyle, pricePrecision]; live candle ticks
+ * patch the tail via `series.update` and overlays/markers swap in place — a live
+ * feed never triggers a full rebuild, so the view does not flicker or reset zoom.
  */
 
 export interface CandlestickChartHandle {
@@ -157,6 +165,27 @@ function makeZonePrimitive(
   };
 }
 
+/**
+ * Mutable state of one mounted chart instance. `applied` tracks the candle
+ * array last pushed into the series so a live forming-bar tick can patch the
+ * tail via `series.update` instead of a full `setData` rebuild — and
+ * `overlayKey` dedupes overlay redraws against serialized content.
+ */
+interface ChartInstance {
+  LWC: typeof import("lightweight-charts");
+  chart: IChartApi;
+  series: ISeriesApi<"Candlestick"> | ISeriesApi<"Line">;
+  volume: ISeriesApi<"Histogram">;
+  markersApi?: ISeriesMarkersPluginApi<Time>;
+  priceLines: IPriceLine[];
+  zonePrimitives: unknown[];
+  colors: Colors;
+  applied: Candle[];
+  overlayKey: string;
+}
+
+const toSec = (ms: number) => Math.floor(ms / 1000) as UTCTimestamp;
+
 export function CandlestickChart({
   candles,
   timeframe,
@@ -167,12 +196,16 @@ export function CandlestickChart({
   onReady,
 }: CandlestickChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const instRef = useRef<ChartInstance | null>(null);
+  /** Bumped whenever an instance is (re)created so data/overlay effects re-apply. */
+  const [chartTick, setChartTick] = useState(0);
 
+  // ---- Lifecycle: create once per [chartStyle, pricePrecision]; dispose on
+  // change or unmount. Candle ticks never touch this effect — the whole point.
   useEffect(() => {
     const el = containerRef.current;
-    if (!el || candles.length === 0) return undefined;
+    if (!el) return undefined;
     let disposed = false;
-    let cleanup: (() => void) | undefined;
 
     void (async () => {
       const LWC = await import("lightweight-charts");
@@ -197,8 +230,11 @@ export function CandlestickChart({
         timeScale: { borderColor: colors.grid, timeVisible: true, secondsVisible: false },
       });
 
-      const toSec = (ms: number) => Math.floor(ms / 1000) as UTCTimestamp;
-      const priceFmt = { type: "price" as const, precision: pricePrecision, minMove: 1 / 10 ** pricePrecision };
+      const priceFmt = {
+        type: "price" as const,
+        precision: pricePrecision,
+        minMove: 1 / 10 ** pricePrecision,
+      };
 
       const series =
         chartStyle === "line"
@@ -216,7 +252,69 @@ export function CandlestickChart({
               priceFormat: priceFmt,
             });
 
-      if (chartStyle === "line") {
+      const volume = chart.addSeries(LWC.HistogramSeries, {
+        priceFormat: { type: "volume" },
+        priceScaleId: "vol",
+      });
+      chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
+
+      instRef.current = {
+        LWC,
+        chart,
+        series,
+        volume,
+        priceLines: [],
+        zonePrimitives: [],
+        colors,
+        applied: [],
+        overlayKey: "",
+      };
+
+      const ts = chart.timeScale();
+      onReady?.({
+        fit: () => ts.fitContent(),
+        zoomIn: () => ts.applyOptions({ barSpacing: ts.options().barSpacing * 1.25 }),
+        zoomOut: () => ts.applyOptions({ barSpacing: ts.options().barSpacing / 1.25 }),
+      });
+      setChartTick((t) => t + 1);
+    })();
+
+    return () => {
+      disposed = true;
+      onReady?.(undefined);
+      instRef.current?.chart.remove();
+      instRef.current = null;
+    };
+    // Chart lifetime is bound to style/precision only — candle and overlay
+    // updates are applied incrementally by the effects below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chartStyle, pricePrecision]);
+
+  // ---- Data: full setData when history is replaced (new symbol/timeframe),
+  // otherwise patch only the changed tail bars via series.update().
+  useEffect(() => {
+    const inst = instRef.current;
+    if (!inst || candles.length === 0) return;
+    const { series, volume, chart } = inst;
+    const isLine = chartStyle === "line";
+    const toBar = (c: Candle) =>
+      isLine
+        ? { time: toSec(c.time), value: c.close }
+        : { time: toSec(c.time), open: c.open, high: c.high, low: c.low, close: c.close };
+    const toVol = (c: Candle) => ({
+      time: toSec(c.time),
+      value: c.volume as number,
+      color: c.close >= c.open ? inst.colors.upMuted : inst.colors.downMuted,
+    });
+
+    const prev = inst.applied;
+    const sameHistory =
+      prev.length > 0 &&
+      prev.length <= candles.length &&
+      prev[0].time === candles[0].time;
+
+    if (!sameHistory) {
+      if (isLine) {
         (series as ISeriesApi<"Line">).setData(
           candles.map((c) => ({ time: toSec(c.time), value: c.close })),
         );
@@ -231,81 +329,82 @@ export function CandlestickChart({
           })),
         );
       }
-
-      // Volume — bottom overlay lane; only when the feed supplies it.
-      if (candles.some((c) => c.volume !== undefined)) {
-        const vol = chart.addSeries(LWC.HistogramSeries, {
-          priceFormat: { type: "volume" },
-          priceScaleId: "vol",
-        });
-        chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
-        vol.setData(
-          candles
-            .filter((c) => c.volume !== undefined)
-            .map((c) => ({
-              time: toSec(c.time),
-              value: c.volume as number,
-              color: c.close >= c.open ? colors.upMuted : colors.downMuted,
-            })),
-        );
+      volume.setData(candles.filter((c) => c.volume !== undefined).map(toVol));
+      chart.timeScale().fitContent();
+    } else {
+      // First bar that differs, else the first appended bar.
+      let i = 0;
+      while (
+        i < prev.length &&
+        prev[i].time === candles[i].time &&
+        prev[i].open === candles[i].open &&
+        prev[i].high === candles[i].high &&
+        prev[i].low === candles[i].low &&
+        prev[i].close === candles[i].close &&
+        prev[i].volume === candles[i].volume
+      ) {
+        i += 1;
       }
-
-      // Bar markers — signal arrows keyed to candle times. Semantic colors
-      // resolve against the theme; anything else passes through verbatim.
-      if (markers.length > 0) {
-        LWC.createSeriesMarkers(
-          series,
-          markers.map((m: ChartMarker) => ({
-            time: toSec(m.time),
-            position: m.position,
-            shape: m.shape,
-            color:
-              m.color === "bullish" ? colors.up : m.color === "bearish" ? colors.down : m.color,
-            text: m.text,
-          })),
+      for (let j = i; j < candles.length; j += 1) {
+        (series as ISeriesApi<"Candlestick"> | ISeriesApi<"Line">).update(
+          toBar(candles[j]) as never,
         );
+        if (candles[j].volume !== undefined) volume.update(toVol(candles[j]));
       }
+    }
+    inst.applied = candles;
+  }, [candles, chartStyle, chartTick]);
 
-      // Overlays — levels as price lines, zones as filled band primitives.
-      for (const overlay of overlays) {
-        if (overlay.kind === "level") {
+  // ---- Overlays + markers: swap in place when serialized content changes.
+  useEffect(() => {
+    const inst = instRef.current;
+    if (!inst) return;
+    const { LWC, series, colors } = inst;
+    const key = JSON.stringify([overlays, markers]);
+    if (key === inst.overlayKey) return;
+    inst.overlayKey = key;
+
+    for (const line of inst.priceLines) series.removePriceLine(line);
+    inst.priceLines = [];
+    const detachable = series as ISeriesApi<"Candlestick"> & {
+      detachPrimitive?: (p: never) => void;
+    };
+    for (const p of inst.zonePrimitives) detachable.detachPrimitive?.(p as never);
+    inst.zonePrimitives = [];
+
+    for (const overlay of overlays) {
+      if (overlay.kind === "level") {
+        inst.priceLines.push(
           series.createPriceLine({
             price: overlay.price,
             color: LAYER_COLOR(overlay.layer, colors),
             lineWidth: 1,
-            lineStyle: overlay.layer === "liquidity" ? LWC.LineStyle.Dashed : LWC.LineStyle.Solid,
+            lineStyle:
+              overlay.layer === "liquidity" ? LWC.LineStyle.Dashed : LWC.LineStyle.Solid,
             axisLabelVisible: true,
             title: overlay.label,
-          });
-        } else {
-          (series as { attachPrimitive?: (p: unknown) => void }).attachPrimitive?.(
-            makeZonePrimitive(overlay, colors),
-          );
-        }
+          }),
+        );
+      } else {
+        const primitive = makeZonePrimitive(overlay, colors);
+        (series as { attachPrimitive?: (p: unknown) => void }).attachPrimitive?.(primitive);
+        inst.zonePrimitives.push(primitive);
       }
+    }
 
-      chart.timeScale().fitContent();
-
-      const ts = chart.timeScale();
-      onReady?.({
-        fit: () => ts.fitContent(),
-        zoomIn: () => ts.applyOptions({ barSpacing: ts.options().barSpacing * 1.25 }),
-        zoomOut: () => ts.applyOptions({ barSpacing: ts.options().barSpacing / 1.25 }),
-      });
-
-      cleanup = () => {
-        onReady?.(undefined);
-        chart.remove();
-      };
-    })();
-
-    return () => {
-      disposed = true;
-      cleanup?.();
-    };
-    // The chart owns canvas state imperatively; a prop change rebuilds it wholesale.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [candles, chartStyle, overlays, markers, pricePrecision]);
+    const markersApi = inst.markersApi ?? LWC.createSeriesMarkers(series, []);
+    inst.markersApi = markersApi;
+    markersApi.setMarkers(
+      markers.map((m) => ({
+        time: toSec(m.time),
+        position: m.position,
+        shape: m.shape,
+        color:
+          m.color === "bullish" ? colors.up : m.color === "bearish" ? colors.down : m.color,
+        text: m.text,
+      })),
+    );
+  }, [overlays, markers, chartTick]);
 
   return (
     <div
