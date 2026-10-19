@@ -15,10 +15,12 @@ import type { Candle, Direction, Price } from "@/lib/types";
  *     AND price is near a fresh opposing zone (entry location matters).
  *     Entry = last close; SL = zone edge ± 0.5×ATR buffer; TP1 = 1.5R
  *     capped by the next opposing zone, TP2 = 2.5R.
- *  5. Confidence: a 0–100 confluence score over named, measurable factors
- *     (trend agreement, structure, momentum via RSI, zone freshness,
- *     risk/reward). It is a count of agreeing factors — NOT a win-rate
- *     prediction and is labelled as such in the UI.
+ *  5. Confidence: a 0–100 confluence score over five named, measurable
+ *     factors (trend agreement, structure, momentum via RSI, entry at a
+ *     zone, and reward:risk ≥ 1R). It is a count of agreeing factors —
+ *     NOT a win-rate prediction and is labelled as such in the UI.
+ *     Every condition that can veto a trade is itself a scored factor, so
+ *     a "wait" verdict can never display a full 100.
  *
  * What this does NOT do: predict, optimize per-symbol, read higher
  * timeframes, or produce a trade command. "wait" is a valid answer.
@@ -266,37 +268,69 @@ export function analyzeCandles(candles: Candle[]): SignalAnalysis | undefined {
       reasons.push(`Price is inside/near a ${entryZone.kind} zone (${entryZone.ageBars} bars old)`);
     }
 
-    // Confidence = share of agreeing measured factors (0–100), exposed as a
-    // named points breakdown so the UI can show exactly what agreed.
+    // Compute the trade plan up front so reward:risk can be scored as a
+    // factor — every veto a trade can hit must be visible in the points.
+    const buffer = SL_ATR_BUFFER * atr14;
+    const entry = price;
+    const stopLoss =
+      entryZone === undefined
+        ? undefined
+        : side === "bullish" ? entryZone.lower - buffer : entryZone.upper + buffer;
+    const risk = entryZone === undefined || stopLoss === undefined ? 0 : Math.abs(entry - stopLoss);
+    let tp1 = side === "bullish" ? entry + 1.5 * risk : entry - 1.5 * risk;
+    const tp2 = side === "bullish" ? entry + 2.5 * risk : entry - 2.5 * risk;
+    // Cap TP1 at the nearest opposing zone if it's closer — don't aim through supply.
+    if (exitZone) {
+      const zEdge = side === "bullish" ? exitZone.lower : exitZone.upper;
+      const realistic = side === "bullish" ? Math.min(tp1, zEdge) : Math.max(tp1, zEdge);
+      if (side === "bullish" ? realistic > entry : realistic < entry) tp1 = realistic;
+    }
+    const rr1 = risk === 0 ? 0 : Math.abs(tp1 - entry) / risk;
+    const rrOk = risk > 0 && rr1 >= 1;
+
+    // Confidence = share of agreeing measured factors (0–100 over five
+    // 20-point factors), exposed as a named points breakdown so the UI can
+    // show exactly what agreed — and exactly what vetoed the trade.
     const structAgrees =
       side === "bullish" ? structBull > structBear : structBear > structBull;
     const factorWeights: Omit<SignalFactor, "points">[] = [
       {
         label: "EMA trend",
         agrees: true, // trendDir === side by construction inside this branch
-        weight: 25,
+        weight: 20,
         note: `EMA20 ${side === "bullish" ? "above" : "below"} EMA50 (${emaSpreadAtr.toFixed(1)} ATR apart)`,
       },
       {
         label: "Swing structure",
         agrees: structAgrees,
-        weight: 25,
+        weight: 20,
         note: structureNote,
       },
       {
         label: "Momentum",
         agrees: mom === side,
-        weight: 25,
+        weight: 20,
         note: `RSI14 ${rsi14.toFixed(0)} — ${mom}`,
       },
       {
         label: "Entry at zone",
         agrees: nearEntry,
-        weight: 25,
+        weight: 20,
         note:
           nearEntry && entryZone
             ? `Inside/near ${entryZone.kind} zone (${entryZone.ageBars} bars old)`
             : `Not near a ${side === "bullish" ? "demand" : "supply"} zone`,
+      },
+      {
+        label: "Reward ≥ 1R",
+        agrees: rrOk,
+        weight: 20,
+        note:
+          entryZone === undefined
+            ? `No ${side === "bullish" ? "demand" : "supply"} zone to anchor a stop`
+            : rrOk
+              ? `TP1 pays ${rr1.toFixed(1)}R against the ${entryZone.kind}-zone stop`
+              : `Opposing zone caps the trade at ${rr1.toFixed(1)}R`,
       },
     ];
     signal.factors = factorWeights.map((f) => ({
@@ -307,39 +341,26 @@ export function analyzeCandles(candles: Candle[]): SignalAnalysis | undefined {
     signal.confidence = signal.factors.reduce((sum, f) => sum + f.points, 0);
     signal.reasons = reasons;
 
-    // Only propose when location + trend + at least structure OR momentum agree.
-    if (nearEntry && entryZone && agreed >= 3) {
-      const buffer = SL_ATR_BUFFER * atr14;
-      const entry = price;
-      const stopLoss = side === "bullish" ? entryZone.lower - buffer : entryZone.upper + buffer;
-      const risk = Math.abs(entry - stopLoss);
-      let tp1 = side === "bullish" ? entry + 1.5 * risk : entry - 1.5 * risk;
-      const tp2 = side === "bullish" ? entry + 2.5 * risk : entry - 2.5 * risk;
-      // Cap TP1 at the nearest opposing zone if it's closer — don't aim through supply.
-      if (exitZone) {
-        const zEdge = side === "bullish" ? exitZone.lower : exitZone.upper;
-        const realistic = side === "bullish" ? Math.min(tp1, zEdge) : Math.max(tp1, zEdge);
-        if (side === "bullish" ? realistic > entry : realistic < entry) tp1 = realistic;
-      }
-      const rr1 = risk === 0 ? 0 : Math.abs(tp1 - entry) / risk;
-      if (rr1 >= 1) {
-        signal.direction = side;
-        signal.entry = entry;
-        signal.stopLoss = stopLoss;
-        signal.riskReward = Math.round(rr1 * 10) / 10;
-        signal.targets = [
-          { label: "TP1", price: tp1, rr: Math.round(rr1 * 10) / 10 },
-          { label: "TP2", price: tp2, rr: 2.5 },
-        ];
-      } else {
-        signal.reasons.push(`Nearest opposing zone caps the trade at ${rr1.toFixed(1)}R — below the 1R minimum.`);
-      }
-    } else if (agreed >= 3 && !nearEntry) {
+    // Only propose when location, reward, and at least 4/5 factors agree.
+    if (nearEntry && entryZone && rrOk && agreed >= 4 && stopLoss !== undefined) {
+      signal.direction = side;
+      signal.entry = entry;
+      signal.stopLoss = stopLoss;
+      signal.riskReward = Math.round(rr1 * 10) / 10;
+      signal.targets = [
+        { label: "TP1", price: tp1, rr: Math.round(rr1 * 10) / 10 },
+        { label: "TP2", price: tp2, rr: 2.5 },
+      ];
+    } else if (agreed >= 4 && !nearEntry) {
       signal.reasons.push(
-        `Direction agrees (${agreed}/4 factors) but price is not at a ${side === "bullish" ? "demand" : "supply"} zone — entry location missing, so no signal.`,
+        `Direction agrees (${agreed}/5 factors) but price is not at a ${side === "bullish" ? "demand" : "supply"} zone — entry location missing, so no signal.`,
+      );
+    } else if (agreed >= 4 && !rrOk) {
+      signal.reasons.push(
+        `Setup agrees (${agreed}/5 factors) but the nearest opposing zone caps the trade at ${rr1.toFixed(1)}R — below the 1R minimum, so no signal.`,
       );
     } else {
-      signal.reasons.push(`Only ${agreed}/4 confluence factors agree — waiting.`);
+      signal.reasons.push(`Only ${agreed}/5 confluence factors agree — waiting.`);
     }
   }
 

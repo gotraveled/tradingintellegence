@@ -6,6 +6,7 @@ import {
   Loader2,
   Minus,
   RefreshCw,
+  Trash2,
   TriangleAlert,
   Wifi,
   WifiOff,
@@ -18,6 +19,18 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader } from "@/components/ui/card";
 import { Notice } from "@/components/ui/notice";
 import { analyzeCandles, type SignalAnalysis } from "@/lib/crypto/analysis";
+import {
+  clearTrades,
+  dailyStats,
+  evaluateTrade,
+  journalKey,
+  loadTrades,
+  registerSignal,
+  saveTrades,
+  tradeKey,
+  unrealizedR,
+  type TradeRecord,
+} from "@/lib/crypto/journal";
 import { fetchCryptoKlines, fetchCryptoQuotes } from "@/lib/crypto/binance/client";
 import {
   binanceInterval,
@@ -204,6 +217,23 @@ export function CryptoMarketsWorkspace() {
   const [feedStatus, setFeedStatus] = useState<FeedStatus>("connecting");
   const [lastEventAt, setLastEventAt] = useState<number | undefined>();
   const [scan, setScan] = useState<ScanState>({});
+  const [trades, setTrades] = useState<TradeRecord[]>([]);
+
+  // Journal lives in localStorage — load once on mount (deferred so the
+  // state write isn't synchronous inside the effect body).
+  useEffect(() => {
+    const id = setTimeout(() => setTrades(loadTrades()), 0);
+    return () => clearTimeout(id);
+  }, []);
+
+  /** Apply a journal mutation and persist when it actually changed anything. */
+  const updateTrades = useCallback((fn: (list: TradeRecord[]) => TradeRecord[]) => {
+    setTrades((prev) => {
+      const next = fn(prev);
+      if (next !== prev) saveTrades(next);
+      return next;
+    });
+  }, []);
 
   const pendingCandle = useRef<Candle | undefined>(undefined);
   const flushTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -342,12 +372,34 @@ export function CryptoMarketsWorkspace() {
         if (tf === timeframe) continue;
         void venue.fetchKlines(symbol, tf).then((res) => {
           if (cancelled) return;
+          const rowAnalysis = res.ok ? analyzeCandles(res.data.candles) : undefined;
           setScan((prev) => ({
             ...prev,
             [tf]: res.ok
-              ? { state: "ready", analysis: analyzeCandles(res.data.candles) }
+              ? { state: "ready", analysis: rowAnalysis }
               : { state: "error", error: res.error.message },
           }));
+          // Journal the scan's signals and carry open trades on this
+          // timeframe forward — every scan bar is a management update.
+          if (res.ok && rowAnalysis !== undefined && res.data.candles.length > 0) {
+            const set = res.data.candles;
+            const closed = res.data.hasFormingCandle ? set.slice(0, -1) : set;
+            const key = journalKey(venue.id, symbol, tf);
+            updateTrades((prev) => {
+              let next = registerSignal(prev, {
+                venue: venue.id,
+                symbol,
+                timeframe: tf,
+                signal: rowAnalysis.signal,
+                barTime: set[set.length - 1].time,
+                now: Date.now(),
+              }).trades;
+              next = next.map((t) =>
+                t.status === "open" && tradeKey(t) === key ? evaluateTrade(t, closed) : t,
+              );
+              return next;
+            });
+          }
         });
       }
     };
@@ -357,13 +409,48 @@ export function CryptoMarketsWorkspace() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [venue, symbol, timeframe]);
+  }, [venue, symbol, timeframe, updateTrades]);
 
   const candles = candlesSet?.candles;
   const analysis = useMemo(
     () => (candles !== undefined ? analyzeCandles(candles) : undefined),
     [candles],
   );
+
+  // Paper-trade journal: book the live signal once per setup, then carry
+  // every open trade on this market forward over newly closed bars.
+  // Deferred: journal bookkeeping isn't render-critical and the lint rules
+  // forbid synchronous setState inside an effect body.
+  useEffect(() => {
+    if (!analysis || candles === undefined || candles.length === 0) return;
+    const lastBar = candles[candles.length - 1];
+    const closed = candlesSet?.hasFormingCandle ? candles.slice(0, -1) : candles;
+    const key = journalKey(venueId, symbol, timeframe);
+    const signal = analysis.signal;
+    const id = setTimeout(() => {
+      updateTrades((prev) => {
+        let next = registerSignal(prev, {
+          venue: venueId,
+          symbol,
+          timeframe,
+          signal,
+          barTime: lastBar.time,
+          now: Date.now(),
+        }).trades;
+        next = next.map((t) =>
+          t.status === "open" && tradeKey(t) === key ? evaluateTrade(t, closed) : t,
+        );
+        return next;
+      });
+    }, 0);
+    return () => clearTimeout(id);
+  }, [analysis, candles, candlesSet?.hasFormingCandle, venueId, symbol, timeframe, updateTrades]);
+
+  const currentKey = journalKey(venueId, symbol, timeframe);
+  const openTrade = trades.find((t) => t.status === "open" && tradeKey(t) === currentKey);
+  const openTrades = trades.filter((t) => t.status === "open");
+  const stats = dailyStats(trades);
+  const lastClose = candles?.[candles.length - 1]?.close;
 
   const signalOverlays = useMemo<ChartOverlay[]>(() => {
     if (!analysis) return [];
@@ -413,8 +500,19 @@ export function CryptoMarketsWorkspace() {
         });
       });
     }
+    // A running paper trade draws its live stop — the trailing SL after TP1.
+    if (openTrade) {
+      out.push({
+        kind: "level",
+        id: "journal-live-sl",
+        layer: "liquidity",
+        price: openTrade.stopLoss,
+        label: openTrade.tp1Hit ? "Trail SL" : "Open SL",
+        direction: openTrade.direction,
+      });
+    }
     return out;
-  }, [analysis]);
+  }, [analysis, openTrade]);
 
   const signalMarkers = useMemo<ChartMarker[]>(() => {
     const s = analysis?.signal;
@@ -646,6 +744,168 @@ export function CryptoMarketsWorkspace() {
                 <li key={c}>· {c}</li>
               ))}
             </ul>
+          </div>
+        )}
+      </Card>
+
+      {/* Paper-trade journal — every proposed trade, carried forward on real bars */}
+      <Card>
+        <CardHeader
+          title="Paper trades"
+          description="Every proposed entry is journaled and managed on real bars — TP1 banks half, the stop moves to breakeven, then trails 1R behind the close. A bar touching both stop and target counts the stop first (conservative)."
+          action={
+            trades.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => {
+                  clearTrades();
+                  setTrades([]);
+                }}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs text-subtle-foreground transition-colors hover:bg-surface-hover hover:text-foreground"
+              >
+                <Trash2 className="size-3.5" aria-hidden="true" />
+                Clear journal
+              </button>
+            ) : undefined
+          }
+        />
+        {trades.length === 0 ? (
+          <p className="text-sm text-subtle-foreground">
+            No trades yet — the engine books a paper trade the moment a signal fires on any
+            scanned timeframe, and manages it on every closed bar while that market is being
+            watched or scanned.
+          </p>
+        ) : (
+          <div className="space-y-4">
+            {openTrades.length > 0 && (
+              <div>
+                <h3 className="mb-1.5 text-sm font-medium text-foreground">Running trades</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[680px] text-sm">
+                    <thead>
+                      <tr className="border-b border-border text-left text-xs text-subtle-foreground">
+                        <th className="py-2 pr-3 font-medium">Market</th>
+                        <th className="py-2 pr-3 font-medium">Side</th>
+                        <th className="py-2 pr-3 font-medium">Entry</th>
+                        <th className="py-2 pr-3 font-medium">Stop (live)</th>
+                        <th className="py-2 pr-3 font-medium">TP1</th>
+                        <th className="py-2 font-medium">Open R</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {openTrades.map((t) => {
+                        const info = VENUES[t.venue as VenueId]?.symbolInfo(t.symbol);
+                        const p = info?.pricePrecision ?? precision;
+                        const tp1 = t.targets[0]?.price;
+                        const stopNote = t.tp1Hit
+                          ? t.stopLoss === t.entry
+                            ? "breakeven"
+                            : "trailing"
+                          : "initial";
+                        const r =
+                          tradeKey(t) === currentKey && lastClose !== undefined
+                            ? unrealizedR(t, lastClose)
+                            : undefined;
+                        const meta = DIR_META[t.direction];
+                        return (
+                          <tr key={t.id} className="border-b border-border last:border-b-0">
+                            <td className="py-2.5 pr-3 font-medium text-foreground">
+                              {info?.label ?? t.symbol} · {t.timeframe}
+                              <span className="ml-1.5 text-xs font-normal text-subtle-foreground">
+                                {VENUES[t.venue as VenueId]?.label ?? t.venue}
+                              </span>
+                            </td>
+                            <td className="py-2.5 pr-3">
+                              <Badge tone={meta.tone}>{meta.label}</Badge>
+                            </td>
+                            <td className="numeric py-2.5 pr-3">{fmtPrice(t.entry, p)}</td>
+                            <td className="numeric py-2.5 pr-3">
+                              {fmtPrice(t.stopLoss, p)}
+                              <span className="ml-1 text-xs text-subtle-foreground">
+                                {stopNote}
+                              </span>
+                            </td>
+                            <td className="numeric py-2.5 pr-3">
+                              {fmtPrice(tp1, p)}
+                              {t.tp1Hit && (
+                                <span className="ml-1 text-xs text-bullish">banked</span>
+                              )}
+                            </td>
+                            <td
+                              className={cn(
+                                "numeric py-2.5 font-semibold",
+                                r !== undefined && (r >= 0 ? "text-bullish" : "text-bearish"),
+                              )}
+                            >
+                              {r === undefined ? "—" : `${r >= 0 ? "+" : ""}${r}R`}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="mt-1.5 text-xs text-subtle-foreground">
+                  Open R updates live only for the market on the chart; other running trades
+                  update when their market is viewed or scanned each minute.
+                </p>
+              </div>
+            )}
+            {stats.length > 0 ? (
+              <div>
+                <h3 className="mb-1.5 text-sm font-medium text-foreground">Daily record</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[560px] text-sm">
+                    <thead>
+                      <tr className="border-b border-border text-left text-xs text-subtle-foreground">
+                        <th className="py-2 pr-3 font-medium">Day</th>
+                        <th className="py-2 pr-3 font-medium">Trades</th>
+                        <th className="py-2 pr-3 font-medium">Wins</th>
+                        <th className="py-2 pr-3 font-medium">Losses</th>
+                        <th className="py-2 pr-3 font-medium">Flat</th>
+                        <th className="py-2 pr-3 font-medium">Win %</th>
+                        <th className="py-2 font-medium">Net R</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {stats.map((d) => (
+                        <tr key={d.day} className="border-b border-border last:border-b-0">
+                          <td className="numeric py-2.5 pr-3 font-medium text-foreground">
+                            {d.day}
+                          </td>
+                          <td className="numeric py-2.5 pr-3">{d.trades}</td>
+                          <td className="numeric py-2.5 pr-3 text-bullish">{d.wins}</td>
+                          <td className="numeric py-2.5 pr-3 text-bearish">{d.losses}</td>
+                          <td className="numeric py-2.5 pr-3">{d.flats}</td>
+                          <td className="numeric py-2.5 pr-3 font-semibold text-foreground">
+                            {d.winPct}%
+                          </td>
+                          <td
+                            className={cn(
+                              "numeric py-2.5 font-semibold",
+                              d.netR >= 0 ? "text-bullish" : "text-bearish",
+                            )}
+                          >
+                            {d.netR >= 0 ? "+" : ""}
+                            {d.netR}R
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="mt-1.5 text-xs text-subtle-foreground">
+                  Wins/losses are measured paper outcomes of the engine&apos;s signals — a
+                  record of the past, not a promise. A TP1-banked trade stopped at breakeven
+                  still counts as a win.
+                </p>
+              </div>
+            ) : (
+              <p className="text-sm text-subtle-foreground">
+                No closed trades yet — the daily win/loss record appears once the first paper
+                trade resolves.
+              </p>
+            )}
           </div>
         )}
       </Card>

@@ -106,7 +106,10 @@ describe("analyzeCandles — deterministic signal engine", () => {
         expect(s.stopLoss!).toBeGreaterThan(s.entry!);
         expect(s.targets[0].price).toBeLessThan(s.entry!);
       }
-      expect(s.confidence).toBeGreaterThanOrEqual(75); // agreed>=3 of 4
+      expect(s.confidence).toBeGreaterThanOrEqual(80); // agreed>=4 of 5
+    } else {
+      // A wait can never show a full score — every veto is a scored factor.
+      expect(s.confidence).toBeLessThanOrEqual(80);
     }
   });
 
@@ -114,6 +117,7 @@ describe("analyzeCandles — deterministic signal engine", () => {
     const result = analyzeCandles(pullbackToDemand());
     expect(result!.signal.confidence).toBeGreaterThanOrEqual(0);
     expect(result!.signal.confidence).toBeLessThanOrEqual(100);
+    expect(result!.signal.factors.length).toBe(5);
   });
 
   it("zones only contain unbroken levels — broken pivots are dropped", () => {
