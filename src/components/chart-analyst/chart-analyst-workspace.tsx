@@ -154,7 +154,7 @@ export function ChartAnalystWorkspace() {
             <EmptyState
               icon={ImageUp}
               title="Drop a chart screenshot"
-              description="Candlestick charts work best â€” standard green/red palettes are detected automatically."
+              description="Candlestick charts work best — green, red, and teal palettes (e.g. TradingView defaults) are detected automatically."
               action={<Button onClick={() => fileRef.current?.click()}>Select image</Button>}
             />
           ) : (

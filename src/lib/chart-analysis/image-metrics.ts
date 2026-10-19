@@ -5,12 +5,15 @@
  *
  * Method (documented so results are auditable):
  *  1. Decode to raw RGB via sharp.
- *  2. Classify each pixel: bullish-green, bearish-red, or neutral by channel
- *     dominance (candlestick palette detection — works for the standard
- *     green/red themes; exotic palettes degrade to insufficient evidence).
- *  3. Group colored columns into candle clusters (adjacent colored columns
- *     separated by gaps). Per cluster: high/low from colored-pixel extremes,
- *     body band from row density, direction from dominant color.
+ *  2. Classify each pixel by HSV hue/saturation: bullish greens and teals
+ *     (90–195°, covering TradingView's #26a69a/#089981), bearish reds and
+ *     magenta-reds (325–360°/0–25°). Near-grey and near-black pixels are
+ *     excluded; palettes outside these ranges degrade to insufficient evidence.
+ *  3. Group colored columns into strict runs, then split merged runs using an
+ *     autocorrelation-estimated candle pitch (tight gaps and indicator lines
+ *     no longer collapse the whole chart into one cluster). Per cluster:
+ *     high/low from colored-pixel extremes, body band from row density,
+ *     direction from dominant color.
  *  4. Facts: cluster count, bull/bear ratio, per-cluster extents, trend slope
  *     (regression over mid-body rows), last-candle range position, swing
  *     structure (local extrema HH/HL/LH/LL), and S/R zones (row histogram of
@@ -82,9 +85,15 @@ export interface ImageMetrics {
 
 export const MIN_CANDLES_FOR_ANALYSIS = 8;
 
-const BULL_DOMINANCE = 1.25; // g must exceed r,b by this factor to count as bullish
-const BEAR_DOMINANCE = 1.25;
-const MIN_CHANNEL = 40; // ignore near-grey pixels — chart grid/text, not candles
+const MIN_VALUE = 55; // brightest channel — ignores dark background pixels
+const MIN_SATURATION = 0.28; // gridlines/text are near-grey (saturation ≈ 0)
+// Hue ranges that cover the common candle palettes: pure green (~120°),
+// teal/aqua greens like TradingView's #26a69a and #089981 (~160–175°),
+// lime (~90°); reds/orange-reds (~0–25°) and magenta-reds like #f23645 (~355°).
+const BULL_HUE_MIN = 90;
+const BULL_HUE_MAX = 195;
+const BEAR_HUE_MAX = 25; // wraps around 0
+const BEAR_HUE_MIN = 325;
 const BODY_DENSITY_FACTOR = 0.55; // rows above this share of peak column-density → body
 
 interface PixelClass {
@@ -98,6 +107,12 @@ interface PixelClass {
   }[];
 }
 
+/**
+ * Hue/saturation classification — channel-dominance rules (g > r,b × k) miss
+ * teal palettes where green barely exceeds blue, which is most real chart
+ * screenshots. Hue is computed in the standard HSV convention; near-grey
+ * pixels are rejected by saturation, near-black by value.
+ */
 function classifyPixels(data: Buffer, width: number, height: number, channels: number): PixelClass {
   const columns: PixelClass["columns"] = Array.from({ length: width }, () => ({
     minY: Infinity,
@@ -113,9 +128,19 @@ function classifyPixels(data: Buffer, width: number, height: number, channels: n
       const g = data[i + 1];
       const b = data[i + 2];
       const col = columns[x];
-      if (g > MIN_CHANNEL && g > r * BULL_DOMINANCE && g > b * BULL_DOMINANCE) {
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      const d = max - min;
+      if (max < MIN_VALUE || d === 0 || d / max < MIN_SATURATION) continue;
+      let h: number;
+      if (max === r) h = ((g - b) / d) % 6;
+      else if (max === g) h = (b - r) / d + 2;
+      else h = (r - g) / d + 4;
+      h *= 60;
+      if (h < 0) h += 360;
+      if (h >= BULL_HUE_MIN && h <= BULL_HUE_MAX) {
         col.bull += 1;
-      } else if (r > MIN_CHANNEL && r > g * BEAR_DOMINANCE && r > b * BEAR_DOMINANCE) {
+      } else if (h <= BEAR_HUE_MAX || h >= BEAR_HUE_MIN) {
         col.bear += 1;
       } else {
         continue;
@@ -128,9 +153,82 @@ function classifyPixels(data: Buffer, width: number, height: number, channels: n
   return { columns };
 }
 
-/** Group adjacent colored columns into candle clusters. */
-function clusterColumns(columns: PixelClass["columns"], maxGap: number): ImageCandle[] {
-  const clusters: ImageCandle[] = [];
+/**
+ * Estimate the candle pitch (column period) by autocorrelation. Candle runs
+ * repeat every `pitch` px even when bodies/wicks touch — a shared indicator
+ * line or 1–2 px gap previously merged them into one giant cluster.
+ * Returns 0 when no stable period is found (too few candles).
+ */
+function estimatePitch(columns: PixelClass["columns"]): number {
+  const w = columns.length;
+  const density = columns.map((c) => c.bull + c.bear);
+  const coloredCount = density.filter((d) => d > 0).length;
+  if (coloredCount < 12) return 0;
+  const maxLag = Math.min(64, Math.floor(w / 3));
+  let bestLag = 0;
+  let bestScore = 0;
+  for (let lag = 3; lag <= maxLag; lag += 1) {
+    let overlap = 0;
+    let total = 0;
+    for (let x = 0; x + lag < w; x += 1) {
+      if (density[x] > 0) {
+        total += 1;
+        if (density[x + lag] > 0) overlap += 1;
+      }
+    }
+    const score = total === 0 ? 0 : overlap / total;
+    if (score > bestScore) {
+      bestScore = score;
+      bestLag = lag;
+    }
+  }
+  return bestScore >= 0.6 && bestLag >= 3 ? bestLag : 0;
+}
+
+/**
+ * Split a colored run that spans multiple candles. The run is divided into
+ * `nPieces` chunks around the estimated pitch; each boundary snaps to the
+ * lowest-density column nearby (the visual gap between candle bodies).
+ */
+function splitRun(
+  run: { start: number; end: number },
+  pitch: number,
+  columns: PixelClass["columns"],
+): { start: number; end: number }[] {
+  const width = run.end - run.start + 1;
+  const nPieces = Math.max(1, Math.round(width / pitch));
+  if (nPieces <= 1) return [run];
+  const pieces: { start: number; end: number }[] = [];
+  let cursor = run.start;
+  for (let k = 1; k < nPieces; k += 1) {
+    const ideal = Math.round(run.start + (width * k) / nPieces);
+    // Snap to the lowest-density column within ±pitch/4 of the ideal boundary.
+    const lo = Math.max(cursor + 1, ideal - Math.floor(pitch / 4));
+    const hi = Math.min(run.end, ideal + Math.floor(pitch / 4));
+    let splitAt = ideal;
+    let minDensity = Infinity;
+    for (let x = lo; x <= hi; x += 1) {
+      const d = columns[x].bull + columns[x].bear;
+      if (d < minDensity) {
+        minDensity = d;
+        splitAt = x;
+      }
+    }
+    if (splitAt <= cursor) splitAt = cursor + 1;
+    pieces.push({ start: cursor, end: splitAt - 1 });
+    cursor = splitAt;
+  }
+  pieces.push({ start: cursor, end: run.end });
+  return pieces;
+}
+
+/** Group colored columns into candle clusters. */
+function clusterColumns(columns: PixelClass["columns"]): ImageCandle[] {
+  const pitch = estimatePitch(columns);
+  // Strict runs — tolerate a single-column hole (anti-aliasing), never a gap
+  // large enough to merge two candles the old maxGap rule used to swallow.
+  const maxGap = 1;
+  const runs: { start: number; end: number }[] = [];
   let group: { start: number; end: number } | undefined;
   let gap = 0;
   for (let x = 0; x < columns.length; x += 1) {
@@ -142,12 +240,14 @@ function clusterColumns(columns: PixelClass["columns"], maxGap: number): ImageCa
     } else if (group !== undefined) {
       gap += 1;
       if (gap > maxGap) {
-        clusters.push(finishCluster(group.start, group.end));
+        runs.push(group);
         group = undefined;
       }
     }
   }
-  if (group !== undefined) clusters.push(finishCluster(group.start, group.end));
+  if (group !== undefined) runs.push(group);
+  const pieces = pitch > 0 ? runs.flatMap((r) => splitRun(r, pitch, columns)) : runs;
+  const clusters = pieces.map((p) => finishCluster(p.start, p.end));
   return clusters.filter((c) => c.bottom - c.top >= 2);
 
   function finishCluster(x0: number, x1: number): ImageCandle {
@@ -397,7 +497,7 @@ export async function analyzeChartImage(buffer: Buffer): Promise<ImageMetrics> {
   const meta = await image.metadata();
   const { data, info } = await image.raw().toBuffer({ resolveWithObject: true });
   const { columns } = classifyPixels(data, info.width, info.height, info.channels);
-  const candles = clusterColumns(columns, Math.max(1, Math.round(info.width * 0.004)));
+  const candles = clusterColumns(columns);
 
   const { slope, r2 } = trendRegression(candles);
   const minY = candles.length > 0 ? Math.min(...candles.map((c) => c.top)) : 0;

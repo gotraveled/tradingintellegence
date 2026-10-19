@@ -24,10 +24,20 @@ export interface CandlestickChartHandle {
   zoomOut: () => void;
 }
 
+export interface ChartMarker {
+  /** Bar time in Unix ms — must match an existing candle's time. */
+  time: number;
+  position: "aboveBar" | "belowBar";
+  shape: "arrowUp" | "arrowDown";
+  color: string;
+  text?: string;
+}
+
 interface CandlestickChartProps {
   candles: Candle[];
   timeframe: Timeframe;
   overlays?: ChartOverlay[];
+  markers?: ChartMarker[];
   chartStyle?: "candles" | "line";
   pricePrecision?: number;
   /** Receives the imperative handle once the chart exists; undefined after unmount. */
@@ -151,6 +161,7 @@ export function CandlestickChart({
   candles,
   timeframe,
   overlays = [],
+  markers = [],
   chartStyle = "candles",
   pricePrecision = 2,
   onReady,
@@ -239,6 +250,22 @@ export function CandlestickChart({
         );
       }
 
+      // Bar markers — signal arrows keyed to candle times. Semantic colors
+      // resolve against the theme; anything else passes through verbatim.
+      if (markers.length > 0) {
+        LWC.createSeriesMarkers(
+          series,
+          markers.map((m: ChartMarker) => ({
+            time: toSec(m.time),
+            position: m.position,
+            shape: m.shape,
+            color:
+              m.color === "bullish" ? colors.up : m.color === "bearish" ? colors.down : m.color,
+            text: m.text,
+          })),
+        );
+      }
+
       // Overlays — levels as price lines, zones as filled band primitives.
       for (const overlay of overlays) {
         if (overlay.kind === "level") {
@@ -278,7 +305,7 @@ export function CandlestickChart({
     };
     // The chart owns canvas state imperatively; a prop change rebuilds it wholesale.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [candles, chartStyle, overlays, pricePrecision]);
+  }, [candles, chartStyle, overlays, markers, pricePrecision]);
 
   return (
     <div
