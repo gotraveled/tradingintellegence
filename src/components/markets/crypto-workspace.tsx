@@ -3,6 +3,7 @@
 import {
   ArrowDownRight,
   ArrowUpRight,
+  Bell,
   Loader2,
   Minus,
   RefreshCw,
@@ -31,6 +32,8 @@ import {
   unrealizedR,
   type TradeRecord,
 } from "@/lib/crypto/journal";
+import { analyzeTechnicals } from "@/lib/crypto/technicals";
+import type { CalendarEvent } from "@/app/api/economic-calendar/route";
 import { fetchCryptoKlines, fetchCryptoQuotes } from "@/lib/crypto/binance/client";
 import {
   binanceInterval,
@@ -191,12 +194,27 @@ interface ScanRow {
 
 type ScanState = Partial<Record<Timeframe, ScanRow>>;
 
+/** A journaled trade event surfaced to the user (in-app feed + browser notification). */
+interface TradeAlert {
+  id: string;
+  text: string;
+  at: number;
+  tone: "bullish" | "bearish" | "neutral";
+}
+
 function fmtPrice(value: number | undefined, precision: number): string {
   if (value === undefined) return "—";
   return value.toLocaleString("en-US", {
     minimumFractionDigits: precision,
     maximumFractionDigits: precision,
   });
+}
+
+/** "in 4h 12m" / "in 7m" countdown for upcoming calendar events. */
+function fmtCountdown(deltaMs: number): string {
+  const m = Math.max(1, Math.round(deltaMs / 60_000));
+  if (m >= 60) return `in ${Math.floor(m / 60)}h ${m % 60}m`;
+  return `in ${m}m`;
 }
 
 function fmtSignedPct(value: number | undefined): string {
@@ -218,11 +236,22 @@ export function CryptoMarketsWorkspace() {
   const [lastEventAt, setLastEventAt] = useState<number | undefined>();
   const [scan, setScan] = useState<ScanState>({});
   const [trades, setTrades] = useState<TradeRecord[]>([]);
+  const [alerts, setAlerts] = useState<TradeAlert[]>([]);
+  const [notifyOn, setNotifyOn] = useState(false);
+  const [news, setNews] = useState<{ events: CalendarEvent[]; error?: string }>({ events: [] });
+  const [now, setNow] = useState(0);
+  const prevTradesRef = useRef<Map<string, TradeRecord>>(new Map());
+  const seededRef = useRef(false);
 
   // Journal lives in localStorage — load once on mount (deferred so the
   // state write isn't synchronous inside the effect body).
   useEffect(() => {
-    const id = setTimeout(() => setTrades(loadTrades()), 0);
+    const id = setTimeout(() => {
+      setTrades(loadTrades());
+      if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+        setNotifyOn(true);
+      }
+    }, 0);
     return () => clearTimeout(id);
   }, []);
 
@@ -417,6 +446,92 @@ export function CryptoMarketsWorkspace() {
     [candles],
   );
 
+  // Institutional engine context — structure/liquidity/FVGs, causal only.
+  const technicals = useMemo(
+    () =>
+      candles !== undefined ? analyzeTechnicals(candles, symbol, timeframe) : undefined,
+    [candles, symbol, timeframe],
+  );
+
+  // High-impact economic calendar (Forex Factory mirror) — every 15 min.
+  // `now` is a state tick (render must stay pure — no Date.now() there).
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      fetch("/api/economic-calendar")
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`calendar ${r.status}`))))
+        .then((d: { events?: CalendarEvent[] }) => {
+          if (!cancelled) {
+            setNews({ events: d.events ?? [] });
+            setNow(Date.now());
+          }
+        })
+        .catch((e: unknown) => {
+          if (!cancelled) {
+            setNews({ events: [], error: e instanceof Error ? e.message : "unavailable" });
+          }
+        });
+    };
+    load();
+    const timer = setInterval(load, 15 * 60_000);
+    const tick = setInterval(() => setNow(Date.now()), 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      clearInterval(tick);
+    };
+  }, []);
+
+  // Trade-event alerts — diff the journal on every change. Deferred (lint
+  // forbids synchronous setState in effects); first run only seeds.
+  useEffect(() => {
+    const id = setTimeout(() => {
+      const prev = prevTradesRef.current;
+      const events: TradeAlert[] = [];
+      if (seededRef.current) {
+        for (const t of trades) {
+          const p = prev.get(t.id);
+          if (p === undefined && t.status === "open") {
+            events.push({
+              id: `${t.id}:open`,
+              at: Date.now(),
+              tone: t.direction,
+              text: `New ${t.direction === "bullish" ? "BUY" : "SELL"} ${t.symbol} ${t.timeframe} @ ${t.entry} — SL ${t.stopLoss}`,
+            });
+          } else if (p !== undefined && p.status === "open" && t.status === "closed") {
+            const r = t.realizedR ?? 0;
+            events.push({
+              id: `${t.id}:closed`,
+              at: Date.now(),
+              tone: r > 0.01 ? "bullish" : r < -0.01 ? "bearish" : "neutral",
+              text: `Closed ${t.symbol} ${t.timeframe}: ${t.exitReason} @ ${t.exitPrice} (${r >= 0 ? "+" : ""}${r}R)`,
+            });
+          }
+        }
+      }
+      seededRef.current = true;
+      prevTradesRef.current = new Map(trades.map((t) => [t.id, t]));
+      if (events.length > 0) {
+        setAlerts((a) => [...events, ...a].slice(0, 20));
+        for (const e of events) {
+          try {
+            if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+              new Notification("Trade alert", { body: e.text });
+            }
+          } catch {
+            // Notification constructor can throw on some platforms — non-fatal.
+          }
+        }
+      }
+    }, 0);
+    return () => clearTimeout(id);
+  }, [trades]);
+
+  const enableAlerts = () => {
+    if (typeof Notification === "undefined") return;
+    void Notification.requestPermission().then((p) => setNotifyOn(p === "granted"));
+  };
+
   // Paper-trade journal: book the live signal once per setup, then carry
   // every open trade on this market forward over newly closed bars.
   // Deferred: journal bookkeeping isn't render-critical and the lint rules
@@ -451,6 +566,15 @@ export function CryptoMarketsWorkspace() {
   const openTrades = trades.filter((t) => t.status === "open");
   const stats = dailyStats(trades);
   const lastClose = candles?.[candles.length - 1]?.close;
+
+  // High-impact events: released in the last 30m or coming within 48h.
+  const upcomingNews = news.events
+    .filter((e) => e.impact === "High")
+    .map((e) => ({ ...e, ms: Date.parse(e.time) }))
+    .filter((e) => e.ms > now - 30 * 60_000 && e.ms < now + 48 * 3_600_000)
+    .sort((a, b) => a.ms - b.ms)
+    .slice(0, 6);
+  const newsRisk = upcomingNews.find((e) => Math.abs(e.ms - now) <= 60 * 60_000);
 
   const signalOverlays = useMemo<ChartOverlay[]>(() => {
     if (!analysis) return [];
@@ -674,6 +798,14 @@ export function CryptoMarketsWorkspace() {
           </p>
         ) : (
           <div className="space-y-4">
+            {newsRisk !== undefined && (
+              <Badge tone="developing" className="w-fit">
+                News risk — {newsRisk.title} ({newsRisk.currency}){" "}
+                {newsRisk.ms > now
+                  ? `in ${Math.max(1, Math.round((newsRisk.ms - now) / 60_000))}m`
+                  : "just released"}
+              </Badge>
+            )}
             {/* Levels */}
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
               {[
@@ -748,25 +880,136 @@ export function CryptoMarketsWorkspace() {
         )}
       </Card>
 
+      {/* Pro read — institutional SMC/ICT context + news risk */}
+      {technicals !== undefined && (
+        <Card>
+          <CardHeader
+            title="Pro read — SMC & price action"
+            description="Market structure, liquidity and imbalances from the institutional engine suite — causal detections only, no look-ahead. Evidence to weigh beside the signal, not a second score."
+          />
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+              <p className="text-xs text-subtle-foreground">Structure</p>
+              <p className="mt-0.5 font-semibold capitalize text-foreground">{technicals.trend}</p>
+              {technicals.lastBreak !== undefined && (
+                <p className="mt-0.5 text-xs text-subtle-foreground">
+                  {technicals.lastBreak.type} {technicals.lastBreak.direction} @{" "}
+                  {fmtPrice(technicals.lastBreak.price, precision)}
+                  {technicals.lastBreak.failed ? " (failed)" : ""}
+                </p>
+              )}
+            </div>
+            <div>
+              <p className="text-xs text-subtle-foreground">Liquidity sweeps</p>
+              {technicals.sweeps.length === 0 ? (
+                <p className="mt-0.5 text-sm text-muted-foreground">None confirmed</p>
+              ) : (
+                <ul className="mt-0.5 space-y-0.5 text-xs text-foreground">
+                  {technicals.sweeps.map((sw) => (
+                    <li key={`${sw.at}-${sw.level}`}>
+                      {sw.side === "sell_side" ? "Sell-side" : "Buy-side"} swept @{" "}
+                      {fmtPrice(sw.level, precision)}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div>
+              <p className="text-xs text-subtle-foreground">Resting liquidity</p>
+              {technicals.poolsAbove.length === 0 && technicals.poolsBelow.length === 0 ? (
+                <p className="mt-0.5 text-sm text-muted-foreground">None tracked</p>
+              ) : (
+                <ul className="mt-0.5 space-y-0.5 text-xs text-foreground">
+                  {technicals.poolsAbove.slice(0, 2).map((p) => (
+                    <li key={`a-${p.price}`}>
+                      Buyside {fmtPrice(p.price, precision)} · {p.touches}t
+                    </li>
+                  ))}
+                  {technicals.poolsBelow.slice(0, 2).map((p) => (
+                    <li key={`b-${p.price}`}>
+                      Sellside {fmtPrice(p.price, precision)} · {p.touches}t
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div>
+              <p className="text-xs text-subtle-foreground">Fair value gaps</p>
+              {technicals.fvgs.length === 0 ? (
+                <p className="mt-0.5 text-sm text-muted-foreground">None near price</p>
+              ) : (
+                <ul className="mt-0.5 space-y-0.5 text-xs text-foreground">
+                  {technicals.fvgs.map((f) => (
+                    <li key={`${f.lower}-${f.upper}`}>
+                      {f.direction === "bullish" ? "Bull" : "Bear"} FVG {fmtPrice(f.lower, precision)}–{fmtPrice(f.upper, precision)}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+          <div className="mt-4 border-t border-border pt-3">
+            <p className="text-xs text-subtle-foreground">High-impact news — Forex Factory calendar</p>
+            {upcomingNews.length === 0 ? (
+              <p className="mt-0.5 text-sm text-muted-foreground">
+                {news.error !== undefined
+                  ? `Calendar unavailable — ${news.error}`
+                  : "No high-impact events in the next 48h."}
+              </p>
+            ) : (
+              <ul className="mt-1 space-y-1 text-xs">
+                {upcomingNews.map((e) => (
+                  <li key={`${e.time}-${e.title}`} className="flex flex-wrap items-center gap-2">
+                    <Badge
+                      tone={Math.abs(e.ms - now) <= 60 * 60_000 ? "developing" : "neutral"}
+                    >
+                      {e.currency}
+                    </Badge>
+                    <span className="text-foreground">{e.title}</span>
+                    <span className="text-subtle-foreground">
+                      {e.ms <= now
+                        ? "just released"
+                        : fmtCountdown(e.ms - now)}
+                      {e.forecast !== undefined ? ` · fcst ${e.forecast}` : ""}
+                      {e.previous !== undefined ? ` · prev ${e.previous}` : ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </Card>
+      )}
+
       {/* Paper-trade journal — every proposed trade, carried forward on real bars */}
       <Card>
         <CardHeader
           title="Paper trades"
           description="Every proposed entry is journaled and managed on real bars — TP1 banks half, the stop moves to breakeven, then trails 1R behind the close. A bar touching both stop and target counts the stop first (conservative)."
           action={
-            trades.length > 0 ? (
+            <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  clearTrades();
-                  setTrades([]);
-                }}
+                onClick={enableAlerts}
                 className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs text-subtle-foreground transition-colors hover:bg-surface-hover hover:text-foreground"
               >
-                <Trash2 className="size-3.5" aria-hidden="true" />
-                Clear journal
+                <Bell className="size-3.5" aria-hidden="true" />
+                {notifyOn ? "Alerts on" : "Enable alerts"}
               </button>
-            ) : undefined
+              {trades.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    clearTrades();
+                    setTrades([]);
+                  }}
+                  className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs text-subtle-foreground transition-colors hover:bg-surface-hover hover:text-foreground"
+                >
+                  <Trash2 className="size-3.5" aria-hidden="true" />
+                  Clear journal
+                </button>
+              )}
+            </div>
           }
         />
         {trades.length === 0 ? (
@@ -777,6 +1020,30 @@ export function CryptoMarketsWorkspace() {
           </p>
         ) : (
           <div className="space-y-4">
+            {alerts.length > 0 && (
+              <div>
+                <h3 className="mb-1.5 text-sm font-medium text-foreground">Latest events</h3>
+                <ul className="space-y-0.5 text-xs">
+                  {alerts.slice(0, 5).map((a) => (
+                    <li
+                      key={a.id}
+                      className={cn(
+                        a.tone === "bullish"
+                          ? "text-bullish"
+                          : a.tone === "bearish"
+                            ? "text-bearish"
+                            : "text-foreground",
+                      )}
+                    >
+                      {a.text}
+                      <span className="ml-1.5 text-subtle-foreground">
+                        {new Date(a.at).toLocaleTimeString()}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {openTrades.length > 0 && (
               <div>
                 <h3 className="mb-1.5 text-sm font-medium text-foreground">Running trades</h3>
