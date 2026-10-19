@@ -118,6 +118,12 @@ export const DAILY_STOP_R = 3;
 /** After this many consecutive losses, cool down before re-entering. */
 export const LOSS_STREAK_LIMIT = 3;
 export const LOSS_COOLDOWN_MS = 4 * 60 * 60 * 1000;
+/**
+ * Correlation cap — BTC, ETH and SOL longs are one bet, not three. The
+ * daily stop only sees CLOSED losses, so without this five same-direction
+ * pairs can all stop out at once and blow through −3R in one candle.
+ */
+export const MAX_SAME_DIRECTION = 2;
 
 /**
  * Account-level circuit breakers — a pro stops when the day isn't his.
@@ -126,10 +132,18 @@ export const LOSS_COOLDOWN_MS = 4 * 60 * 60 * 1000;
 export function entryBlockReason(
   trades: readonly TradeRecord[],
   now: number,
+  direction?: Direction,
 ): string | undefined {
   const hour = new Date(now).getUTCHours();
   if (hour < ENTRY_SESSION_UTC[0] || hour >= ENTRY_SESSION_UTC[1]) {
     return `outside ${ENTRY_SESSION_UTC[0]}:00–${ENTRY_SESSION_UTC[1]}:00 UTC session`;
+  }
+  if (
+    direction !== undefined &&
+    trades.filter((t) => t.status === "open" && t.direction === direction).length >=
+      MAX_SAME_DIRECTION
+  ) {
+    return `${MAX_SAME_DIRECTION} same-direction positions already open`;
   }
   const day = new Date(now).toISOString().slice(0, 10);
   const todayR = trades
@@ -263,7 +277,7 @@ export function registerSignal(
     signal.stopLoss === undefined ||
     signal.targets.length === 0 ||
     signal.confidence < MIN_ENTRY_SCORE ||
-    entryBlockReason(trades, now) !== undefined
+    entryBlockReason(trades, now, signal.direction) !== undefined
   ) {
     return { trades };
   }
@@ -477,14 +491,20 @@ export function floatingPnlUsd(
   return Math.round(sum * 100) / 100;
 }
 
-/** Unrealized R of an open trade at a mark price (live P&L readout). */
+/** Unrealized R of an open trade at a mark price — net of the same costs
+ * `finish` books, so the live readout shows what flattening now pays. */
 export function unrealizedR(t: TradeRecord, mark: Price): number {
   const risk = Math.abs(t.entry - t.initialStopLoss);
   if (risk === 0) return 0;
   const sign = t.direction === "bullish" ? 1 : -1;
   const r = ((mark - t.entry) * sign) / risk;
   const rr1 = t.targets[0] ? Math.abs(t.targets[0].price - t.entry) / risk : 0;
-  return Math.round((t.tp1Hit ? 0.5 * rr1 + 0.5 * r : r) * 100) / 100;
+  const gross = t.tp1Hit ? 0.5 * rr1 + 0.5 * r : r;
+  const costPx =
+    t.entry +
+    (t.tp1Hit && t.targets[0] ? 0.5 * t.targets[0].price : 0) +
+    (t.tp1Hit ? 0.5 : 1) * mark;
+  return Math.round((gross - (costPx * COST_PER_SIDE) / risk) * 100) / 100;
 }
 
 /** Per-day win/loss rollup over closed trades, newest day first. */

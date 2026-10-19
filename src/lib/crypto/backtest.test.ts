@@ -57,6 +57,22 @@ describe("backtestCandles — replay through the real pipeline", () => {
     expect(ranging.trades).toBeLessThanOrEqual(Math.max(1, trending.trades));
   });
 
+  it("an opposing higher-timeframe bias vetoes entries", () => {
+    // Strong steady downtrend as the bias series — bullish signals on the
+    // entry timeframe must not book against it.
+    const biasDown: Candle[] = [];
+    for (let i = 0; i < 300; i += 1) {
+      const c = 200 - i * 0.5;
+      biasDown.push(candle(i * 3_600_000, c + 0.4, c + 0.8, c - 0.6, c));
+    }
+    const baseline = backtestCandles(wave(300), { timeframe: "15m" });
+    const gated = backtestCandles(wave(300), { timeframe: "15m", bias: biasDown });
+    expect(gated.trades).toBeLessThanOrEqual(baseline.trades);
+    if (baseline.trades > 0) {
+      expect(gated.blockedEntries).toBeGreaterThan(baseline.blockedEntries);
+    }
+  });
+
   it("one position at a time — entries never overlap exits on a bar", () => {
     // If the invariant holds internally, netR equals sum of parts already
     // checked above; here we assert a second replay is deterministic.

@@ -1186,13 +1186,21 @@ export function CryptoMarketsWorkspace() {
                 disabled={btBusy}
                 onClick={() => {
                   setBtBusy(true);
-                  void venue
-                    .fetchKlines(symbol, timeframe)
-                    .then((res) => {
+                  void Promise.all([
+                    venue.fetchKlines(symbol, timeframe),
+                    venue.fetchKlines(symbol, BIAS_TIMEFRAME),
+                  ])
+                    .then(([res, biasRes]) => {
                       if (res.ok) {
                         const closed = res.data.hasFormingCandle
                           ? res.data.candles.slice(0, -1)
                           : res.data.candles;
+                        const bias =
+                          biasRes.ok && biasRes.data.candles.length > 0
+                            ? biasRes.data.hasFormingCandle
+                              ? biasRes.data.candles.slice(0, -1)
+                              : biasRes.data.candles
+                            : undefined;
                         setBt({
                           key: `${venueId}|${symbol}|${timeframe}`,
                           stats: backtestCandles(closed, {
@@ -1200,6 +1208,8 @@ export function CryptoMarketsWorkspace() {
                             symbol,
                             timeframe,
                             smc: true,
+                            bias,
+                            news: newsRef.current,
                           }),
                         });
                       }
@@ -1217,9 +1227,10 @@ export function CryptoMarketsWorkspace() {
                   setBtAllBusy(true);
                   void Promise.all(
                     VENUES.binance.symbols.map((s) =>
-                      VENUES.binance
-                        .fetchKlines(s.symbol, timeframe)
-                        .then((res) => ({ symbol: s.symbol, res })),
+                      Promise.all([
+                        VENUES.binance.fetchKlines(s.symbol, timeframe),
+                        VENUES.binance.fetchKlines(s.symbol, BIAS_TIMEFRAME),
+                      ]).then(([res, biasRes]) => ({ symbol: s.symbol, res, biasRes })),
                     ),
                   )
                     .then((results) => {
@@ -1230,6 +1241,12 @@ export function CryptoMarketsWorkspace() {
                           const closed = r.res.data.hasFormingCandle
                             ? set.slice(0, -1)
                             : set;
+                          const bias =
+                            r.biasRes.ok && r.biasRes.data.candles.length > 0
+                              ? r.biasRes.data.hasFormingCandle
+                                ? r.biasRes.data.candles.slice(0, -1)
+                                : r.biasRes.data.candles
+                              : undefined;
                           return [
                             {
                               symbol: r.symbol,
@@ -1238,6 +1255,8 @@ export function CryptoMarketsWorkspace() {
                                 symbol: r.symbol,
                                 timeframe,
                                 smc: true,
+                                bias,
+                                news: newsRef.current,
                               }),
                             },
                           ];

@@ -204,6 +204,18 @@ describe("registerSignal — booking and dedup", () => {
     expect(entryBlockReason(withWin, T0 + 4 * TF_BAR)).toBeUndefined();
   });
 
+  it("caps concurrent same-direction positions at 2 — correlated bets count once", () => {
+    const btc = reg([]).added!;
+    const eth = reg([], { symbol: "ETHUSDT" }).added!;
+    // Two bullish positions open → a third bullish pair is refused.
+    const sol = reg([btc, eth], { symbol: "SOLUSDT" });
+    expect(sol.added).toBeUndefined();
+    expect(entryBlockReason([btc, eth], T0, "bullish")).toContain("same-direction");
+    // …but a bearish position on a fourth pair still books (hedge, not stack).
+    const short = reg([btc, eth], { symbol: "XRPUSDT", signal: signal("bearish") });
+    expect(short.added).toBeDefined();
+  });
+
   it("allows the opposite direction immediately", () => {
     const { trades: t1 } = reg([]);
     const closed = t1.map((t) => ({ ...t, status: "closed" as const }));
@@ -298,10 +310,11 @@ describe("evaluateTrade — trade management on closed bars", () => {
 
   it("reports unrealized R at a mark — blended after TP1", () => {
     const t0 = open();
-    expect(unrealizedR(t0, 105)).toBe(1); // 105 = +1R
+    // +1R gross minus entry+exit costs ≈ 0.06R → 0.94R net.
+    expect(unrealizedR(t0, 105)).toBe(0.94);
     const t1 = evaluateTrade(t0, [candle(T0 + BAR, 100, 108, 99, 107)]);
-    // TP1 banked: 0.5×1.5 + 0.5×(110-100)/5 = 0.75 + 1 = 1.75
-    expect(unrealizedR(t1, 110)).toBe(1.75);
+    // TP1 banked: 0.5×1.5 + 0.5×(110-100)/5 = 1.75 gross → 1.69 net.
+    expect(unrealizedR(t1, 110)).toBe(1.69);
   });
 });
 
@@ -411,8 +424,8 @@ describe("points & floating P&L — terminal readouts", () => {
 
   it("unrealizedUsd converts live R into risked dollars", () => {
     const t = reg([]).added!; // entry 100, stop 95 → 5 risk; riskUsd 100
-    expect(unrealizedUsd(t, 102.5)).toBe(50); // +0.5R × $100
-    expect(unrealizedUsd(t, 95)).toBe(-100); // −1R at the stop
+    expect(unrealizedUsd(t, 102.5)).toBe(44); // +0.5R gross → +0.44R net × $100
+    expect(unrealizedUsd(t, 95)).toBe(-106); // −1.06R net at the stop
   });
 
   it("floatingPnlUsd sums open trades, skips closed and missing marks", () => {
@@ -428,7 +441,7 @@ describe("points & floating P&L — terminal readouts", () => {
     const pnl = floatingPnlUsd([open, closed, unmarked], (t) =>
       t.id === open.id ? 102.5 : undefined,
     );
-    expect(pnl).toBe(50);
+    expect(pnl).toBe(44); // net of costs, same as unrealizedUsd
   });
 });
 

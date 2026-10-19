@@ -5,8 +5,10 @@ import {
   entryBlockReason,
   evaluateTrade,
   registerSignal,
+  timeframeMs,
   type TradeRecord,
 } from "./journal";
+import { newsBlockEvent, type NewsGuardEvent } from "./news";
 
 /**
  * Backtest harness — replays real candles bar-by-bar through the SAME
@@ -28,6 +30,14 @@ export interface BacktestOptions {
   window?: number;
   /** Apply the ICT/SMC structure gate used by the live scan. */
   smc?: boolean;
+  /**
+   * Higher-timeframe candles for the live bias gate. Only bias bars FULLY
+   * CLOSED before the entry bar's close are consulted — no look-ahead.
+   * Its timeframe is read from bar spacing (default 1h).
+   */
+  bias?: Candle[];
+  /** High-impact events for the news guard — the same list live reads. */
+  news?: NewsGuardEvent[];
 }
 
 export interface BacktestStats {
@@ -68,6 +78,12 @@ export function backtestCandles(
   const symbol = opts.symbol ?? "BTTEST";
   const timeframe = opts.timeframe ?? "15m";
   const smc = opts.smc === true;
+  const tfMs = timeframeMs(timeframe);
+  // Bias bar duration — inferred from spacing so callers can pass any tf.
+  const biasMs =
+    opts.bias !== undefined && opts.bias.length >= 2
+      ? opts.bias[1].time - opts.bias[0].time
+      : timeframeMs("1h");
 
   let trades: TradeRecord[] = [];
   let blockedEntries = 0;
@@ -79,8 +95,10 @@ export function backtestCandles(
     evaluatedBars += 1;
 
     // 1. Manage open positions on this closed bar first — exits never
-    //    compete with an entry on the same bar.
-    trades = trades.map((t) => evaluateTrade(t, [bar]));
+    //    compete with an entry on the same bar. Full history is passed
+    //    (not just this bar): the chandelier trail needs post-entry bars
+    //    for its ATR and extreme close — same input live provides.
+    trades = trades.map((t) => evaluateTrade(t, hist));
     if (trades.some((t) => t.status === "open")) continue;
 
     // 2. Ask the engine.
@@ -102,13 +120,42 @@ export function backtestCandles(
       }
     }
 
-    // 4. Session + circuit breakers — same gate live uses.
-    if (entryBlockReason(trades, bar.time) !== undefined) {
+    // 4. Higher-timeframe bias — same rule as live: never take a scalp
+    //    against the bias trend. Only bias bars fully closed before this
+    //    bar's close count — anything fresher is look-ahead.
+    if (opts.bias !== undefined && opts.bias.length > 0) {
+      const cutoff = bar.time + tfMs;
+      let usable = -1;
+      for (let j = opts.bias.length - 1; j >= 0; j -= 1) {
+        if (opts.bias[j].time + biasMs <= cutoff) {
+          usable = j;
+          break;
+        }
+      }
+      if (usable >= 0) {
+        const dir = a.signal.direction;
+        const b = analyzeCandles(opts.bias.slice(0, usable + 1))?.trend.direction;
+        if ((b === "bullish" || b === "bearish") && b !== dir) {
+          blockedEntries += 1;
+          continue;
+        }
+      }
+    }
+
+    // 5. News guard — the ±15 min high-impact blackout live enforces.
+    if (opts.news !== undefined && newsBlockEvent(opts.news, bar.time) !== undefined) {
       blockedEntries += 1;
       continue;
     }
 
-    // 5. Book it — entry = the signal bar's close, management starts next bar.
+    // 6. Session + circuit breakers — same gate live uses, including the
+    //    same-direction concentration cap.
+    if (entryBlockReason(trades, bar.time, a.signal.direction) !== undefined) {
+      blockedEntries += 1;
+      continue;
+    }
+
+    // 7. Book it — entry = the signal bar's close, management starts next bar.
     trades = registerSignal(trades, {
       venue,
       symbol,
