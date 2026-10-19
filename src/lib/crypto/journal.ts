@@ -165,6 +165,28 @@ export function entryBlockReason(
  */
 export const MIN_ENTRY_SCORE = 80;
 
+/**
+ * Cost model — Binance spot taker fee (~0.1%) plus slippage buffer, charged
+ * per side on each fill as a fraction of the fill price. Applied inside
+ * `finish` so every exit path books net R, not the flattering gross number.
+ */
+export const COST_PER_SIDE = 0.0015;
+
+/** SMA of true range over the last `period` closed bars — trailing math only. */
+function atrOf(bars: readonly Candle[], period = 14): number | undefined {
+  if (bars.length < period + 1) return undefined;
+  const slice = bars.slice(-period - 1);
+  let sum = 0;
+  for (let i = 1; i < slice.length; i += 1) {
+    sum += Math.max(
+      slice[i].high - slice[i].low,
+      Math.abs(slice[i].high - slice[i - 1].close),
+      Math.abs(slice[i].low - slice[i - 1].close),
+    );
+  }
+  return sum / period;
+}
+
 /** USD the trade risked at booking (legacy rows predate stamping → default). */
 function usdOf(t: TradeRecord): number {
   return t.riskUsd ?? DEFAULT_RISK_USD;
@@ -349,7 +371,15 @@ function finish(
   const exitR = risk === 0 ? 0 : ((exitPrice - t.entry) * sign) / risk;
   const rr1 = t.targets[0] ? Math.abs(t.targets[0].price - t.entry) / risk : 0;
   // TP1 banked half the position: blend the booked half with the runner's exit.
-  const realizedR = t.tp1Hit ? 0.5 * rr1 + 0.5 * exitR : exitR;
+  const grossR = t.tp1Hit ? 0.5 * rr1 + 0.5 * exitR : exitR;
+  // Costs: the entry fill is always full size; exits pay per size closed
+  // (half at TP1 + half at the final exit, or the whole position at once).
+  const costPx =
+    t.entry +
+    (t.tp1Hit && t.targets[0] ? 0.5 * t.targets[0].price : 0) +
+    (t.tp1Hit ? 0.5 : 1) * exitPrice;
+  const costR = risk === 0 ? 0 : (costPx * COST_PER_SIDE) / risk;
+  const realizedR = grossR - costR;
   return {
     ...t,
     status: "closed",
@@ -396,11 +426,19 @@ export function evaluateTrade(rec: TradeRecord, closedBars: Candle[]): TradeReco
       t.tp1Hit = true;
       t.stopLoss = bull ? Math.max(t.stopLoss, t.entry) : Math.min(t.stopLoss, t.entry);
     }
-    // After TP1 the stop trails 1R behind the close — the "runner" legs.
+    // After TP1 the runner trails a chandelier stop — 3×ATR behind the
+    // extreme close since entry. ATR adapts the width to each pair's
+    // volatility (BTC vs a low-priced alt) where a fixed 1R could not;
+    // when ATR isn't computable yet it falls back to 1R.
     if (t.tp1Hit) {
-      t.stopLoss = bull
-        ? Math.max(t.stopLoss, bar.close - risk)
-        : Math.min(t.stopLoss, bar.close + risk);
+      const post = closedBars.filter((b) => b.time > t.entryBarTime && b.time <= bar.time);
+      const atr = atrOf(post);
+      const extreme = bull
+        ? Math.max(...post.map((b) => b.close))
+        : Math.min(...post.map((b) => b.close));
+      const width = atr !== undefined ? 3 * atr : risk;
+      const trail = bull ? extreme - width : extreme + width;
+      t.stopLoss = bull ? Math.max(t.stopLoss, trail) : Math.min(t.stopLoss, trail);
     }
     if (t.barsHeld >= EXPIRY_BARS) {
       return finish(t, bar.close, bar.time, "expired", risk);

@@ -224,7 +224,8 @@ describe("evaluateTrade — trade management on closed bars", () => {
     expect(t.status).toBe("closed");
     expect(t.exitReason).toBe("stop");
     expect(t.exitPrice).toBe(95);
-    expect(t.realizedR).toBe(-1);
+    // −1R gross minus entry+exit costs: (100+95)×0.0015/5 ≈ 0.06R.
+    expect(t.realizedR).toBe(-1.06);
     expect(tradeOutcome(t)).toBe("loss");
   });
 
@@ -249,8 +250,9 @@ describe("evaluateTrade — trade management on closed bars", () => {
     expect(t.status).toBe("closed");
     expect(t.exitReason).toBe("stop");
     expect(t.exitPrice).toBe(102);
-    // Half banked at 1.5R + half at +0.4R = 0.75 + 0.2 = 0.95R → win.
-    expect(t.realizedR).toBe(0.95);
+    // Half banked at 1.5R + half at +0.4R = 0.95R gross; costs on the
+    // entry + TP1 half + exit half ≈ 0.06R → 0.89R net win.
+    expect(t.realizedR).toBe(0.89);
     expect(tradeOutcome(t)).toBe("win");
   });
 
@@ -259,8 +261,8 @@ describe("evaluateTrade — trade management on closed bars", () => {
     expect(t.status).toBe("closed");
     expect(t.exitReason).toBe("target");
     expect(t.exitPrice).toBe(112.5);
-    // 0.5×1.5R + 0.5×2.5R = 2R
-    expect(t.realizedR).toBe(2);
+    // 0.5×1.5R + 0.5×2.5R = 2R gross; costs ≈ 0.06R → 1.94R net.
+    expect(t.realizedR).toBe(1.94);
     expect(tradeOutcome(t)).toBe("win");
   });
 
@@ -290,7 +292,8 @@ describe("evaluateTrade — trade management on closed bars", () => {
     const t = evaluateTrade(open(), bars);
     expect(t.status).toBe("closed");
     expect(t.exitReason).toBe("expired");
-    expect(tradeOutcome(t)).toBe("flat");
+    // A scratch exit still pays fees — honestly a small loss, not "flat".
+    expect(tradeOutcome(t)).toBe("loss");
   });
 
   it("reports unrealized R at a mark — blended after TP1", () => {
@@ -348,14 +351,15 @@ describe("manual exits — flatten buttons", () => {
     expect(closed.status).toBe("closed");
     expect(closed.exitReason).toBe("manual");
     expect(closed.exitPrice).toBe(110);
-    expect(closed.realizedR).toBe(2);
+    expect(closed.realizedR).toBe(1.94); // 2R gross − ~0.06R costs
     const loser = closePosition(t, 97.5, T0 + TF_BAR);
-    expect(loser.realizedR).toBe(-0.5);
+    expect(loser.realizedR).toBe(-0.56);
   });
 
   it("no mark → scratch exit at entry; closed trades untouched", () => {
     const open = reg([]).added!;
-    expect(closePosition(open, undefined, T0).realizedR).toBe(0);
+    // Scratch price, real costs: −0.06R is the honest answer.
+    expect(closePosition(open, undefined, T0).realizedR).toBe(-0.06);
     const done = closePosition(open, 110, T0 + TF_BAR);
     expect(closePosition(done, 50, T0 + 2 * TF_BAR)).toBe(done); // no re-close
   });
@@ -375,8 +379,8 @@ describe("manual exits — flatten buttons", () => {
       (t) => (t.id === open.id ? 110 : 90),
       T0 + TF_BAR,
     );
-    expect(next.find((t) => t.id === open.id)?.realizedR).toBe(2);
-    expect(next.find((t) => t.id === other.id)?.realizedR).toBe(-2);
+    expect(next.find((t) => t.id === open.id)?.realizedR).toBe(1.94);
+    expect(next.find((t) => t.id === other.id)?.realizedR).toBe(-2.06);
     expect(next.find((t) => t.id === closedPrev.id)?.exitReason).toBe("target");
   });
 });

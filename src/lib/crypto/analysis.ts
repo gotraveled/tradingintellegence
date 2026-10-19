@@ -75,6 +75,12 @@ export interface SignalAnalysis {
      * veto lives here.
      */
     er20: number;
+    /**
+     * Signal-bar volume / 20-bar average. Entries need ≥1.5 — a breakout
+     * printed on dead volume is a classic fakeout. Undefined when the
+     * feed carries no volume (the gate then passes, by contract).
+     */
+    volRatio?: number;
   };
   structure: { note: string; bullish: number; bearish: number };
   zones: SignalZone[];
@@ -97,6 +103,9 @@ const ER_PERIOD = 20;
  * legitimately score ~0.3 and are judged by structure instead.
  */
 const MIN_ER = 0.25;
+const VOL_PERIOD = 20;
+/** Signal bar must carry at least 1.5× the average volume — no dead-volume entries. */
+const MIN_VOL_RATIO = 1.5;
 
 function ema(values: number[], period: number): number[] {
   if (values.length < period) return [];
@@ -247,6 +256,16 @@ export function analyzeCandles(candles: Candle[]): SignalAnalysis | undefined {
   // can't — a slow drift with EMAs apart but every leg retraced still
   // reads "ranging" here.
   const er20 = efficiencyRatio(closes, ER_PERIOD);
+  // Volume confirmation: last bar vs its 20-bar average. Feeds that omit
+  // volume leave this undefined — the gate passes by contract rather than
+  // pretending a missing read is a low one.
+  const vols = candles.slice(-VOL_PERIOD).map((c) => c.volume);
+  const volRatio =
+    last.volume !== undefined && vols.every((v) => v !== undefined)
+      ? vols.length === 0
+        ? undefined
+        : last.volume / (vols.reduce((a, b) => a + (b ?? 0), 0) / vols.length || 1)
+      : undefined;
   const trendDir: Direction | "ranging" =
     atr14 === 0 || emaSpreadAtr < 0.5 || er20 < MIN_ER
       ? "ranging"
@@ -386,12 +405,16 @@ export function analyzeCandles(candles: Candle[]): SignalAnalysis | undefined {
     // Only propose when location, reward, structure and ≥4/5 factors
     // agree. Structure is MANDATORY — trading against rotating or opposing
     // swings is exactly the sideways/no-edge behaviour this engine avoids.
+    // Volume is a hard gate too: a setup printed on dead volume is a
+    // fakeout candidate, not an entry.
+    const volOk = volRatio === undefined || volRatio >= MIN_VOL_RATIO;
     if (
       nearEntry &&
       entryZone &&
       rrOk &&
       agreed >= 4 &&
       structAgrees &&
+      volOk &&
       stopLoss !== undefined
     ) {
       signal.direction = side;
@@ -405,6 +428,10 @@ export function analyzeCandles(candles: Candle[]): SignalAnalysis | undefined {
     } else if (agreed >= 4 && !structAgrees) {
       signal.reasons.push(
         `Setup scores ${agreed}/5 but swing structure is ${structureNote} — no trade against rotating structure.`,
+      );
+    } else if (agreed >= 4 && structAgrees && nearEntry && rrOk && !volOk) {
+      signal.reasons.push(
+        `Setup agrees but the signal bar traded only ${volRatio!.toFixed(1)}× average volume — dead-volume moves fake out, so no signal.`,
       );
     } else if (agreed >= 4 && !nearEntry) {
       signal.reasons.push(
@@ -423,7 +450,7 @@ export function analyzeCandles(candles: Candle[]): SignalAnalysis | undefined {
     candlesRead: candles.length,
     trend: { fastEma: emaF, slowEma: emaS, direction: trendDir },
     momentum: { rsi14 },
-    volatility: { atr14, er20 },
+    volatility: { atr14, er20, volRatio },
     structure: { note: structureNote, bullish: structBull, bearish: structBear },
     zones,
     signal,

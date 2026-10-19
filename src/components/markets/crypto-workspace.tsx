@@ -44,6 +44,7 @@ import {
   type TradeRecord,
 } from "@/lib/crypto/journal";
 import { analyzeTechnicals } from "@/lib/crypto/technicals";
+import { newsBlockEvent } from "@/lib/crypto/news";
 import { backtestCandles, type BacktestStats } from "@/lib/crypto/backtest";
 import type { CalendarEvent } from "@/app/api/economic-calendar/route";
 import { fetchCryptoKlines, fetchCryptoQuotes } from "@/lib/crypto/binance/client";
@@ -266,6 +267,10 @@ export function CryptoMarketsWorkspace() {
   const [alerts, setAlerts] = useState<TradeAlert[]>([]);
   const [bt, setBt] = useState<{ key: string; stats: BacktestStats } | undefined>(undefined);
   const [btBusy, setBtBusy] = useState(false);
+  const [btAll, setBtAll] = useState<
+    { timeframe: Timeframe; rows: { symbol: string; stats: BacktestStats }[] } | undefined
+  >(undefined);
+  const [btAllBusy, setBtAllBusy] = useState(false);
   const [notifyOn, setNotifyOn] = useState(false);
   const [news, setNews] = useState<{ events: CalendarEvent[]; error?: string }>({ events: [] });
   const [now, setNow] = useState(0);
@@ -299,6 +304,13 @@ export function CryptoMarketsWorkspace() {
   useEffect(() => {
     tradesRef.current = trades;
   }, [trades]);
+
+  // News events arrive asynchronously — the scan reads them via a ref so
+  // it doesn't re-subscribe on every calendar tick.
+  const newsRef = useRef(news.events);
+  useEffect(() => {
+    newsRef.current = news.events;
+  }, [news.events]);
 
   const pendingCandle = useRef<Candle | undefined>(undefined);
   const flushTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -502,6 +514,9 @@ export function CryptoMarketsWorkspace() {
             fetchTfs.map((tf) => v.fetchKlines(sym, tf).then((res) => ({ tf, res }))),
           ).then((rows) => {
             if (cancelled) return;
+            // News guard: a high-impact USD release ±15 min vetoes every new
+            // entry this tick — open trades keep managing either way.
+            const newsOn = trading && newsBlockEvent(newsRef.current, Date.now()) !== undefined;
             const candidates: {
               venue: string;
               symbol: string;
@@ -545,7 +560,7 @@ export function CryptoMarketsWorkspace() {
                   (tech.trend === "range" ||
                     (dir === "bullish" && tech.trend === "downtrend") ||
                     (dir === "bearish" && tech.trend === "uptrend"));
-                if (!smcBlocks) {
+                if (!smcBlocks && !newsOn) {
                   // Liquidity edge: a fresh confirmed sweep on the
                   // supporting side (sell-side taken → long) is where
                   // reversals are born — worth +0.5R in the ranking.
@@ -1195,6 +1210,47 @@ export function CryptoMarketsWorkspace() {
               >
                 {btBusy ? "Backtesting…" : "Backtest"}
               </button>
+              <button
+                type="button"
+                disabled={btAllBusy}
+                onClick={() => {
+                  setBtAllBusy(true);
+                  void Promise.all(
+                    VENUES.binance.symbols.map((s) =>
+                      VENUES.binance
+                        .fetchKlines(s.symbol, timeframe)
+                        .then((res) => ({ symbol: s.symbol, res })),
+                    ),
+                  )
+                    .then((results) => {
+                      const rows = results
+                        .flatMap((r) => {
+                          if (!r.res.ok || r.res.data.candles.length === 0) return [];
+                          const set = r.res.data.candles;
+                          const closed = r.res.data.hasFormingCandle
+                            ? set.slice(0, -1)
+                            : set;
+                          return [
+                            {
+                              symbol: r.symbol,
+                              stats: backtestCandles(closed, {
+                                venue: "binance",
+                                symbol: r.symbol,
+                                timeframe,
+                                smc: true,
+                              }),
+                            },
+                          ];
+                        })
+                        .sort((a, b) => b.stats.netR - a.stats.netR);
+                      setBtAll({ timeframe, rows });
+                    })
+                    .finally(() => setBtAllBusy(false));
+                }}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs text-subtle-foreground transition-colors hover:bg-surface-hover hover:text-foreground disabled:opacity-50"
+              >
+                {btAllBusy ? "Backtesting all…" : "Backtest all"}
+              </button>
             </div>
           }
         />
@@ -1253,6 +1309,78 @@ export function CryptoMarketsWorkspace() {
               Expectancy {bt.stats.expectancyR >= 0 ? "+" : ""}
               {bt.stats.expectancyR}R per trade — the number that decides whether an edge is
               real. Past replay ≠ future results.
+            </div>
+          </div>
+        )}
+        {btAll !== undefined && (
+          <div className="mb-4 rounded-md border border-border bg-surface p-3 text-xs">
+            <div className="mb-1 font-medium text-foreground">
+              Backtest all — every Binance Spot pair on {btAll.timeframe}, ranked by net R
+            </div>
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-border text-left text-subtle-foreground">
+                  <th className="py-1 pr-3 font-medium">Pair</th>
+                  <th className="py-1 pr-3 font-medium">Trades</th>
+                  <th className="py-1 pr-3 font-medium">Win %</th>
+                  <th className="py-1 pr-3 font-medium">Net R</th>
+                  <th className="py-1 pr-3 font-medium">PF</th>
+                  <th className="py-1 font-medium">Expectancy</th>
+                </tr>
+              </thead>
+              <tbody>
+                {btAll.rows.map((r) => (
+                  <tr key={r.symbol} className="border-b border-border last:border-b-0">
+                    <td className="py-1.5 pr-3 font-medium text-foreground">
+                      {VENUES.binance.symbolInfo(r.symbol)?.label ?? r.symbol}
+                    </td>
+                    <td className="numeric py-1.5 pr-3">{r.stats.trades}</td>
+                    <td
+                      className={cn(
+                        "numeric py-1.5 pr-3",
+                        r.stats.trades > 0 &&
+                          (r.stats.winPct >= 50 ? "text-bullish" : "text-bearish"),
+                      )}
+                    >
+                      {r.stats.trades > 0 ? `${r.stats.winPct}%` : "—"}
+                    </td>
+                    <td
+                      className={cn(
+                        "numeric py-1.5 pr-3",
+                        r.stats.netR > 0 ? "text-bullish" : r.stats.netR < 0 ? "text-bearish" : "",
+                      )}
+                    >
+                      {r.stats.netR >= 0 ? "+" : ""}
+                      {r.stats.netR}R
+                    </td>
+                    <td className="numeric py-1.5 pr-3">
+                      {r.stats.trades === 0
+                        ? "—"
+                        : r.stats.profitFactor === Infinity
+                          ? "∞"
+                          : r.stats.profitFactor}
+                    </td>
+                    <td
+                      className={cn(
+                        "numeric py-1.5",
+                        r.stats.expectancyR > 0
+                          ? "text-bullish"
+                          : r.stats.expectancyR < 0
+                            ? "text-bearish"
+                            : "",
+                      )}
+                    >
+                      {r.stats.trades === 0
+                        ? "—"
+                        : `${r.stats.expectancyR >= 0 ? "+" : ""}${r.stats.expectancyR}R`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="mt-1 text-subtle-foreground">
+              Same replay rules as the single backtest — negative rows are pairs the engine
+              would have lost on, shown honestly rather than hidden.
             </div>
           </div>
         )}
