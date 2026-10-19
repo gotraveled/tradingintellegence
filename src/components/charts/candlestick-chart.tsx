@@ -34,10 +34,39 @@ interface CandlestickChartProps {
   onReady?: (handle: CandlestickChartHandle | undefined) => void;
 }
 
+let colorCanvas: CanvasRenderingContext2D | null | undefined;
+
+/**
+ * Normalize any CSS color to an sRGB `rgba()` string LWC's parser accepts.
+ * The theme's CSS variables are oklch; getComputedStyle returns lab() tokens,
+ * which LWC cannot parse (silent black series). Rasterizing a 1×1 cell and
+ * reading the pixel back converts whatever the browser accepted — lab, oklch,
+ * color-mix — without reimplementing color math. Returns undefined when the
+ * browser itself rejects the value, so callers fall back.
+ */
+function normalizeCssColor(value: string): string | undefined {
+  if (value === "") return undefined;
+  if (value.startsWith("#") || value.startsWith("rgb")) return value;
+  if (colorCanvas === undefined) {
+    colorCanvas = document.createElement("canvas").getContext("2d");
+  }
+  if (colorCanvas === null) return undefined;
+  colorCanvas.clearRect(0, 0, 1, 1);
+  colorCanvas.fillStyle = "rgb(7, 11, 13)"; // sentinel — survives unparseable input
+  colorCanvas.fillStyle = value;
+  if (colorCanvas.fillStyle === "rgb(7, 11, 13)") return undefined;
+  colorCanvas.fillRect(0, 0, 1, 1);
+  const [r, g, b, a] = colorCanvas.getImageData(0, 0, 1, 1).data;
+  return `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(4)})`;
+}
+
 /** Read the app's CSS variables so the canvas matches the active theme. */
 function theme() {
   const css = getComputedStyle(document.documentElement);
-  const v = (name: string, fallback: string) => css.getPropertyValue(name).trim() || fallback;
+  const v = (name: string, fallback: string) => {
+    const raw = css.getPropertyValue(name).trim();
+    return raw === "" ? fallback : (normalizeCssColor(raw) ?? fallback);
+  };
   return {
     background: v("--surface", "#17191f"),
     text: v("--subtle-foreground", "#8a8f98"),

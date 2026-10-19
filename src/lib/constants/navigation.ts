@@ -1,5 +1,6 @@
 import {
   Bell,
+  Bitcoin,
   Bot,
   CandlestickChart,
   FileUp,
@@ -39,6 +40,7 @@ export const ROUTES = {
 } as const;
 
 export const marketSegmentHref = (id: string) => `${ROUTES.markets}/${id}`;
+export const cryptoMarketsHref = marketSegmentHref("crypto");
 export const scannerViewHref = (id: string) => `${ROUTES.scanner}/${id}`;
 
 export const NAV_ITEMS: NavItem[] = [
@@ -76,6 +78,13 @@ export const NAV_ITEMS: NavItem[] = [
     href: ROUTES.research,
     icon: Newspaper,
     description: "Official filings, central-bank releases, and economic statistics — attributed and linked.",
+    availability: "available",
+  },
+  {
+    title: "Crypto Markets",
+    href: cryptoMarketsHref,
+    icon: Bitcoin,
+    description: "Live Binance Spot quotes and candles — venue-specific public market data, no credentials.",
     availability: "available",
   },
   // Implemented surfaces whose provider-backed data path is gated in V1.

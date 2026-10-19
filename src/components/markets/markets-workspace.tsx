@@ -20,6 +20,7 @@ import {
 import { getMarketDataStatus } from "@/lib/services/system-status";
 import type { Asset } from "@/lib/types";
 import { chartHref } from "@/lib/utils";
+import { CryptoMarketsWorkspace } from "./crypto-workspace";
 import { MarketOverview } from "./market-overview";
 import { MarketSessionsPanel } from "./market-sessions-panel";
 
@@ -106,6 +107,11 @@ export function MarketsWorkspace({ segment }: { segment?: MarketSegment }) {
         </Section>
       )}
 
+      {segment?.id === "crypto" ? (
+        // Live public feed — venue-specific quotes and candles, separate from the
+        // Polygon-gated provider layer above.
+        <CryptoMarketsWorkspace />
+      ) : (
       <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
         <Card>
           <CardHeader
@@ -147,6 +153,7 @@ export function MarketsWorkspace({ segment }: { segment?: MarketSegment }) {
         </Card>
         <MarketSessionsPanel />
       </div>
+      )}
     </PageContainer>
   );
 }
