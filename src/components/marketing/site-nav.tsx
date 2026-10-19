@@ -24,11 +24,15 @@ export type NavEntry = NavLink | NavGroup;
 export function SiteNav({ items }: { items: readonly NavEntry[] }) {
   const [openGroup, setOpenGroup] = useState<string | null>(null);
   const rootRef = useRef<HTMLElement>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (openGroup === null) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpenGroup(null);
+      if (e.key === "Escape") {
+        setOpenGroup(null);
+        triggerRef.current?.focus();
+      }
     };
     const onClick = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpenGroup(null);
@@ -57,7 +61,13 @@ export function SiteNav({ items }: { items: readonly NavEntry[] }) {
               type="button"
               aria-expanded={openGroup === entry.label}
               aria-haspopup="menu"
-              onClick={() => setOpenGroup((v) => (v === entry.label ? null : entry.label))}
+              onClick={(e) =>
+                setOpenGroup((v) => {
+                  const next = v === entry.label ? null : entry.label;
+                  if (next !== null) triggerRef.current = e.currentTarget;
+                  return next;
+                })
+              }
               className={`flex items-center gap-1 ${linkClass}`}
             >
               {entry.label}

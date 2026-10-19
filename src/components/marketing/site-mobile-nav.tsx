@@ -2,7 +2,7 @@
 
 import { Menu, X } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { buttonVariants } from "@/components/ui/button";
 import { ROUTES } from "@/lib/constants";
 import type { NavEntry } from "./site-nav";
@@ -10,20 +10,35 @@ import type { NavEntry } from "./site-nav";
 /** Collapsible marketing nav for viewports below lg. Client-side only for the toggle. */
 export function SiteMobileNav({ items }: { items: readonly NavEntry[] }) {
   const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    const onClick = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
     };
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onClick);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onClick);
+      document.body.style.overflow = "";
+    };
   }, [open]);
 
   return (
-    <div className="lg:hidden">
+    <div ref={rootRef} className="lg:hidden">
       <button
         type="button"
+        ref={triggerRef}
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-label={open ? "Close navigation" : "Open navigation"}
