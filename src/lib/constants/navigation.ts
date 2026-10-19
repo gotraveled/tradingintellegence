@@ -44,33 +44,34 @@ export const cryptoMarketsHref = marketSegmentHref("crypto");
 export const scannerViewHref = (id: string) => `${ROUTES.scanner}/${id}`;
 
 export const NAV_ITEMS: NavItem[] = [
-  // Working research tools — upload-driven, no provider credentials needed.
+  // Live markets — the primary surface.
   {
-    title: "Data Import",
-    href: ROUTES.dataImport,
-    icon: FileUp,
-    description: "Analyze your own OHLC CSV export with the canonical engine — no data subscription needed.",
+    title: "Crypto Markets",
+    href: cryptoMarketsHref,
+    icon: Bitcoin,
+    description: "Live Binance and Kraken quotes, candles, and signals — venue-specific public data, no credentials.",
     availability: "available",
   },
+  {
+    title: "Markets",
+    href: ROUTES.markets,
+    icon: LineChart,
+    description: "Instrument universe across global asset classes.",
+    availability: "preview",
+    children: [
+      { title: "Global Markets", href: ROUTES.markets },
+      ...MARKET_SEGMENTS.map((segment) => ({
+        title: segment.label,
+        href: marketSegmentHref(segment.id),
+      })),
+    ],
+  },
+  // Upload-driven analysis — separate from the live chart surface.
   {
     title: "Chart Analyst",
     href: ROUTES.chartAnalyst,
     icon: ScanEye,
     description: "Upload a chart screenshot — deterministic pixel analysis, optional local vision model.",
-    availability: "available",
-  },
-  {
-    title: "Historical Validation",
-    href: ROUTES.validation,
-    icon: History,
-    description: "Measure how engine scenarios played out on your uploaded candles — causal, reproducible, honest.",
-    availability: "available",
-  },
-  {
-    title: "Comparison Lab",
-    href: ROUTES.comparison,
-    icon: Scale,
-    description: "Compare frozen engine configurations side-by-side on the same data under one shared protocol.",
     availability: "available",
   },
   {
@@ -80,14 +81,42 @@ export const NAV_ITEMS: NavItem[] = [
     description: "Official filings, central-bank releases, and economic statistics — attributed and linked.",
     availability: "available",
   },
+];
+
+export const SETTINGS_NAV_ITEM: NavItem = {
+  title: "Settings",
+  href: ROUTES.settings,
+  icon: Settings,
+  description: "Preferences, data providers, and account.",
+  availability: "preview",
+};
+
+/**
+ * Routes that exist and keep working on direct visits but are deliberately
+ * hidden from the sidebar — the user-facing nav is kept small on purpose.
+ */
+const HIDDEN_NAV_ITEMS: NavItem[] = [
   {
-    title: "Crypto Markets",
-    href: cryptoMarketsHref,
-    icon: Bitcoin,
-    description: "Live Binance Spot quotes and candles — venue-specific public market data, no credentials.",
+    title: "Data Import",
+    href: ROUTES.dataImport,
+    icon: FileUp,
+    description: "Analyze your own OHLC CSV export with the canonical engine.",
     availability: "available",
   },
-  // Implemented surfaces whose provider-backed data path is gated in V1.
+  {
+    title: "Historical Validation",
+    href: ROUTES.validation,
+    icon: History,
+    description: "Measure how engine scenarios played out on uploaded candles.",
+    availability: "available",
+  },
+  {
+    title: "Comparison Lab",
+    href: ROUTES.comparison,
+    icon: Scale,
+    description: "Compare frozen engine configurations side-by-side.",
+    availability: "available",
+  },
   {
     title: "Chart Intelligence",
     href: ROUTES.chart,
@@ -107,27 +136,12 @@ export const NAV_ITEMS: NavItem[] = [
     ],
   },
   {
-    title: "Markets",
-    href: ROUTES.markets,
-    icon: LineChart,
-    description: "Instrument universe across global asset classes.",
-    availability: "preview",
-    children: [
-      { title: "Global Markets", href: ROUTES.markets },
-      ...MARKET_SEGMENTS.map((segment) => ({
-        title: segment.label,
-        href: marketSegmentHref(segment.id),
-      })),
-    ],
-  },
-  {
     title: "Strategy Lab",
     href: ROUTES.strategyLab,
     icon: FlaskConical,
     description: "Define setup rules and validate them with historical backtests.",
     availability: "preview",
   },
-  // Functional surfaces populated with synthetic sample data — never live.
   {
     title: "Dashboard",
     href: ROUTES.dashboard,
@@ -149,7 +163,6 @@ export const NAV_ITEMS: NavItem[] = [
     description: "Sample alert configurations and events — synthetic data, no live notifications yet.",
     availability: "sample",
   },
-  // Not yet implemented.
   {
     title: "Market Intelligence",
     href: ROUTES.marketIntelligence,
@@ -167,15 +180,11 @@ export const NAV_ITEMS: NavItem[] = [
   },
 ];
 
-export const SETTINGS_NAV_ITEM: NavItem = {
-  title: "Settings",
-  href: ROUTES.settings,
-  icon: Settings,
-  description: "Preferences, data providers, and account.",
-  availability: "preview",
-};
-
-export const ALL_NAV_ITEMS: NavItem[] = [...NAV_ITEMS, SETTINGS_NAV_ITEM];
+export const ALL_NAV_ITEMS: NavItem[] = [
+  ...NAV_ITEMS,
+  ...HIDDEN_NAV_ITEMS,
+  SETTINGS_NAV_ITEM,
+];
 
 export function getNavItem(href: string): NavItem {
   const item = ALL_NAV_ITEMS.find((entry) => entry.href === href);
