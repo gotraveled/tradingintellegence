@@ -4,21 +4,27 @@ import type { TradeSignal } from "./analysis";
 /**
  * "Victor" — pure price-action entries, no indicators.
  *
+ * Victor scalp — the pin/follow-up fire on the ENTRY timeframe (1m), but
+ * the zones they react to are measured on the CONTEXT timeframes
+ * (5m + 15m). A level only counts as STRONG when zones from two different
+ * context timeframes overlap — multi-TF agreement is what makes it tradeable.
+ *
  * Setup (all four must hold, evaluated on closed bars only):
- *  1. Pin bar at a swing supply/demand zone — a rejection wick ≥ 2× the
- *     body AND ≥ 2× the opposing wick, whose tail poked into the zone and
- *     whose close pulled back out of it.
- *  2. Follow-up: the NEXT closed candle confirms — same direction colour
- *     and a close beyond the pin bar's close.
- *  3. The zone is STRONG — it overlaps a same-kind zone on the higher
- *     timeframe, i.e. multi-timeframe alignment backs the level.
+ *  1. Pin bar on the entry TF — rejection wick ≥ 2× the body AND ≥ 2× the
+ *     opposing wick — whose tail poked into a context zone and whose
+ *     close pulled back out of it.
+ *  2. Follow-up: the NEXT closed entry candle confirms — same direction
+ *     colour and a close beyond the pin bar's close.
+ *  3. The zone is STRONG — same-kind zones on separate context TFs
+ *     overlap it.
  *  4. Risk:reward ≥ 1R to the target.
  *
  * Entry  = follow-up candle's close (the signal bar).
  * Stop   = pin bar's extreme (low for longs, high for shorts) — the wick
- *          that defined the rejection.
- * Target = next opposing swing or supply/demand zone edge; TP2 = 2.5R
- *          runner when that exceeds TP1.
+ *          that defined the rejection; while in profit it trails under
+ *          the extreme of the candle before the latest closed bar.
+ * Target = next opposing context zone edge, else the nearest opposing
+ *          entry-TF swing; TP2 = 2.5R runner.
  *
  * Zones come from k=3 swing pivots: a pivot high unbroken by closes is
  * supply, a pivot low unbroken is demand — same measured levels the chart
@@ -136,7 +142,25 @@ function overlap(a: { lower: Price; upper: Price }, b: { lower: Price; upper: Pr
   return a.lower <= b.upper && b.lower <= a.upper;
 }
 
-/** Flag LTF zones confirmed by a same-kind HTF zone — the "strong" levels. */
+/**
+ * Mark zones confirmed across context timeframes: a zone is "strong"
+ * when a same-kind zone from a DIFFERENT context set overlaps it. Zones
+ * within one timeframe can never confirm themselves.
+ */
+export function markStrongAcross(contextZones: VictorZone[][]): VictorZone[] {
+  const out: VictorZone[] = [];
+  contextZones.forEach((zones, i) => {
+    for (const z of zones) {
+      z.strong = contextZones.some(
+        (other, j) => j !== i && other.some((h) => h.kind === z.kind && overlap(z, h)),
+      );
+      out.push(z);
+    }
+  });
+  return out;
+}
+
+/** Flag LTF zones confirmed by a same-kind HTF zone — kept for the chart. */
 export function markStrong(ltf: VictorZone[], htf: VictorZone[]): void {
   for (const z of ltf) {
     z.strong = htf.some((h) => h.kind === z.kind && overlap(z, h));
@@ -144,14 +168,20 @@ export function markStrong(ltf: VictorZone[], htf: VictorZone[]): void {
 }
 
 /**
- * Evaluate the last two closed bars for a Victor setup.
- * `htf` is the higher-timeframe candle set (1h); without it no zone can be
- * proven strong, so no signal — multi-TF alignment is a hard requirement.
+ * Evaluate the last two closed ENTRY-timeframe bars for a Victor setup.
+ * `contexts` are the higher-timeframe candle sets (5m, 15m) that supply
+ * and demand zones are measured on — with fewer than two usable context
+ * sets no zone can be proven strong, so no signal.
  */
-export function victorSignal(ltf: Candle[], htf: Candle[] | undefined): VictorSetup | undefined {
-  if (ltf.length < 30 || htf === undefined || htf.length < 30) return undefined;
-  const pin = ltf[ltf.length - 2];
-  const follow = ltf[ltf.length - 1];
+export function victorSignal(
+  entryCandles: Candle[],
+  contexts: readonly Candle[][],
+): VictorSetup | undefined {
+  if (entryCandles.length < 30) return undefined;
+  const usable = contexts.filter((c) => c !== undefined && c.length >= 30);
+  if (usable.length < 2) return undefined; // needs ≥2 TFs to confirm a level
+  const pin = entryCandles[entryCandles.length - 2];
+  const follow = entryCandles[entryCandles.length - 1];
   const dir = pinBar(pin);
   if (dir === undefined) return undefined;
 
@@ -162,10 +192,9 @@ export function victorSignal(ltf: Candle[], htf: Candle[] | undefined): VictorSe
       : follow.close < follow.open && follow.close < pin.close;
   if (!confirms) return undefined;
 
-  // The pin's tail must have rejected a zone: bullish tail tags demand,
-  // bearish tail tags supply — wick entered, close pulled back out.
-  const zones = swingZones(ltf);
-  markStrong(zones, swingZones(htf));
+  // The pin's tail must have rejected a context zone: bullish tail tags
+  // demand, bearish tail tags supply — wick entered, close pulled back out.
+  const zones = markStrongAcross(usable.map((c) => swingZones(c)));
   const zone = zones.find((z) => {
     if (z.kind !== (dir === "bullish" ? "demand" : "supply")) return false;
     const tail = dir === "bullish" ? pin.low : pin.high;
@@ -181,8 +210,8 @@ export function victorSignal(ltf: Candle[], htf: Candle[] | undefined): VictorSe
   const risk = Math.abs(entry - stopLoss);
   if (risk === 0) return undefined;
 
-  // Target = next opposing level: nearest opposite-kind zone edge past
-  // entry, falling back to the nearest opposing swing pivot.
+  // Target = next opposing level: nearest opposite-kind context-zone edge
+  // past entry, falling back to the nearest opposing entry-TF swing pivot.
   const opposing = zones
     .filter((z) => z.kind !== zone.kind)
     .map((z) => (dir === "bullish" ? z.lower : z.upper))
@@ -191,7 +220,7 @@ export function victorSignal(ltf: Candle[], htf: Candle[] | undefined): VictorSe
   let tp1 = opposing[0];
   if (tp1 === undefined) {
     // No zone ahead — aim at the nearest unbroken opposing swing pivot.
-    const piv = swings(ltf)
+    const piv = swings(entryCandles)
       .filter((p) => p.kind === (dir === "bullish" ? "high" : "low"))
       .map((p) => p.price)
       .filter((p) => (dir === "bullish" ? p > entry : p < entry))
@@ -210,7 +239,7 @@ export function victorSignal(ltf: Candle[], htf: Candle[] | undefined): VictorSe
   const confidence = Math.min(
     100,
     80 + (tail >= 3 * Math.max(body, 1e-12) ? 5 : 0) + (zone.touches >= 1 ? 5 : 0) +
-      (ltf.length - 1 - zone.pivotIndex <= 80 ? 5 : 0) +
+      (entryCandles.length - 1 - zone.pivotIndex <= 80 ? 5 : 0) +
       (rr1 >= 1.5 ? 5 : 0),
   );
 
@@ -251,7 +280,7 @@ export function victorSignal(ltf: Candle[], htf: Candle[] | undefined): VictorSe
     reasons: [
       `Victor pin bar — ${dir === "bullish" ? "bullish rejection at demand" : "bearish rejection at supply"}`,
       `Stop at pin ${dir === "bullish" ? "low" : "high"} ${stopLoss}, target next opposing zone`,
-      "Multi-timeframe aligned zone — level confirmed on 1h",
+      "Multi-timeframe aligned zone — level confirmed on 5m+15m",
     ],
     entry,
     stopLoss,

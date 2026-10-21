@@ -39,7 +39,6 @@ import {
   symbolStats,
   timeframeMs,
   tradeKey,
-  TRADE_TIMEFRAMES,
   unrealizedR,
   unrealizedUsd,
   type TradeRecord,
@@ -47,7 +46,7 @@ import {
 import { analyzeTechnicals } from "@/lib/crypto/technicals";
 import { newsBlockEvent } from "@/lib/crypto/news";
 import { backtestCandles, type BacktestStats } from "@/lib/crypto/backtest";
-import { markStrong, swingZones, victorSignal } from "@/lib/crypto/victor";
+import { markStrongAcross, pinBar, swingZones, victorSignal } from "@/lib/crypto/victor";
 import type { CalendarEvent } from "@/app/api/economic-calendar/route";
 import { fetchCryptoKlines, fetchCryptoQuotes } from "@/lib/crypto/binance/client";
 import {
@@ -471,9 +470,11 @@ export function CryptoMarketsWorkspace() {
       /* private mode — keep working */
     }
   }, [strategy]);
-  // Latest closed 1h candles per symbol — the victor zones' MTF check.
-  // State (not a ref): the chart-zone memo reads it during render.
-  const [biasSets, setBiasSets] = useState<Record<string, Candle[]>>({});
+  // Latest closed candles per symbol for Victor: 1m entry + 5m/15m zone
+  // context. State (not a ref): the chart-zone memo reads it during render.
+  const [ctxSets, setCtxSets] = useState<
+    Record<string, { m1?: Candle[]; m5?: Candle[]; m15?: Candle[] }>
+  >({});
 
   useEffect(() => {
     let cancelled = false;
@@ -533,11 +534,14 @@ export function CryptoMarketsWorkspace() {
             .filter((t) => t.status === "open" && t.venue === vId && t.symbol === sym)
             .map((t) => t.timeframe);
           if (!trading && legacyTfs.length === 0) continue;
+          // What the scan needs per strategy: Victor scalps on 1m with
+          // 5m+15m zones; Confluence enters on 5m with 15m context + 1h bias.
+          const entryTfs =
+            strategyRef.current === "victor"
+              ? (["1m", "5m", "15m"] as const)
+              : (["5m", "15m", BIAS_TIMEFRAME] as const);
           const fetchTfs = [
-            ...new Set<Timeframe>([
-              ...(trading ? [...TRADE_TIMEFRAMES, BIAS_TIMEFRAME] : []),
-              ...legacyTfs,
-            ]),
+            ...new Set<Timeframe>([...(trading ? entryTfs : []), ...legacyTfs]),
           ];
           void Promise.all(
             fetchTfs.map((tf) => v.fetchKlines(sym, tf).then((res) => ({ tf, res }))),
@@ -565,14 +569,11 @@ export function CryptoMarketsWorkspace() {
             // Higher-timeframe bias first — never take a scalp against the
             // 1h trend. "ranging" or unreadable HTF passes no judgment.
             let bias: Direction | "ranging" | undefined;
-            let htfClosed: Candle[] | undefined;
             const biasRow = rows.find((r) => r.tf === BIAS_TIMEFRAME);
             if (biasRow !== undefined && biasRow.res.ok && biasRow.res.data.candles.length > 0) {
               const s = biasRow.res.data.candles;
               const c = biasRow.res.data.hasFormingCandle ? s.slice(0, -1) : s;
               bias = analyzeCandles(c)?.trend.direction;
-              htfClosed = c;
-              if (vId === "binance") setBiasSets((p) => (p[sym] === c ? p : { ...p, [sym]: c }));
             }
             for (const { tf, res } of rows) {
               if (!res.ok || res.data.candles.length === 0) continue;
@@ -581,18 +582,22 @@ export function CryptoMarketsWorkspace() {
               const key = journalKey(vId, sym, tf);
               tfSets.set(key, closed);
               markEntries[key] = set[set.length - 1].close;
-              if (!trading || !TRADE_TIMEFRAMES.includes(tf)) continue; // context/manage only
-              // Entries are decided on CLOSED bars only — a pro waits for
-              // the candle to print, never trades a half-formed signal.
-              const cell = `${sym} ${tf}`;
-              const lastBar = closed[closed.length - 1].time;
-              // Victor mode — pure price action: pin bar at an MTF-aligned
-              // supply/demand zone, follow-up confirmation, SL at the pin's
-              // extreme, target the next opposing zone/swing.
+            }
+            // Entries are decided on CLOSED bars only — a pro waits for
+            // the candle to print, never trades a half-formed signal.
+            if (trading) {
               if (strategyRef.current === "victor") {
-                const setup = victorSignal(closed, htfClosed);
-                if (setup === undefined) {
-                  scanWhyRef.current[cell] = "no pin/zone setup";
+                // Victor scalp — 1m pin bar at a 5m+15m-aligned S/D zone,
+                // follow-up confirmation, SL at the pin's extreme, target
+                // the next opposing zone/swing.
+                const m1 = tfSets.get(journalKey(vId, sym, "1m"));
+                const m5 = tfSets.get(journalKey(vId, sym, "5m"));
+                const m15 = tfSets.get(journalKey(vId, sym, "15m"));
+                const cell = `${sym} 1m`;
+                const setup =
+                  m1 !== undefined ? victorSignal(m1, [m5 ?? [], m15 ?? []]) : undefined;
+                if (m1 === undefined || setup === undefined) {
+                  scanWhyRef.current[cell] = m1 === undefined ? "no data" : "no pin/zone setup";
                 } else if (newsOn) {
                   scanWhyRef.current[cell] = "news blackout";
                 } else if (pairBusyNow) {
@@ -602,67 +607,76 @@ export function CryptoMarketsWorkspace() {
                   candidates.push({
                     venue: vId,
                     symbol: sym,
-                    timeframe: tf,
+                    timeframe: "1m",
                     signal: setup.signal,
-                    barTime: lastBar,
+                    barTime: m1[m1.length - 1].time,
                     edge: 0,
                     strategy: "victor",
                   });
                 }
-                continue;
-              }
-              const a = analyzeCandles(closed);
-              if (a === undefined) {
-                scanWhyRef.current[cell] = "warming up";
-              } else if (a.signal.direction === "wait") {
-                scanWhyRef.current[cell] =
-                  a.trend.direction === "ranging"
-                    ? "ranging"
-                    : `weak ${a.signal.confidence}pts`;
+                setCtxSets((p) => ({
+                  ...p,
+                  [sym]: { m1, m5, m15 },
+                }));
               } else {
-                const dir = a.signal.direction;
-                // HTF gate — never fight the higher-timeframe trend.
-                if (bias === "bullish" || bias === "bearish" ? bias !== dir : false) {
-                  scanWhyRef.current[cell] = `vs 1h ${bias}`;
-                  continue;
-                }
-                // SMC gate: the ICT engine suite must not contradict the
-                // signal — a "range" verdict or opposing structure trend
-                // vetoes the candidate outright.
-                const tech = analyzeTechnicals(closed, sym, tf);
-                const smcBlocks =
-                  tech !== undefined &&
-                  (tech.trend === "range" ||
-                    (dir === "bullish" && tech.trend === "downtrend") ||
-                    (dir === "bearish" && tech.trend === "uptrend"));
-                if (smcBlocks) {
-                  scanWhyRef.current[cell] = `smc ${tech?.trend}`;
-                } else if (newsOn) {
-                  scanWhyRef.current[cell] = "news blackout";
-                } else if (pairBusyNow) {
-                  scanWhyRef.current[cell] = "position open";
+                // Confluence — 5m entries only; 15m SMC structure + 1h
+                // trend are the analysis context.
+                const closed5 = tfSets.get(journalKey(vId, sym, "5m"));
+                const cell = `${sym} 5m`;
+                const a = closed5 !== undefined ? analyzeCandles(closed5) : undefined;
+                if (closed5 === undefined || a === undefined) {
+                  scanWhyRef.current[cell] = "warming up";
+                } else if (a.signal.direction === "wait") {
+                  scanWhyRef.current[cell] =
+                    a.trend.direction === "ranging"
+                      ? "ranging"
+                      : `weak ${a.signal.confidence}pts`;
                 } else {
-                  scanWhyRef.current[cell] = `${dir.slice(0, 4)} ${a.signal.confidence}pts`;
-                }
-                if (!smcBlocks && !newsOn) {
-                  // Liquidity edge: a fresh confirmed sweep on the
-                  // supporting side (sell-side taken → long) is where
-                  // reversals are born — worth +0.5R in the ranking.
-                  const sweepSupport =
+                  const dir = a.signal.direction;
+                  const lastBar = closed5[closed5.length - 1].time;
+                  const biasBlocks =
+                    bias === "bullish" || bias === "bearish" ? bias !== dir : false;
+                  // SMC gate on the 15m context — structure must not
+                  // contradict the 5m signal.
+                  const ctx15 = tfSets.get(journalKey(vId, sym, "15m"));
+                  const tech =
+                    ctx15 !== undefined ? analyzeTechnicals(ctx15, sym, "15m") : undefined;
+                  const smcBlocks =
                     tech !== undefined &&
-                    tech.sweeps.some(
-                      (sw) =>
-                        (dir === "bullish" ? sw.side === "sell_side" : sw.side === "buy_side") &&
-                        lastBar - Date.parse(sw.at) < 20 * timeframeMs(tf),
-                    );
-                  candidates.push({
-                    venue: vId,
-                    symbol: sym,
-                    timeframe: tf,
-                    signal: a.signal,
-                    barTime: lastBar,
-                    edge: sweepSupport ? 0.5 : 0,
-                  });
+                    (tech.trend === "range" ||
+                      (dir === "bullish" && tech.trend === "downtrend") ||
+                      (dir === "bearish" && tech.trend === "uptrend"));
+                  if (biasBlocks) {
+                    scanWhyRef.current[cell] = `vs 1h ${bias}`;
+                  } else if (smcBlocks) {
+                    scanWhyRef.current[cell] = `smc ${tech?.trend}`;
+                  } else if (newsOn) {
+                    scanWhyRef.current[cell] = "news blackout";
+                  } else if (pairBusyNow) {
+                    scanWhyRef.current[cell] = "position open";
+                  } else {
+                    scanWhyRef.current[cell] = `${dir.slice(0, 4)} ${a.signal.confidence}pts`;
+                  }
+                  if (!biasBlocks && !smcBlocks && !newsOn) {
+                    // Liquidity edge: a fresh confirmed 15m sweep on the
+                    // supporting side is where reversals are born — worth
+                    // +0.5R in the ranking.
+                    const sweepSupport =
+                      tech !== undefined &&
+                      tech.sweeps.some(
+                        (sw) =>
+                          (dir === "bullish" ? sw.side === "sell_side" : sw.side === "buy_side") &&
+                          lastBar - Date.parse(sw.at) < 20 * timeframeMs("15m"),
+                      );
+                    candidates.push({
+                      venue: vId,
+                      symbol: sym,
+                      timeframe: "5m",
+                      signal: a.signal,
+                      barTime: lastBar,
+                      edge: sweepSupport ? 0.5 : 0,
+                    });
+                  }
                 }
               }
             }
@@ -832,14 +846,28 @@ export function CryptoMarketsWorkspace() {
     .slice(0, 6);
   const newsRisk = upcomingNews.find((e) => Math.abs(e.ms - now) <= 60 * 60_000);
 
-  // Victor zones for the charted symbol — strong = MTF-aligned.
+  // Victor live readout for the charted symbol — the same evaluation the
+  // scan runs: 1m pin + follow-up against 5m/15m strong zones.
+  const victorCtx = ctxSets[symbol];
+  const victorLive = useMemo(() => {
+    if (strategy !== "victor" || victorCtx?.m1 === undefined) return undefined;
+    return victorSignal(victorCtx.m1, [victorCtx.m5 ?? [], victorCtx.m15 ?? []]);
+  }, [strategy, victorCtx]);
+  const victorLastPin =
+    victorCtx?.m1 !== undefined && victorCtx.m1.length >= 2
+      ? pinBar(victorCtx.m1[victorCtx.m1.length - 2])
+      : undefined;
+
+  // Victor zones for the charted symbol — measured on 5m+15m, strong
+  // only where the two context timeframes' zones overlap.
   const victorZones = useMemo(() => {
-    if (strategy !== "victor" || candles === undefined) return [];
-    const zones = swingZones(candles);
-    const htf = biasSets[symbol];
-    if (htf !== undefined) markStrong(zones, swingZones(htf));
-    return zones;
-  }, [strategy, candles, symbol, biasSets]);
+    if (strategy !== "victor") return [];
+    const ctx = ctxSets[symbol];
+    if (ctx === undefined) return [];
+    return markStrongAcross(
+      [ctx.m5, ctx.m15].filter((c): c is Candle[] => c !== undefined).map(swingZones),
+    );
+  }, [strategy, symbol, ctxSets]);
 
   const signalOverlays = useMemo<ChartOverlay[]>(() => {
     if (!analysis) return [];
@@ -1082,6 +1110,74 @@ export function CryptoMarketsWorkspace() {
         </p>
       </Card>
 
+      {/* Victor detail — shown when the strategy is selected */}
+      {strategy === "victor" && (
+        <Card>
+          <CardHeader
+            title="Victor scalp — pin bar at supply/demand"
+            description="Pure price action. Zones measured on 5m + 15m; a zone is STRONG when both timeframes' zones overlap. Entry fires on a 1m pin bar whose tail rejects a strong zone, confirmed by the next candle. Stop = pin extreme, trailing to the 2nd candle back; target = next opposing zone."
+            action={
+              victorLive !== undefined && (
+                <Badge tone={DIR_META[victorLive.signal.direction as Direction].tone}>
+                  {victorLive.signal.direction === "bullish" ? "BUY" : "SELL"} ·{" "}
+                  {victorLive.signal.confidence} pts
+                </Badge>
+              )
+            }
+          />
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+            {[
+              { label: "Entry", value: victorLive?.signal.entry },
+              { label: "Stop (pin extreme)", value: victorLive?.signal.stopLoss },
+              { label: "TP1 · next zone", value: victorLive?.signal.targets[0]?.price },
+              { label: "TP2 · runner", value: victorLive?.signal.targets[1]?.price },
+              { label: "RR", value: victorLive?.signal.riskReward, suffix: "R" },
+            ].map((f) => (
+              <div key={f.label}>
+                <div className="text-xs text-subtle-foreground">{f.label}</div>
+                <div className="numeric mt-0.5 text-sm text-foreground">
+                  {f.value === undefined ? "—" : `${fmtPrice(f.value, precision)}${f.suffix ?? ""}`}
+                </div>
+              </div>
+            ))}
+          </div>
+          {victorLive === undefined && (
+            <p className="mt-3 text-xs text-subtle-foreground">
+              No confirmed setup right now —{" "}
+              {victorLastPin !== undefined
+                ? `a ${victorLastPin} pin bar printed on 1m but not at a strong zone or unconfirmed`
+                : "no qualifying pin bar on the last closed 1m candle"}
+              .
+            </p>
+          )}
+          <div className="mt-4 border-t border-border pt-3">
+            <p className="text-xs text-subtle-foreground">
+              Supply/demand zones — 5m+15m overlap = strong
+            </p>
+            {victorZones.length === 0 ? (
+              <p className="mt-0.5 text-sm text-muted-foreground">Waiting for zone data…</p>
+            ) : (
+              <ul className="mt-1 space-y-0.5 text-xs">
+                {victorZones.slice(0, 6).map((z, i) => (
+                  <li key={i} className="flex flex-wrap items-center gap-2">
+                    <Badge tone={z.kind === "demand" ? "bullish" : "bearish"}>
+                      {z.kind}
+                    </Badge>
+                    <span className="numeric text-foreground">
+                      {fmtPrice(z.lower, precision)}–{fmtPrice(z.upper, precision)}
+                    </span>
+                    {z.strong && <Badge tone="developing">STRONG</Badge>}
+                    {z.touches > 0 && (
+                      <span className="text-subtle-foreground">{z.touches} touches</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </Card>
+      )}
+
       {/* Signal detail — entry / SL / targets / reasoning / points */}
       <Card>
         <CardHeader
@@ -1290,7 +1386,11 @@ export function CryptoMarketsWorkspace() {
       <Card>
         <CardHeader
           title="Paper trades"
-          description="Virtual $10,000 terminal — 1% of equity risked per trade, one position per pair. Entries need a confluence score of 80+ and fire on the better of 5m/15m by risk:reward. TP1 banks half, the stop moves to breakeven then trails 1R; a bar touching both stop and target counts the stop first."
+          description={
+            strategy === "victor"
+              ? "Virtual $10,000 terminal — Victor scalp: 1m pin bar at a 5m+15m-aligned supply/demand zone, follow-up confirmed. Stop at the pin's extreme, trailing to the 2nd candle back; target next opposing zone; TP1 banks half."
+              : "Virtual $10,000 terminal — Confluence: 5m entries scored 80+, 15m structure + 1h trend must agree. TP1 banks half, the stop moves to breakeven then trails; a bar touching both stop and target counts the stop first."
+          }
           action={
             <div className="flex items-center gap-2">
               <button

@@ -445,11 +445,20 @@ export function evaluateTrade(rec: TradeRecord, closedBars: Candle[]): TradeReco
       t.tp1Hit = true;
       t.stopLoss = bull ? Math.max(t.stopLoss, t.entry) : Math.min(t.stopLoss, t.entry);
     }
+    if (t.strategy === "victor") {
+      // Scalp trail: ratchet the stop under the extreme of the candle
+      // before the newest closed bar (the "2nd candle" counting the
+      // newest) — tightens while price runs, never loosens.
+      const post = closedBars.filter((b) => b.time > t.entryBarTime && b.time <= bar.time);
+      const back = post[post.length - 2];
+      if (back !== undefined) {
+        t.stopLoss = bull ? Math.max(t.stopLoss, back.low) : Math.min(t.stopLoss, back.high);
+      }
     // After TP1 the runner trails a chandelier stop — 3×ATR behind the
     // extreme close since entry. ATR adapts the width to each pair's
     // volatility (BTC vs a low-priced alt) where a fixed 1R could not;
     // when ATR isn't computable yet it falls back to 1R.
-    if (t.tp1Hit) {
+    } else if (t.tp1Hit) {
       const post = closedBars.filter((b) => b.time > t.entryBarTime && b.time <= bar.time);
       const atr = atrOf(post);
       const extreme = bull
