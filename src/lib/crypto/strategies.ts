@@ -155,7 +155,7 @@ const ORB_VOL_MULT = 1.5;
 const orb: StrategyDef = {
   id: "orb",
   label: "Opening Range Breakout",
-  blurb: "First-15-min UTC range; a close beyond it with ≥1.5× volume is the trigger. One trade per day, stop at range mid, target one range-width.",
+  blurb: "First-15-min UTC range; a close beyond it with ≥1.5× volume is the trigger. One trade per day, stop inside the broken edge, target 1.5× the range width.",
   create: () => {
     let tradedDay = -1;
     return (hist) => {
@@ -165,7 +165,10 @@ const orb: StrategyDef = {
       if (tradedDay === day0) return undefined;
       const i0 = sessionStart(hist);
       const range = hist.slice(i0).filter((c) => c.time < day0 + ORB_RANGE_MS);
-      if (range.length < 3 || last.time < day0 + ORB_RANGE_MS) return undefined;
+      // ≥1 bar: on a 15m+ tape a single bar IS the opening range; on 1m/5m
+      // the window holds 15/3 bars. The width filters below reject a
+      // degenerate one-bar range whose span is meaningless.
+      if (range.length === 0 || last.time < day0 + ORB_RANGE_MS) return undefined;
       if (last.time >= day0 + ORB_WINDOW_MS) return undefined;
       const hi = Math.max(...range.map((c) => c.high));
       const lo = Math.min(...range.map((c) => c.low));

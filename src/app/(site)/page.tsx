@@ -15,7 +15,7 @@ import Link from "next/link";
 import { SetupPreview } from "@/components/marketing/setup-preview";
 import { buttonVariants } from "@/components/ui/button";
 import { AvailabilityBadge } from "@/components/ui/status";
-import { RISK_DISCLAIMER_SHORT, ROUTES } from "@/lib/constants";
+import { marketSegmentHref, RISK_DISCLAIMER_SHORT, ROUTES } from "@/lib/constants";
 import type { ModuleAvailability } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -131,6 +131,12 @@ const FEATURES: { heading: string; intro: string; rows: FeatureRow[] }[] = [
         href: ROUTES.research,
         status: "available",
         text: "Official-source filings and releases, attributed and linked — no editorializing.",
+      },
+      {
+        title: "Live Trading Desk",
+        href: marketSegmentHref("crypto"),
+        status: "available",
+        text: "Live Binance Spot and NSE/BSE index feeds — Victor 1m pin-bar scalps and Confluence 5m swings run side-by-side, paper-booked in real time. A strategy tournament replays eight methods on the same bars to rank what actually works.",
       },
     ],
   },

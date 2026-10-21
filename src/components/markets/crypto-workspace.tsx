@@ -369,6 +369,13 @@ export function CryptoMarketsWorkspace() {
     if (next === venueId) return;
     setVenueId(next);
     setSymbol(VENUES[next].defaultSymbol);
+    // Venues offer different interval sets (India has no 4h) — keep the
+    // current timeframe when supported, else fall back to the venue's own.
+    setTimeframe((tf) =>
+      VENUES[next].intervals.some((i) => i.timeframe === tf)
+        ? tf
+        : VENUES[next].intervals[0].timeframe,
+    );
     setQuotes({});
     setCandlesSet(undefined);
     setRestError(undefined);
@@ -526,6 +533,9 @@ export function CryptoMarketsWorkspace() {
     const run = () => {
       for (const tf of SCAN_TIMEFRAMES) {
         if (tf === timeframe) continue;
+        // Skip intervals the venue doesn't offer (e.g. 4h on NSE/BSE) —
+        // fetching them would produce a permanent error row.
+        if (!venue.intervals.some((i) => i.timeframe === tf)) continue;
         void venue.fetchKlines(symbol, tf).then((res) => {
           if (cancelled) return;
           const rowAnalysis = res.ok ? analyzeCandles(res.data.candles) : undefined;
@@ -2320,7 +2330,9 @@ export function CryptoMarketsWorkspace() {
               </tr>
             </thead>
             <tbody>
-              {SCAN_TIMEFRAMES.map((tf) => {
+              {SCAN_TIMEFRAMES.filter((tf) =>
+                venue.intervals.some((i) => i.timeframe === tf),
+              ).map((tf) => {
                 const row = scanRowFor(tf);
                 const a = row.analysis;
                 const s = a?.signal;
