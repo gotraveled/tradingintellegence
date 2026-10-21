@@ -80,7 +80,7 @@ export function binanceInterval(timeframe: Timeframe): string | undefined {
 }
 
 export const DEFAULT_CRYPTO_SYMBOL: CryptoSymbol = "BTCUSDT";
-export const DEFAULT_CRYPTO_TIMEFRAME: Timeframe = "1h";
+export const DEFAULT_CRYPTO_TIMEFRAME: Timeframe = "5m";
 
 /** REST + stream request bounds. */
 export const KLINE_LIMIT = 200;
