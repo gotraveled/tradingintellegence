@@ -46,6 +46,8 @@ export interface TradeRecord {
   targets: TradeTarget[];
   /** Confluence points at signal time (0–100). */
   confidence: number;
+  /** Which strategy booked this trade — "confluence" (default) or "victor". */
+  strategy?: string;
   /** US dollars risked (≈1% of equity at booking — 1R in money terms). */
   riskUsd?: number;
   /** Wall-clock ms when the signal was booked. */
@@ -268,9 +270,10 @@ export function registerSignal(
     /** Open-time of the bar the signal was emitted on. */
     barTime: number;
     now: number;
+    strategy?: string;
   },
 ): { trades: TradeRecord[]; added?: TradeRecord } {
-  const { venue, symbol, timeframe, signal, barTime, now } = params;
+  const { venue, symbol, timeframe, signal, barTime, now, strategy } = params;
   if (
     signal.direction === "wait" ||
     signal.entry === undefined ||
@@ -305,6 +308,7 @@ export function registerSignal(
     initialStopLoss: signal.stopLoss,
     targets: signal.targets.map((t) => ({ ...t })),
     confidence: signal.confidence,
+    strategy,
     riskUsd: nextRiskUsd(trades),
     openedAt: now,
     entryBarTime: barTime,
@@ -331,6 +335,7 @@ export function registerBestSignal(
     barTime: number;
     /** Situational bonus added to RR when ranking (e.g. fresh liquidity sweep). */
     edge?: number;
+    strategy?: string;
   }[],
   now: number,
 ): { trades: TradeRecord[]; added?: TradeRecord } {

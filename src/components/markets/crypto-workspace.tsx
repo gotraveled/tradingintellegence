@@ -47,6 +47,7 @@ import {
 import { analyzeTechnicals } from "@/lib/crypto/technicals";
 import { newsBlockEvent } from "@/lib/crypto/news";
 import { backtestCandles, type BacktestStats } from "@/lib/crypto/backtest";
+import { markStrong, swingZones, victorSignal } from "@/lib/crypto/victor";
 import type { CalendarEvent } from "@/app/api/economic-calendar/route";
 import { fetchCryptoKlines, fetchCryptoQuotes } from "@/lib/crypto/binance/client";
 import {
@@ -453,6 +454,27 @@ export function CryptoMarketsWorkspace() {
   );
   const scanWhyRef = useRef<Record<string, string>>({});
 
+  // Entry strategy — confluence (indicators + structure) or Victor (pure
+  // price action: pin bar at MTF-aligned supply/demand). Persisted so a
+  // refresh doesn't silently switch the book back.
+  const [strategy, setStrategy] = useState<"confluence" | "victor">(() =>
+    typeof window !== "undefined" && window.localStorage.getItem("crypto-strategy") === "victor"
+      ? "victor"
+      : "confluence",
+  );
+  const strategyRef = useRef(strategy);
+  useEffect(() => {
+    strategyRef.current = strategy;
+    try {
+      window.localStorage.setItem("crypto-strategy", strategy);
+    } catch {
+      /* private mode — keep working */
+    }
+  }, [strategy]);
+  // Latest closed 1h candles per symbol — the victor zones' MTF check.
+  // State (not a ref): the chart-zone memo reads it during render.
+  const [biasSets, setBiasSets] = useState<Record<string, Candle[]>>({});
+
   useEffect(() => {
     let cancelled = false;
     const run = () => {
@@ -531,6 +553,7 @@ export function CryptoMarketsWorkspace() {
               signal: TradeSignal;
               barTime: number;
               edge?: number;
+              strategy?: string;
             }[] = [];
             const pairBusyNow =
               trading &&
@@ -542,11 +565,14 @@ export function CryptoMarketsWorkspace() {
             // Higher-timeframe bias first — never take a scalp against the
             // 1h trend. "ranging" or unreadable HTF passes no judgment.
             let bias: Direction | "ranging" | undefined;
+            let htfClosed: Candle[] | undefined;
             const biasRow = rows.find((r) => r.tf === BIAS_TIMEFRAME);
             if (biasRow !== undefined && biasRow.res.ok && biasRow.res.data.candles.length > 0) {
               const s = biasRow.res.data.candles;
               const c = biasRow.res.data.hasFormingCandle ? s.slice(0, -1) : s;
               bias = analyzeCandles(c)?.trend.direction;
+              htfClosed = c;
+              if (vId === "binance") setBiasSets((p) => (p[sym] === c ? p : { ...p, [sym]: c }));
             }
             for (const { tf, res } of rows) {
               if (!res.ok || res.data.candles.length === 0) continue;
@@ -559,6 +585,32 @@ export function CryptoMarketsWorkspace() {
               // Entries are decided on CLOSED bars only — a pro waits for
               // the candle to print, never trades a half-formed signal.
               const cell = `${sym} ${tf}`;
+              const lastBar = closed[closed.length - 1].time;
+              // Victor mode — pure price action: pin bar at an MTF-aligned
+              // supply/demand zone, follow-up confirmation, SL at the pin's
+              // extreme, target the next opposing zone/swing.
+              if (strategyRef.current === "victor") {
+                const setup = victorSignal(closed, htfClosed);
+                if (setup === undefined) {
+                  scanWhyRef.current[cell] = "no pin/zone setup";
+                } else if (newsOn) {
+                  scanWhyRef.current[cell] = "news blackout";
+                } else if (pairBusyNow) {
+                  scanWhyRef.current[cell] = "position open";
+                } else {
+                  scanWhyRef.current[cell] = `victor ${setup.signal.confidence}pts`;
+                  candidates.push({
+                    venue: vId,
+                    symbol: sym,
+                    timeframe: tf,
+                    signal: setup.signal,
+                    barTime: lastBar,
+                    edge: 0,
+                    strategy: "victor",
+                  });
+                }
+                continue;
+              }
               const a = analyzeCandles(closed);
               if (a === undefined) {
                 scanWhyRef.current[cell] = "warming up";
@@ -596,7 +648,6 @@ export function CryptoMarketsWorkspace() {
                   // Liquidity edge: a fresh confirmed sweep on the
                   // supporting side (sell-side taken → long) is where
                   // reversals are born — worth +0.5R in the ranking.
-                  const lastBar = closed[closed.length - 1].time;
                   const sweepSupport =
                     tech !== undefined &&
                     tech.sweeps.some(
@@ -781,10 +832,32 @@ export function CryptoMarketsWorkspace() {
     .slice(0, 6);
   const newsRisk = upcomingNews.find((e) => Math.abs(e.ms - now) <= 60 * 60_000);
 
+  // Victor zones for the charted symbol — strong = MTF-aligned.
+  const victorZones = useMemo(() => {
+    if (strategy !== "victor" || candles === undefined) return [];
+    const zones = swingZones(candles);
+    const htf = biasSets[symbol];
+    if (htf !== undefined) markStrong(zones, swingZones(htf));
+    return zones;
+  }, [strategy, candles, symbol, biasSets]);
+
   const signalOverlays = useMemo<ChartOverlay[]>(() => {
     if (!analysis) return [];
     const out: ChartOverlay[] = [];
-    analysis.zones.forEach((z, i) => {
+    if (strategy === "victor") {
+      victorZones.forEach((z, i) => {
+        out.push({
+          kind: "zone",
+          id: `vz-${i}`,
+          layer: "zones",
+          zoneType: z.kind,
+          upper: z.upper,
+          lower: z.lower,
+          label: `${z.strong ? "Strong " : ""}${z.kind} zone`,
+        });
+      });
+    } else {
+      analysis.zones.forEach((z, i) => {
       out.push({
         kind: "zone",
         id: `zone-${i}`,
@@ -795,6 +868,7 @@ export function CryptoMarketsWorkspace() {
         label: z.kind === "demand" ? "Demand zone" : "Supply zone",
       });
     });
+    }
     const s = analysis.signal;
     if (s.direction !== "wait") {
       const dir = s.direction;
@@ -841,7 +915,7 @@ export function CryptoMarketsWorkspace() {
       });
     }
     return out;
-  }, [analysis, openTrade]);
+  }, [analysis, openTrade, strategy, victorZones]);
 
   const signalMarkers = useMemo<ChartMarker[]>(() => {
     const s = analysis?.signal;
@@ -946,6 +1020,32 @@ export function CryptoMarketsWorkspace() {
             )}
           >
             {i.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Entry strategy — confluence vs Victor pure price action */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-subtle-foreground">Strategy</span>
+        {(
+          [
+            { id: "confluence", label: "Confluence" },
+            { id: "victor", label: "Victor — pin bar at S/D zone" },
+          ] as const
+        ).map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            onClick={() => setStrategy(m.id)}
+            aria-pressed={strategy === m.id}
+            className={cn(
+              "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
+              strategy === m.id
+                ? "border-accent bg-accent/10 text-foreground"
+                : "border-border text-subtle-foreground hover:bg-surface-hover hover:text-foreground",
+            )}
+          >
+            {m.label}
           </button>
         ))}
       </div>
@@ -1545,6 +1645,11 @@ export function CryptoMarketsWorkspace() {
                               <span className="ml-1.5 text-xs font-normal text-subtle-foreground">
                                 {VENUES[t.venue as VenueId]?.label ?? t.venue}
                               </span>
+                              {t.strategy === "victor" && (
+                                <Badge tone="developing" className="ml-1.5">
+                                  Victor
+                                </Badge>
+                              )}
                             </td>
                             <td className="py-2.5 pr-3">
                               <Badge tone={meta.tone}>
@@ -1655,6 +1760,11 @@ export function CryptoMarketsWorkspace() {
                               <span className="ml-1.5 text-xs font-normal text-subtle-foreground">
                                 {VENUES[t.venue as VenueId]?.label ?? t.venue}
                               </span>
+                              {t.strategy === "victor" && (
+                                <Badge tone="developing" className="ml-1.5">
+                                  Victor
+                                </Badge>
+                              )}
                             </td>
                             <td className="py-2.5 pr-3">
                               <Badge tone={DIR_META[t.direction].tone}>
