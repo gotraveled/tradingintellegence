@@ -318,6 +318,7 @@ export function CryptoMarketsWorkspace({
   const [scan, setScan] = useState<ScanState>({});
   const [trades, setTrades] = useState<TradeRecord[]>([]);
   const [alerts, setAlerts] = useState<TradeAlert[]>([]);
+  const [selectedTradeId, setSelectedTradeId] = useState<string | undefined>(undefined);
   const [bt, setBt] = useState<{ key: string; stats: BacktestStats } | undefined>(undefined);
   const [btBusy, setBtBusy] = useState(false);
   const [btStrategy, setBtStrategy] = useState<string>("confluence");
@@ -666,7 +667,7 @@ export function CryptoMarketsWorkspace({
               const m15v = tfSets.get(journalKey(vId, sym, "15m"));
               const vCell = `${sym} vic`;
               const setup =
-                m1 !== undefined ? victorSignal(m1, [m5 ?? [], m15v ?? []]) : undefined;
+                m1 !== undefined ? victorSignal(m1, [m1, m5 ?? [], m15v ?? []]) : undefined;
               if (m1 === undefined || setup === undefined) {
                 scanWhyRef.current[vCell] = m1 === undefined ? "no data" : "no pin/zone setup";
               } else if (newsOn) {
@@ -912,6 +913,7 @@ export function CryptoMarketsWorkspace({
     .filter((t) => t.status === "closed")
     .sort((a, b) => (b.exitTime ?? 0) - (a.exitTime ?? 0))
     .slice(0, 8);
+  const selectedTrade = trades.find((t) => t.id === selectedTradeId);
   const lastClose = candles?.[candles.length - 1]?.close;
   const markOf = (t: TradeRecord): number | undefined =>
     tradeKey(t) === currentKey && lastClose !== undefined
@@ -934,7 +936,7 @@ export function CryptoMarketsWorkspace({
   const victorCtx = ctxSets[symbol];
   const victorLive = useMemo(() => {
     if (strategy !== "victor" || victorCtx?.m1 === undefined) return undefined;
-    return victorSignal(victorCtx.m1, [victorCtx.m5 ?? [], victorCtx.m15 ?? []]);
+    return victorSignal(victorCtx.m1, [victorCtx.m1, victorCtx.m5 ?? [], victorCtx.m15 ?? []]);
   }, [strategy, victorCtx]);
   const victorLastPin =
     victorCtx?.m1 !== undefined && victorCtx.m1.length >= 2
@@ -957,14 +959,14 @@ export function CryptoMarketsWorkspace({
     [entryTape],
   );
 
-  // Victor zones for the charted symbol — measured on 5m+15m, strong
-  // only where the two context timeframes' zones overlap.
+  // Victor zones for the charted symbol — measured on 1m+5m+15m, strong
+  // only where zones from DIFFERENT timeframes overlap.
   const victorZones = useMemo(() => {
     if (strategy !== "victor") return [];
     const ctx = ctxSets[symbol];
     if (ctx === undefined) return [];
     return markStrongAcross(
-      [ctx.m5, ctx.m15].filter((c): c is Candle[] => c !== undefined).map(swingZones),
+      [ctx.m1, ctx.m5, ctx.m15].filter((c): c is Candle[] => c !== undefined).map(swingZones),
     );
   }, [strategy, symbol, ctxSets]);
 
@@ -1030,19 +1032,48 @@ export function CryptoMarketsWorkspace({
         });
       });
     }
-    // A running paper trade draws its live stop — the trailing SL after TP1.
-    if (openTrade) {
+    // Broker-style plan levels — the position on this chart draws its
+    // entry, live stop (trail/BE once TP1 banked), and both targets.
+    const planTrade =
+      openTrade ??
+      (selectedTrade !== undefined && tradeKey(selectedTrade) === currentKey
+        ? selectedTrade
+        : undefined);
+    if (planTrade) {
       out.push({
         kind: "level",
-        id: "journal-live-sl",
+        id: "jt-entry",
+        layer: "structure",
+        price: planTrade.entry,
+        label: "Entry",
+        direction: planTrade.direction,
+      });
+      out.push({
+        kind: "level",
+        id: "jt-sl",
         layer: "liquidity",
-        price: openTrade.stopLoss,
-        label: openTrade.tp1Hit ? "Trail SL" : "Open SL",
-        direction: openTrade.direction,
+        price: planTrade.stopLoss,
+        label:
+          planTrade.tp1Hit && planTrade.stopLoss === planTrade.entry
+            ? "SL → breakeven"
+            : planTrade.tp1Hit
+              ? "Trail SL"
+              : "Stop loss",
+        direction: planTrade.direction,
+      });
+      planTrade.targets.forEach((tgt, i) => {
+        out.push({
+          kind: "level",
+          id: `jt-tp-${i}`,
+          layer: "structure",
+          price: tgt.price,
+          label: `${tgt.label} · ${tgt.rr}R`,
+          direction: planTrade.direction,
+        });
       });
     }
     return out;
-  }, [analysis, openTrade, strategy, victorZones]);
+  }, [analysis, openTrade, selectedTrade, currentKey, strategy, victorZones]);
 
   const signalMarkers = useMemo<ChartMarker[]>(() => {
     const s = analysis?.signal;
@@ -1250,7 +1281,7 @@ export function CryptoMarketsWorkspace({
         <Card>
           <CardHeader
             title="Victor scalp — pin bar at supply/demand"
-            description="Pure price action. Zones measured on 5m + 15m; a zone is STRONG when both timeframes' zones overlap. Entry fires on a 1m pin bar whose tail rejects a strong zone, confirmed by the next candle. Stop = pin extreme, trailing to the 2nd candle back; target = next opposing zone."
+            description="Pure price action. Zones measured on 1m + 5m + 15m; a zone is STRONG when zones on different timeframes overlap. Entry fires on a 1m pin bar whose tail rejects a zone, confirmed by the next candle. Stop = pin extreme, trailing to the previous candle; target = next opposing swing, ≥1.5R."
             action={
               victorLive !== undefined && (
                 <Badge tone={DIR_META[victorLive.signal.direction as Direction].tone}>
@@ -2016,7 +2047,16 @@ export function CryptoMarketsWorkspace({
                         const pts = mark !== undefined ? pointsCaptured(t, mark) : undefined;
                         const meta = DIR_META[t.direction];
                         return (
-                          <tr key={t.id} className="border-b border-border last:border-b-0">
+                          <tr
+                            key={t.id}
+                            onClick={() =>
+                              setSelectedTradeId((cur) => (cur === t.id ? undefined : t.id))
+                            }
+                            className={cn(
+                              "cursor-pointer border-b border-border last:border-b-0 transition-colors hover:bg-surface-hover",
+                              selectedTradeId === t.id && "bg-surface-hover",
+                            )}
+                          >
                             <td className="py-2.5 pr-3 font-medium text-foreground">
                               {info?.label ?? t.symbol} · {t.timeframe}
                               <span className="ml-1.5 text-xs font-normal text-subtle-foreground">
@@ -2087,13 +2127,14 @@ export function CryptoMarketsWorkspace({
                             <td className="py-2.5">
                               <button
                                 type="button"
-                                onClick={() =>
+                                onClick={(e) => {
+                                  e.stopPropagation();
                                   updateTrades((prev) =>
                                     prev.map((x) =>
                                       x.id === t.id ? closePosition(x, mark, Date.now()) : x,
                                     ),
-                                  )
-                                }
+                                  );
+                                }}
                                 className="rounded border border-border px-2 py-0.5 text-xs text-subtle-foreground transition-colors hover:border-bearish/40 hover:text-bearish"
                               >
                                 Exit
@@ -2138,7 +2179,16 @@ export function CryptoMarketsWorkspace({
                         const pnl = r * (t.riskUsd ?? 0);
                         const pts = pointsCaptured(t);
                         return (
-                          <tr key={t.id} className="border-b border-border last:border-b-0">
+                          <tr
+                            key={t.id}
+                            onClick={() =>
+                              setSelectedTradeId((cur) => (cur === t.id ? undefined : t.id))
+                            }
+                            className={cn(
+                              "cursor-pointer border-b border-border last:border-b-0 transition-colors hover:bg-surface-hover",
+                              selectedTradeId === t.id && "bg-surface-hover",
+                            )}
+                          >
                             <td className="py-2.5 pr-3 font-medium text-foreground">
                               {info?.label ?? t.symbol} · {t.timeframe}
                               <span className="ml-1.5 text-xs font-normal text-subtle-foreground">

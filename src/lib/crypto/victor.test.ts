@@ -28,7 +28,7 @@ function entryTape(): Candle[] {
 
 /**
  * Context tape A: drop-base-rally leaves demand 94–96.5, rally-base-drop
- * leaves supply 109.5–112 — legs are ~6–12pt bodies on a 0.8pt flat tape.
+ * leaves supply 110.5–113 — legs are ~6–12pt bodies on a 0.8pt flat tape.
  */
 function ctxA(): Candle[] {
   const cs: Candle[] = [];
@@ -37,10 +37,10 @@ function ctxA(): Candle[] {
   cs[7] = candle(7 * BAR, 100.5, 101, 95, 95.5); // bearish leg-in
   cs[8] = candle(8 * BAR, 95.5, 96.5, 94, 96); // base candle → zone 94–96.5
   cs[9] = candle(9 * BAR, 96, 102, 95.5, 101.5); // bullish leg-out
-  // Rally-base-drop → supply zone = the base's 109.5–112 range
-  cs[14] = candle(14 * BAR, 100, 111.5, 99.5, 111); // bullish leg-in
-  cs[15] = candle(15 * BAR, 110.5, 112, 109.5, 110); // base candle → zone 109.5–112
-  cs[16] = candle(16 * BAR, 110, 110.5, 99, 99.5); // bearish leg-out
+  // Rally-base-drop → supply zone = the base's 110.5–113 range
+  cs[14] = candle(14 * BAR, 100, 112.5, 99.5, 112); // bullish leg-in
+  cs[15] = candle(15 * BAR, 111.5, 113, 110.5, 111); // base candle → zone 110.5–113
+  cs[16] = candle(16 * BAR, 111, 111.5, 99, 99.5); // bearish leg-out
   return cs;
 }
 
@@ -71,7 +71,7 @@ describe("swingZones", () => {
     const demand = zones.find((z) => z.kind === "demand");
     const supply = zones.find((z) => z.kind === "supply");
     expect(demand).toMatchObject({ lower: 94, upper: 96.5 });
-    expect(supply).toMatchObject({ lower: 109.5, upper: 112 });
+    expect(supply).toMatchObject({ lower: 110.5, upper: 113 });
   });
   it("drops zones price has closed through", () => {
     const cs = ctxA();
@@ -95,7 +95,7 @@ describe("victorSignal", () => {
     expect(s!.signal.direction).toBe("bullish");
     expect(s!.signal.entry).toBe(101.2); // follow-up close
     expect(s!.signal.stopLoss).toBe(95.5); // pin low — per spec
-    expect(s!.signal.targets[0].price).toBe(109.5); // supply zone edge
+    expect(s!.signal.targets[0].price).toBe(110.5); // supply zone edge
     expect(s!.signal.confidence).toBeGreaterThanOrEqual(80);
     expect(s!.zone.kind).toBe("demand");
     expect(s!.zone.strong).toBe(true);

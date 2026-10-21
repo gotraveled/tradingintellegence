@@ -65,7 +65,7 @@ const PIN_WICK_RATIO = 2;
 /** A wick "tags" a zone when it reaches this deep past the near edge. */
 const TAG_TOLERANCE = 0; // wick must actually enter the zone
 /** Minimum reward:risk to the first target. */
-const MIN_RR = 1;
+const MIN_RR = 1.5;
 /** Runner target when the path beyond TP1 is open. */
 const RUNNER_R = 2.5;
 
@@ -276,22 +276,22 @@ export function victorSignal(
     Math.min(14, entryCandles.length);
   if (risk < 0.5 * atr) return undefined;
 
-  // Target = next opposing level: nearest opposite-kind context-zone edge
-  // past entry, falling back to the nearest opposing entry-TF swing pivot.
-  const opposing = zones
-    .filter((z) => z.kind !== zone.kind)
-    .map((z) => (dir === "bullish" ? z.lower : z.upper))
+  // Target = next opposing swing high/low on the entry tape — the level
+  // where the reversal candle forms. Zone edges are only the fallback
+  // when no swing pivot stands ahead of entry.
+  const piv = swings(entryCandles)
+    .filter((p) => p.kind === (dir === "bullish" ? "high" : "low"))
+    .map((p) => p.price)
     .filter((p) => (dir === "bullish" ? p > entry : p < entry))
     .sort((a, b) => (dir === "bullish" ? a - b : b - a));
-  let tp1 = opposing[0];
+  let tp1 = piv[0];
   if (tp1 === undefined) {
-    // No zone ahead — aim at the nearest unbroken opposing swing pivot.
-    const piv = swings(entryCandles)
-      .filter((p) => p.kind === (dir === "bullish" ? "high" : "low"))
-      .map((p) => p.price)
+    const opposing = zones
+      .filter((z) => z.kind !== zone.kind)
+      .map((z) => (dir === "bullish" ? z.lower : z.upper))
       .filter((p) => (dir === "bullish" ? p > entry : p < entry))
       .sort((a, b) => (dir === "bullish" ? a - b : b - a));
-    tp1 = piv[0];
+    tp1 = opposing[0];
   }
   if (tp1 === undefined) return undefined;
   const rr1 = Math.abs(tp1 - entry) / risk;
@@ -358,7 +358,7 @@ export function victorSignal(
     ],
     reasons: [
       `Victor pin bar — ${dir === "bullish" ? "bullish rejection at demand" : "bearish rejection at supply"}`,
-      `Stop at pin ${dir === "bullish" ? "low" : "high"} ${stopLoss}, target next opposing zone`,
+      `Stop at pin ${dir === "bullish" ? "low" : "high"} ${stopLoss}, target next opposing swing`,
       zone.strong
         ? "Multi-timeframe aligned zone — level confirmed on 5m+15m"
         : "Single-timeframe zone — level confirmed on one context TF",
@@ -367,7 +367,7 @@ export function victorSignal(
     entry,
     stopLoss,
     targets: [
-      { label: "Next opposing zone", price: tp1, rr: Math.round(rr1 * 100) / 100 },
+      { label: "Next opposing swing", price: tp1, rr: Math.round(rr1 * 100) / 100 },
       { label: "Runner", price: tp2, rr: RUNNER_R },
     ],
     riskReward: Math.round(rr1 * 100) / 100,

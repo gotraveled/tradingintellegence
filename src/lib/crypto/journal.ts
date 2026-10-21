@@ -65,6 +65,10 @@ export interface TradeRecord {
   exitReason?: TradeExitReason;
   /** Blended R result: full exit R, or 0.5×TP1 + 0.5×exit when TP1 banked. */
   realizedR?: number;
+  /** The signal's reasoning at booking — "why this trade was taken". */
+  reasons?: string[];
+  /** What triggered the exit — stop/trail bar extreme, TP level, expiry. */
+  exitDetail?: string;
 }
 
 export interface DailyStats {
@@ -80,7 +84,9 @@ export interface DailyStats {
   winPct: number;
 }
 
-export const JOURNAL_STORAGE_KEY = "crypto-journal-v1";
+// v2 — bumped 2026-10-21 to wipe the pre-cost-gate book (fee-dominated
+// rows booked before the risk floor) and restart equity at $10k.
+export const JOURNAL_STORAGE_KEY = "crypto-journal-v2";
 const MAX_TRADES = 400;
 /** Re-booking an identical direction on the same market is suppressed for this many bars. */
 const DEDUP_BARS = 24;
@@ -293,6 +299,7 @@ export function registerSignal(
     targets: signal.targets.map((t) => ({ ...t })),
     confidence: signal.confidence,
     strategy,
+    reasons: signal.reasons,
     riskUsd: nextRiskUsd(trades),
     openedAt: now,
     entryBarTime: barTime,
@@ -353,7 +360,7 @@ export function closePosition(
   if (t.status !== "open") return t;
   const risk = Math.abs(t.entry - t.initialStopLoss);
   const price = mark ?? t.entry;
-  return finish(t, price, now, "manual", risk);
+  return finish(t, price, now, "manual", risk, `Closed manually at ${price}`);
 }
 
 /** Flatten every open position — one mark lookup per trade. */
@@ -371,6 +378,7 @@ function finish(
   exitBarTime: number,
   reason: TradeExitReason,
   risk: number,
+  detail?: string,
 ): TradeRecord {
   const sign = t.direction === "bullish" ? 1 : -1;
   const exitR = risk === 0 ? 0 : ((exitPrice - t.entry) * sign) / risk;
@@ -392,6 +400,7 @@ function finish(
     exitTime: exitBarTime,
     exitReason: reason,
     realizedR: Math.round(realizedR * 100) / 100,
+    ...(detail !== undefined ? { exitDetail: detail } : {}),
   };
 }
 
@@ -419,12 +428,36 @@ export function evaluateTrade(rec: TradeRecord, closedBars: Candle[]): TradeReco
 
     // Conservative ordering: the stop always loses ties against a target.
     const stopped = bull ? bar.low <= t.stopLoss : bar.high >= t.stopLoss;
-    if (stopped) return finish(t, t.stopLoss, bar.time, "stop", risk);
+    if (stopped) {
+      const trailed = t.stopLoss !== t.initialStopLoss;
+      const breakeven = t.tp1Hit && t.stopLoss === t.entry;
+      const where = bull ? `bar low ${bar.low}` : `bar high ${bar.high}`;
+      const how = breakeven
+        ? "breakeven stop"
+        : trailed
+          ? `trailed stop ${t.stopLoss} (initial ${t.initialStopLoss})`
+          : `stop ${t.stopLoss}`;
+      return finish(
+        t,
+        t.stopLoss,
+        bar.time,
+        "stop",
+        risk,
+        `Stopped out — ${where} hit the ${how}`,
+      );
+    }
 
     const hitTp2 = tp2 !== undefined && (bull ? bar.high >= tp2 : bar.low <= tp2);
     if (hitTp2) {
       t.tp1Hit = true; // price necessarily passed TP1
-      return finish(t, tp2, bar.time, "target", risk);
+      return finish(
+        t,
+        tp2,
+        bar.time,
+        "target",
+        risk,
+        `TP2 runner target ${tp2} hit — ${bull ? "high" : "low"} of bar reached ${bull ? bar.high : bar.low}`,
+      );
     }
     const hitTp1 = tp1 !== undefined && (bull ? bar.high >= tp1 : bar.low <= tp1);
     if (hitTp1 && !t.tp1Hit) {
@@ -440,10 +473,12 @@ export function evaluateTrade(rec: TradeRecord, closedBars: Candle[]): TradeReco
       if (back !== undefined) {
         t.stopLoss = bull ? Math.max(t.stopLoss, back.low) : Math.min(t.stopLoss, back.high);
       }
-    // After TP1 the runner trails a chandelier stop — 3×ATR behind the
-    // extreme close since entry. ATR adapts the width to each pair's
-    // volatility (BTC vs a low-priced alt) where a fixed 1R could not;
-    // when ATR isn't computable yet it falls back to 1R.
+    // After TP1 the runner trails two ways — a chandelier stop (3×ATR
+    // behind the extreme close since entry) AND a candle-by-candle
+    // ratchet under/over the previous closed bar's extreme, same as
+    // Victor's scalp trail. The tighter of the two wins; the stop can
+    // never loosen. ATR adapts the chandelier width to each pair's
+    // volatility; when ATR isn't computable yet it falls back to 1R.
     } else if (t.tp1Hit) {
       const post = closedBars.filter((b) => b.time > t.entryBarTime && b.time <= bar.time);
       const atr = atrOf(post);
@@ -453,9 +488,20 @@ export function evaluateTrade(rec: TradeRecord, closedBars: Candle[]): TradeReco
       const width = atr !== undefined ? 3 * atr : risk;
       const trail = bull ? extreme - width : extreme + width;
       t.stopLoss = bull ? Math.max(t.stopLoss, trail) : Math.min(t.stopLoss, trail);
+      const back = post[post.length - 2];
+      if (back !== undefined) {
+        t.stopLoss = bull ? Math.max(t.stopLoss, back.low) : Math.min(t.stopLoss, back.high);
+      }
     }
     if (t.barsHeld >= EXPIRY_BARS) {
-      return finish(t, bar.close, bar.time, "expired", risk);
+      return finish(
+        t,
+        bar.close,
+        bar.time,
+        "expired",
+        risk,
+        `No resolution after ${t.barsHeld} bars — exited at market ${bar.close}`,
+      );
     }
   }
   return t;
