@@ -83,6 +83,10 @@ function InstrumentRow({ asset }: { asset: Asset }) {
 /** Shared layout for "Global Markets" and each market segment. */
 export function MarketsWorkspace({ segment }: { segment?: MarketSegment }) {
   const markets = getNavItem(ROUTES.markets);
+  // Crypto and NSE/BSE India run on live public feeds — not provider-gated
+  // previews like the catalog segments.
+  const liveFeed = segment?.id === "crypto" || segment?.id === "indian-markets";
+  const module_ = liveFeed ? { ...markets, availability: "available" as const } : markets;
   const current = segment ? marketSegmentHref(segment.id) : ROUTES.markets;
   const label = segment?.label ?? "Global Markets";
   // Server-derived provider status — one call per render, no client fetch.
@@ -93,7 +97,7 @@ export function MarketsWorkspace({ segment }: { segment?: MarketSegment }) {
   return (
     <PageContainer>
       <PageHeader
-        module={markets}
+        module={module_}
         eyebrow={segment ? "Markets" : undefined}
         title={label}
         description={segment?.description ?? markets.description}
@@ -108,9 +112,11 @@ export function MarketsWorkspace({ segment }: { segment?: MarketSegment }) {
       )}
 
       {segment?.id === "crypto" ? (
-        // Live public feed — venue-specific quotes and candles, separate from the
-        // Polygon-gated provider layer above.
-        <CryptoMarketsWorkspace />
+        // Live public feed — Binance/Kraken crypto venues only.
+        <CryptoMarketsWorkspace venues={["binance", "kraken"]} initialVenue="binance" />
+      ) : segment?.id === "indian-markets" ? (
+        // Live NSE/BSE index feed — a separate market from crypto.
+        <CryptoMarketsWorkspace venues={["india"]} initialVenue="india" />
       ) : (
       <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
         <Card>

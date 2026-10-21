@@ -76,7 +76,10 @@ export const NAV_ITEMS: NavItem[] = [
     children: [
       { title: "Global Markets", href: ROUTES.markets },
       ...MARKET_SEGMENTS.map((segment) => ({
-        title: segment.label,
+        title:
+          segment.id === "crypto" || segment.id === "indian-markets"
+            ? `${segment.label} (live)`
+            : segment.label,
         href: marketSegmentHref(segment.id),
       })),
     ],

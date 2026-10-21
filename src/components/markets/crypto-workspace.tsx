@@ -22,7 +22,6 @@ import { Notice } from "@/components/ui/notice";
 import { analyzeCandles, type SignalAnalysis, type TradeSignal } from "@/lib/crypto/analysis";
 import {
   ACCOUNT_CAPITAL_USD,
-  clearTrades,
   closeAllPositions,
   closePosition,
   dailyStats,
@@ -66,6 +65,7 @@ import { fetchKrakenOhlc, fetchKrakenQuotes } from "@/lib/crypto/kraken/client";
 import { fetchIndiaKlines, fetchIndiaQuotes } from "@/lib/crypto/india/client";
 import {
   DEFAULT_INDIA_SYMBOL,
+  DEFAULT_INDIA_TIMEFRAME,
   INDIA_INTERVALS,
   INDIA_SESSION_UTC,
   INDIA_SYMBOLS,
@@ -113,6 +113,7 @@ interface VenueDef {
   label: string;
   symbols: readonly VenueSymbol[];
   defaultSymbol: string;
+  defaultTimeframe: Timeframe;
   intervals: { timeframe: Timeframe; label: string }[];
   symbolInfo(symbol: string): VenueSymbol | undefined;
   fetchQuotes(): Promise<CryptoResult<CryptoQuote[]>>;
@@ -133,6 +134,7 @@ const VENUES: Record<VenueId, VenueDef> = {
     label: BINANCE_VENUE,
     symbols: CRYPTO_SYMBOLS,
     defaultSymbol: DEFAULT_CRYPTO_SYMBOL,
+    defaultTimeframe: DEFAULT_CRYPTO_TIMEFRAME,
     intervals: CRYPTO_INTERVALS.map((i) => ({ timeframe: i.timeframe, label: i.label })),
     symbolInfo: cryptoSymbolInfo,
     fetchQuotes: () => fetchCryptoQuotes(CRYPTO_SYMBOLS.map((s) => s.symbol)),
@@ -165,6 +167,7 @@ const VENUES: Record<VenueId, VenueDef> = {
     label: KRAKEN_VENUE,
     symbols: KRAKEN_SYMBOLS,
     defaultSymbol: DEFAULT_KRAKEN_SYMBOL,
+    defaultTimeframe: DEFAULT_CRYPTO_TIMEFRAME,
     intervals: KRAKEN_INTERVALS.map((i) => ({ timeframe: i.timeframe, label: i.label })),
     symbolInfo: krakenSymbolInfo,
     fetchQuotes: () => fetchKrakenQuotes(),
@@ -192,6 +195,7 @@ const VENUES: Record<VenueId, VenueDef> = {
     label: INDIA_VENUE,
     symbols: INDIA_SYMBOLS,
     defaultSymbol: DEFAULT_INDIA_SYMBOL,
+    defaultTimeframe: DEFAULT_INDIA_TIMEFRAME,
     intervals: INDIA_INTERVALS.map((i) => ({ timeframe: i.timeframe, label: i.label })),
     symbolInfo: indiaSymbolInfo,
     fetchQuotes: fetchIndiaQuotes,
@@ -294,11 +298,18 @@ function fmtSignedPct(value: number | undefined): string {
 
 // ---------- component ----------
 
-export function CryptoMarketsWorkspace() {
-  const [venueId, setVenueId] = useState<VenueId>("binance");
+export function CryptoMarketsWorkspace({
+  venues = VENUE_ORDER,
+  initialVenue = "binance",
+}: {
+  /** Venue tabs offered in the UI. The paper-trade scan still covers every venue. */
+  venues?: VenueId[];
+  initialVenue?: VenueId;
+}) {
+  const [venueId, setVenueId] = useState<VenueId>(initialVenue);
   const venue = VENUES[venueId];
-  const [symbol, setSymbol] = useState<string>(venue.defaultSymbol);
-  const [timeframe, setTimeframe] = useState<Timeframe>(DEFAULT_CRYPTO_TIMEFRAME);
+  const [symbol, setSymbol] = useState<string>(VENUES[initialVenue].defaultSymbol);
+  const [timeframe, setTimeframe] = useState<Timeframe>(VENUES[initialVenue].defaultTimeframe);
   const [quotes, setQuotes] = useState<Record<string, CryptoQuote>>({});
   const [candlesSet, setCandlesSet] = useState<CryptoCandleSet | undefined>();
   const [restError, setRestError] = useState<string | undefined>();
@@ -309,6 +320,7 @@ export function CryptoMarketsWorkspace() {
   const [alerts, setAlerts] = useState<TradeAlert[]>([]);
   const [bt, setBt] = useState<{ key: string; stats: BacktestStats } | undefined>(undefined);
   const [btBusy, setBtBusy] = useState(false);
+  const [btStrategy, setBtStrategy] = useState<string>("confluence");
   const [btAll, setBtAll] = useState<
     { timeframe: Timeframe; rows: { symbol: string; stats: BacktestStats }[] } | undefined
   >(undefined);
@@ -374,7 +386,7 @@ export function CryptoMarketsWorkspace() {
     setTimeframe((tf) =>
       VENUES[next].intervals.some((i) => i.timeframe === tf)
         ? tf
-        : VENUES[next].intervals[0].timeframe,
+        : VENUES[next].defaultTimeframe,
     );
     setQuotes({});
     setCandlesSet(undefined);
@@ -889,11 +901,14 @@ export function CryptoMarketsWorkspace() {
 
   const currentKey = journalKey(venueId, symbol, timeframe);
   const openTrade = trades.find((t) => t.status === "open" && tradeKey(t) === currentKey);
-  const openTrades = trades.filter((t) => t.status === "open");
-  const stats = dailyStats(trades);
-  const byPair = symbolStats(trades);
-  const balance = equityOf(trades); // realized equity — closed trades only
-  const closedTrades = [...trades]
+  // Separate markets: this page's book is the subset of the shared journal
+  // on this market's venues. The scan still manages every open trade.
+  const pageTrades = trades.filter((t) => venues.includes(t.venue as VenueId));
+  const openTrades = pageTrades.filter((t) => t.status === "open");
+  const stats = dailyStats(pageTrades);
+  const byPair = symbolStats(pageTrades);
+  const balance = equityOf(pageTrades); // realized equity — closed trades only
+  const closedTrades = [...pageTrades]
     .filter((t) => t.status === "closed")
     .sort((a, b) => (b.exitTime ?? 0) - (a.exitTime ?? 0))
     .slice(0, 8);
@@ -902,7 +917,7 @@ export function CryptoMarketsWorkspace() {
     tradeKey(t) === currentKey && lastClose !== undefined
       ? lastClose
       : marks[tradeKey(t)];
-  const floating = floatingPnlUsd(trades, markOf);
+  const floating = floatingPnlUsd(pageTrades, markOf);
   const liveEquity = Math.round((balance + floating) * 100) / 100;
 
   // High-impact events: released in the last 30m or coming within 48h.
@@ -1061,7 +1076,7 @@ export function CryptoMarketsWorkspace() {
     <div className="space-y-5">
       {/* Venue + feed status */}
       <div className="flex flex-wrap items-center gap-2">
-        {VENUE_ORDER.map((id) => (
+        {venues.map((id) => (
           <button
             key={id}
             type="button"
@@ -1522,21 +1537,35 @@ export function CryptoMarketsWorkspace() {
               {trades.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => {
-                    clearTrades();
-                    setTrades([]);
-                  }}
+                  onClick={() =>
+                    updateTrades((prev) =>
+                      prev.filter((t) => !venues.includes(t.venue as VenueId)),
+                    )
+                  }
                   className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs text-subtle-foreground transition-colors hover:bg-surface-hover hover:text-foreground"
                 >
                   <Trash2 className="size-3.5" aria-hidden="true" />
                   Clear journal
                 </button>
               )}
+              <select
+                value={btStrategy}
+                onChange={(e) => setBtStrategy(e.target.value)}
+                aria-label="Backtest strategy"
+                className="rounded-md border border-border bg-surface px-2 py-1 text-xs text-subtle-foreground"
+              >
+                {STRATEGIES.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.label}
+                  </option>
+                ))}
+              </select>
               <button
                 type="button"
                 disabled={btBusy}
                 onClick={() => {
                   setBtBusy(true);
+                  const def = STRATEGIES.find((d) => d.id === btStrategy);
                   void Promise.all([
                     venue.fetchKlines(symbol, timeframe),
                     venue.fetchKlines(symbol, BIAS_TIMEFRAME),
@@ -1553,14 +1582,22 @@ export function CryptoMarketsWorkspace() {
                               : biasRes.data.candles
                             : undefined;
                         setBt({
-                          key: `${venueId}|${symbol}|${timeframe}`,
+                          key: `${venueId}|${symbol}|${timeframe}|${def?.id ?? "confluence"}`,
                           stats: backtestCandles(closed, {
                             venue: venueId,
                             symbol,
                             timeframe,
-                            smc: true,
-                            bias,
                             news: newsRef.current,
+                            // SMC veto + 1h bias stay Confluence-only —
+                            // other methods replay on their own rules so
+                            // results compare cleanly with the tournament.
+                            ...(def === undefined || def.id === "confluence"
+                              ? { smc: true, bias }
+                              : {}),
+                            strategy:
+                              def !== undefined && def.id !== "confluence"
+                                ? { name: def.id, signalFor: def.create() }
+                                : undefined,
                           }),
                         });
                       }
