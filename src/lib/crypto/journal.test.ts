@@ -117,18 +117,43 @@ describe("registerSignal — booking and dedup", () => {
     expect(added).toBeDefined();
   });
 
-  it("blocks a second timeframe while ANY trade is open on the pair", () => {
-    const { trades } = reg([]); // BTCUSDT 5m open
+  it("blocks a second timeframe for the SAME strategy while its trade is open", () => {
+    const { trades } = reg([]); // BTCUSDT 5m open (confluence — default)
     const again = registerSignal(trades, {
       venue: "binance",
       symbol: "BTCUSDT",
-      timeframe: "1h", // different timeframe, same pair
+      timeframe: "1h", // different timeframe, same pair, same strategy
       signal: signal(),
       barTime: T0 + TF_BAR,
       now: T0 + TF_BAR,
     });
     expect(again.added).toBeUndefined();
     expect(again.trades.length).toBe(1);
+  });
+
+  it("lets Victor and Confluence each hold one trade on the same pair", () => {
+    const { trades } = reg([]); // confluence BTCUSDT open
+    const vic = registerSignal(trades, {
+      venue: "binance",
+      symbol: "BTCUSDT",
+      timeframe: "1m",
+      signal: signal(),
+      barTime: T0 + TF_BAR,
+      now: T0 + TF_BAR,
+      strategy: "victor",
+    });
+    expect(vic.added).toBeDefined();
+    // …but a second Victor scalp on that pair is refused while it runs.
+    const dup = registerSignal(vic.trades, {
+      venue: "binance",
+      symbol: "BTCUSDT",
+      timeframe: "1m",
+      signal: signal(),
+      barTime: T0 + 2 * TF_BAR,
+      now: T0 + 2 * TF_BAR,
+      strategy: "victor",
+    });
+    expect(dup.added).toBeUndefined();
   });
 
   it("still allows a different pair while one is open", () => {
@@ -168,8 +193,8 @@ describe("registerSignal — booking and dedup", () => {
     expect(reg([], { now: day }).added).toBeDefined();
   });
 
-  it("stops the day after −3R cumulative", () => {
-    const losers = [1, 2, 3].map((i) => ({
+  it("keeps booking through drawdown — the paper journal has no loss caps", () => {
+    const losers = [1, 2, 3, 4].map((i) => ({
       ...reg([]).added!,
       id: `L${i}`,
       status: "closed" as const,
@@ -178,42 +203,20 @@ describe("registerSignal — booking and dedup", () => {
       exitTime: T0 + i * TF_BAR,
       realizedR: -1,
     }));
-    // 3 × −1R today → daily stop reached.
-    expect(entryBlockReason(losers, T0 + 4 * TF_BAR)).toContain("daily stop");
-    expect(reg(losers, { now: T0 + 4 * TF_BAR }).added).toBeUndefined();
+    // −4R down on the day and a fresh setup still books — no daily stop,
+    // no loss-streak cooldown on a paper account.
+    expect(entryBlockReason(losers, T0 + 5 * TF_BAR)).toBeUndefined();
+    expect(
+      reg(losers, { now: T0 + 30 * TF_BAR, barTime: T0 + 30 * TF_BAR }).added,
+    ).toBeDefined();
   });
 
-  it("cools down after 3 consecutive losses, resets after a win", () => {
-    const mk = (i: number, r: number, exitTime: number): TradeRecord => ({
-      ...reg([]).added!,
-      id: `C${i}`,
-      status: "closed",
-      exitPrice: r < 0 ? 95 : 110,
-      exitReason: r < 0 ? "stop" : "target",
-      exitTime,
-      realizedR: r,
-    });
-    // −0.5R each: streak fires without tripping the −3R daily stop first.
-    const three = [mk(1, -0.5, T0), mk(2, -0.5, T0 + TF_BAR), mk(3, -0.5, T0 + 2 * TF_BAR)];
-    const soon = T0 + 3 * TF_BAR; // minutes after the 3rd loss
-    expect(entryBlockReason(three, soon)).toContain("cooldown");
-    // Cooldown window passed (4h+ later) → allowed again.
-    expect(entryBlockReason(three, T0 + 5 * 60 * 60_000)).toBeUndefined();
-    // A win after the streak resets it.
-    const withWin = [...three, mk(4, 1.5, T0 + 3 * TF_BAR)];
-    expect(entryBlockReason(withWin, T0 + 4 * TF_BAR)).toBeUndefined();
-  });
-
-  it("caps concurrent same-direction positions at 2 — correlated bets count once", () => {
+  it("allows same-direction positions across pairs — no correlation cap", () => {
     const btc = reg([]).added!;
     const eth = reg([], { symbol: "ETHUSDT" }).added!;
-    // Two bullish positions open → a third bullish pair is refused.
+    // Third bullish pair still books — pairs are independent slots.
     const sol = reg([btc, eth], { symbol: "SOLUSDT" });
-    expect(sol.added).toBeUndefined();
-    expect(entryBlockReason([btc, eth], T0, "bullish")).toContain("same-direction");
-    // …but a bearish position on a fourth pair still books (hedge, not stack).
-    const short = reg([btc, eth], { symbol: "XRPUSDT", signal: signal("bearish") });
-    expect(short.added).toBeDefined();
+    expect(sol.added).toBeDefined();
   });
 
   it("allows the opposite direction immediately", () => {

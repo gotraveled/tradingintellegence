@@ -9,7 +9,7 @@ import { DemoNotice, SourceBadge } from "@/components/shared/demo";
 import { LocalDateTime } from "@/components/shared/local-date-time";
 import { Section } from "@/components/shared/section";
 import { buttonVariants } from "@/components/ui/button";
-import { getNavItem, ROUTES, scannerViewHref } from "@/lib/constants";
+import { getNavItem, marketSegmentHref, ROUTES, scannerViewHref } from "@/lib/constants";
 import { getMarketRegimes, getOpportunities } from "@/lib/services/intelligence";
 
 export const metadata: Metadata = { title: "Dashboard" };
@@ -46,6 +46,28 @@ export default function DashboardPage() {
         />
         {isDemo ? <DemoNotice /> : null}
       </div>
+
+      <Link
+        href={marketSegmentHref("crypto")}
+        className="group block rounded-lg border border-accent/40 bg-accent/5 p-5 transition-colors hover:bg-accent/10"
+      >
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold text-foreground">
+              Live trading desk — Victor · Confluence
+            </p>
+            <p className="mt-0.5 text-sm text-subtle-foreground">
+              Binance Spot and NSE/BSE indices scanned every minute: 1m pin-bar scalps at
+              leg–base–leg zones, 5m confluence swings with SMC context — sessions, charts,
+              and the live paper journal are on the trading page.
+            </p>
+          </div>
+          <ArrowRight
+            aria-hidden="true"
+            className="size-5 shrink-0 text-subtle-foreground transition-transform group-hover:translate-x-0.5"
+          />
+        </div>
+      </Link>
 
       <Section
         title="Market Regime"

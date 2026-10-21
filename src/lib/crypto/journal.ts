@@ -115,21 +115,14 @@ export function timeframeMs(tf: Timeframe): number {
  * overnight chop is where 5m/15m scalps bleed. Entries allowed 06:00–21:59 UTC.
  */
 export const ENTRY_SESSION_UTC: readonly [number, number] = [6, 22];
-/** Stop taking entries for the rest of the day at cumulative −3R. */
-export const DAILY_STOP_R = 3;
-/** After this many consecutive losses, cool down before re-entering. */
-export const LOSS_STREAK_LIMIT = 3;
-export const LOSS_COOLDOWN_MS = 4 * 60 * 60 * 1000;
-/**
- * Correlation cap — BTC, ETH and SOL longs are one bet, not three. The
- * daily stop only sees CLOSED losses, so without this five same-direction
- * pairs can all stop out at once and blow through −3R in one candle.
- */
-export const MAX_SAME_DIRECTION = 2;
 
 /**
- * Account-level circuit breakers — a pro stops when the day isn't his.
- * Returns WHY entries are blocked, or undefined when the account may trade.
+ * Entry gate — session hours only. This is a paper-trading journal, so
+ * there is deliberately NO daily-loss stop, loss-streak cooldown, or
+ * correlated-direction cap: the journal keeps booking whatever the
+ * engines qualify, and the per-(pair, strategy) slot in `registerSignal`
+ * is the only concurrency limit. Returns WHY entries are blocked, or
+ * undefined when the account may trade.
  */
 export function entryBlockReason(
   trades: readonly TradeRecord[],
@@ -141,46 +134,15 @@ export function entryBlockReason(
   if (hour < sessionUtc[0] || hour >= sessionUtc[1]) {
     return `outside ${sessionUtc[0]}:00–${sessionUtc[1]}:00 UTC session`;
   }
-  if (
-    direction !== undefined &&
-    trades.filter((t) => t.status === "open" && t.direction === direction).length >=
-      MAX_SAME_DIRECTION
-  ) {
-    return `${MAX_SAME_DIRECTION} same-direction positions already open`;
-  }
-  const day = new Date(now).toISOString().slice(0, 10);
-  const todayR = trades
-    .filter(
-      (t) =>
-        t.exitTime !== undefined &&
-        new Date(t.exitTime).toISOString().slice(0, 10) === day,
-    )
-    .reduce((s, t) => s + (t.realizedR ?? 0), 0);
-  if (todayR <= -DAILY_STOP_R) return `daily stop −${DAILY_STOP_R}R reached`;
-  const closed = trades
-    .filter((t) => t.status === "closed" && t.exitTime !== undefined)
-    .sort((a, b) => b.exitTime! - a.exitTime!);
-  let streak = 0;
-  for (const t of closed) {
-    if ((t.realizedR ?? 0) < 0) streak += 1;
-    else break;
-  }
-  if (
-    streak >= LOSS_STREAK_LIMIT &&
-    closed[0] !== undefined &&
-    now - closed[0].exitTime! < LOSS_COOLDOWN_MS
-  ) {
-    return `cooldown after ${streak} consecutive losses`;
-  }
   return undefined;
 }
 
 /**
- * Minimum confluence score to book a trade. Signals need ≥4/5 factors to
- * fire at all, so 80 is the effective floor — the gate documents that the
- * journal only trades top-quality setups, never marginal ones.
+ * Minimum confluence score to book a trade — the pooled-confirmation
+ * floor (≥3 confirmations) can produce a score as low as ~40, so the
+ * journal's gate matches that floor rather than demanding an 80.
  */
-export const MIN_ENTRY_SCORE = 80;
+export const MIN_ENTRY_SCORE = 40;
 
 /**
  * Cost model — Binance spot taker fee (~0.1%) plus slippage buffer, charged
@@ -287,9 +249,19 @@ export function registerSignal(
   ) {
     return { trades };
   }
-  // One open trade per PAIR (venue+symbol), not per timeframe — a trader
-  // picks the best chart for a pair and stays out until it resolves.
-  if (trades.some((t) => t.status === "open" && t.venue === venue && t.symbol === symbol)) {
+  // One open trade per (PAIR, STRATEGY) — Victor's 1m scalp and the
+  // Confluence 5m swing may each hold one position on the same pair at
+  // once; pairs themselves are unlimited.
+  const strat = strategy ?? "confluence";
+  if (
+    trades.some(
+      (t) =>
+        t.status === "open" &&
+        t.venue === venue &&
+        t.symbol === symbol &&
+        (t.strategy ?? "confluence") === strat,
+    )
+  ) {
     return { trades };
   }
   const key = journalKey(venue, symbol, timeframe);

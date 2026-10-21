@@ -12,12 +12,15 @@ const BAR = 300_000; // 5m
 const flat = (t: number) => candle(t, 100, 100.4, 99.6, 100.1);
 
 /**
- * Entry-tf tape (1m semantics): a bullish pin whose tail dips to 95.5 at
- * idx33, confirmed by a green close at idx34.
+ * Entry-tf tape (1m semantics): morning star at 30–32, then a bullish pin
+ * whose tail dips to 95.5 at idx33, confirmed by a green close at idx34.
  */
 function entryTape(): Candle[] {
   const cs: Candle[] = [];
   for (let i = 0; i < 35; i += 1) cs.push(flat(i * BAR));
+  cs[30] = candle(30 * BAR, 100.6, 100.8, 99, 99.4); // strong red — star leg 1
+  cs[31] = candle(31 * BAR, 99.4, 99.6, 99.1, 99.5); // small star body
+  cs[32] = candle(32 * BAR, 99.5, 101, 99.4, 100.4); // green, closes over leg-1 mid
   cs[33] = candle(33 * BAR, 100.2, 100.6, 95.5, 100.3); // bullish pin
   cs[34] = candle(34 * BAR, 100.3, 101.5, 100, 101.2); // follow-up confirms
   return cs;
@@ -98,8 +101,13 @@ describe("victorSignal", () => {
     expect(s!.zone.strong).toBe(true);
   });
 
-  it("refuses when context zones don't overlap — weak levels don't trade", () => {
-    expect(victorSignal(entryTape(), [ctxA(), ctxB(-20)])).toBeUndefined();
+  it("emits on a single-context zone too — weak MTF agreement lowers confidence", () => {
+    const s = victorSignal(entryTape(), [ctxA(), ctxB(-20)]); // B zone shifted away
+    expect(s).toBeDefined();
+    expect(s!.zone.strong).toBe(false); // no cross-TF overlap
+    expect(s!.signal.confidence).toBeLessThan(
+      victorSignal(entryTape(), [ctxA(), ctxB()])!.signal.confidence,
+    );
   });
 
   it("refuses with a single context timeframe — MTF proof needs two", () => {
@@ -116,5 +124,20 @@ describe("victorSignal", () => {
     const cs = entryTape();
     cs[33] = candle(33 * BAR, 100.2, 100.6, 97.5, 100.3); // tail at 97.5 — above zone edge 96.5
     expect(victorSignal(cs, [ctxA(), ctxB()])).toBeUndefined();
+  });
+
+  it("emits without an independent pattern — pin+follow+zone is the core triple", () => {
+    const cs = entryTape();
+    // Erase the morning star — flat bars carry no pattern evidence.
+    cs[30] = flat(30 * BAR);
+    cs[31] = flat(31 * BAR);
+    cs[32] = flat(32 * BAR);
+    const s = victorSignal(cs, [ctxA(), ctxB()]);
+    expect(s).toBeDefined();
+    expect(s!.signal.factors.find((f) => f.label === "Pattern")?.agrees).toBe(false);
+    // …but the pattern bonus is missing, so the score is lower.
+    expect(s!.signal.confidence).toBeLessThan(
+      victorSignal(entryTape(), [ctxA(), ctxB()])!.signal.confidence,
+    );
   });
 });

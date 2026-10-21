@@ -1,4 +1,5 @@
 import type { Candle, Direction, Price } from "@/lib/types";
+import { patternConfirmations } from "./patterns";
 
 /**
  * Deterministic signal engine over real OHLCV candles — the same data the
@@ -107,7 +108,7 @@ const VOL_PERIOD = 20;
 /** Signal bar must carry at least 1.5× the average volume — no dead-volume entries. */
 const MIN_VOL_RATIO = 1.5;
 
-function ema(values: number[], period: number): number[] {
+export function ema(values: number[], period: number): number[] {
   if (values.length < period) return [];
   const k = 2 / (period + 1);
   const out: number[] = [];
@@ -120,7 +121,7 @@ function ema(values: number[], period: number): number[] {
   return out;
 }
 
-function atr(candles: Candle[], period: number): number {
+export function atr(candles: Candle[], period: number): number {
   if (candles.length < period + 1) return 0;
   let sum = 0;
   for (let i = candles.length - period; i < candles.length; i += 1) {
@@ -151,7 +152,7 @@ function rsi(closes: number[], period: number): number {
  * every gain is handed back — the classic sideways signature EMA spacing
  * alone can't catch.
  */
-function efficiencyRatio(closes: number[], period: number): number {
+export function efficiencyRatio(closes: number[], period: number): number {
   const n = closes.length;
   if (n < period + 1) return 1; // insufficient history → don't veto
   const net = Math.abs(closes[n - 1] - closes[n - 1 - period]);
@@ -402,18 +403,19 @@ export function analyzeCandles(candles: Candle[]): SignalAnalysis | undefined {
     signal.confidence = signal.factors.reduce((sum, f) => sum + f.points, 0);
     signal.reasons = reasons;
 
-    // Only propose when location, reward, structure and ≥4/5 factors
-    // agree. Structure is MANDATORY — trading against rotating or opposing
-    // swings is exactly the sideways/no-edge behaviour this engine avoids.
-    // Volume is a hard gate too: a setup printed on dead volume is a
-    // fakeout candidate, not an entry.
+    // Only propose when location and reward are real AND ≥3 confirmations
+    // from the pooled evidence — the five scored factors plus agreeing
+    // candlestick/chart patterns (star/engulfing/hammer = 1 each; a W
+    // bottom or M top = 2, two defended swings). Whatever fires first
+    // counts; volume is the last hard gate (dead-volume breakouts fake out).
     const volOk = volRatio === undefined || volRatio >= MIN_VOL_RATIO;
+    const pats = patternConfirmations(candles, side);
+    const confirmations = agreed + pats.score;
     if (
       nearEntry &&
       entryZone &&
       rrOk &&
-      agreed >= 4 &&
-      structAgrees &&
+      confirmations >= 3 &&
       volOk &&
       stopLoss !== undefined
     ) {
@@ -425,15 +427,19 @@ export function analyzeCandles(candles: Candle[]): SignalAnalysis | undefined {
         { label: "TP1", price: tp1, rr: Math.round(rr1 * 10) / 10 },
         { label: "TP2", price: tp2, rr: 2.5 },
       ];
+      if (pats.names.length > 0) {
+        signal.reasons.push(`Pattern confirmation: ${pats.names.join(", ")}`);
+      }
+      signal.reasons.push(`${confirmations} confirmations agreed`);
     } else if (agreed >= 4 && !structAgrees) {
       signal.reasons.push(
         `Setup scores ${agreed}/5 but swing structure is ${structureNote} — no trade against rotating structure.`,
       );
-    } else if (agreed >= 4 && structAgrees && nearEntry && rrOk && !volOk) {
+    } else if (confirmations >= 3 && structAgrees && nearEntry && rrOk && !volOk) {
       signal.reasons.push(
         `Setup agrees but the signal bar traded only ${volRatio!.toFixed(1)}× average volume — dead-volume moves fake out, so no signal.`,
       );
-    } else if (agreed >= 4 && !nearEntry) {
+    } else if (confirmations >= 3 && !nearEntry) {
       signal.reasons.push(
         `Direction agrees (${agreed}/5 factors) but price is not at a ${side === "bullish" ? "demand" : "supply"} zone — entry location missing, so no signal.`,
       );

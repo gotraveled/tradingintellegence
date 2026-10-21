@@ -1,5 +1,6 @@
 import type { Candle, Direction, Price } from "@/lib/types";
 import type { TradeSignal } from "./analysis";
+import { patternConfirmations } from "./patterns";
 
 /**
  * "Victor" — pure price-action entries, no indicators.
@@ -9,15 +10,17 @@ import type { TradeSignal } from "./analysis";
  * (5m + 15m). A level only counts as STRONG when zones from two different
  * context timeframes overlap — multi-TF agreement is what makes it tradeable.
  *
- * Setup (all four must hold, evaluated on closed bars only):
+ * Setup — THREE core confirmations, evaluated on closed bars only:
  *  1. Pin bar on the entry TF — rejection wick ≥ 2× the body AND ≥ 2× the
  *     opposing wick — whose tail poked into a context zone and whose
- *     close pulled back out of it.
+ *     close pulled back out of it (the zone rejection IS confirmation 1).
  *  2. Follow-up: the NEXT closed entry candle confirms — same direction
  *     colour and a close beyond the pin bar's close.
- *  3. The zone is STRONG — same-kind zones on separate context TFs
- *     overlap it.
- *  4. Risk:reward ≥ 1R to the target.
+ *  3. Risk:reward ≥ 1R to the target.
+ *  Bonuses (confidence, not gates): a STRONG zone — same-kind zones on
+ *  separate context TFs overlapping — and independent candlestick/chart
+ *  patterns agreeing (star, engulfing, hammer, three-soldiers on the
+ *  entry tape, or a W bottom / M top on the 5m context).
  *
  * Entry  = follow-up candle's close (the signal bar).
  * Stop   = pin bar's extreme (low for longs, high for shorts) — the wick
@@ -248,7 +251,17 @@ export function victorSignal(
       dir === "bullish" ? pin.close >= z.lower : pin.close <= z.upper;
     return entered && closedOut;
   });
-  if (zone === undefined || !zone.strong) return undefined;
+  if (zone === undefined) return undefined;
+
+  // Bonus confirmations — a zone confirmed on BOTH context TFs and any
+  // agreeing pattern (pre-pin stars/engulfing/W on the entry tape, or a
+  // pattern printed on the first context TF) raise confidence; they are
+  // not required now that pin+follow+zone+RR form the three-confirmation
+  // core.
+  const prior = patternConfirmations(entryCandles.slice(0, -2), dir);
+  const ctxPat = patternConfirmations(usable[0], dir);
+  const patScore = prior.score + ctxPat.score;
+  const patNames = [...prior.names, ...ctxPat.names];
 
   const entry = follow.close;
   const stopLoss = dir === "bullish" ? pin.low : pin.high;
@@ -283,9 +296,10 @@ export function victorSignal(
   const tail = dir === "bullish" ? Math.min(pin.open, pin.close) - pin.low : pin.high - Math.max(pin.open, pin.close);
   const confidence = Math.min(
     100,
-    80 + (tail >= 3 * Math.max(body, 1e-12) ? 5 : 0) + (zone.touches >= 1 ? 5 : 0) +
+    60 + (zone.strong ? 15 : 0) +
+      (tail >= 3 * Math.max(body, 1e-12) ? 5 : 0) + (zone.touches >= 1 ? 5 : 0) +
       (entryCandles.length - 1 - zone.pivotIndex <= 80 ? 5 : 0) +
-      (rr1 >= 1.5 ? 5 : 0),
+      (rr1 >= 1.5 ? 5 : 0) + (patScore >= 2 ? 10 : patScore >= 1 ? 5 : 0),
   );
 
   const tp2 = dir === "bullish" ? entry + RUNNER_R * risk : entry - RUNNER_R * risk;
@@ -308,11 +322,13 @@ export function victorSignal(
         note: `${zone.kind} zone tagged, ${zone.touches} prior touches`,
       },
       {
-        label: "MTF alignment",
-        agrees: true,
-        points: 20,
+        label: "MTF zone",
+        agrees: zone.strong,
+        points: zone.strong ? 20 : 0,
         weight: 20,
-        note: "Zone overlaps a higher-timeframe zone — strong level",
+        note: zone.strong
+          ? "Zone overlaps a higher-timeframe zone — strong level"
+          : "Zone on one context TF only — weak level",
       },
       {
         label: "Follow-up",
@@ -321,11 +337,24 @@ export function victorSignal(
         weight: 20,
         note: "Confirmation candle closed beyond the pin",
       },
+      {
+        label: "Pattern",
+        agrees: patScore > 0,
+        points: patScore > 0 ? 20 : 0,
+        weight: 20,
+        note:
+          patScore > 0
+            ? `Confirmed by ${patNames.join(", ")}`
+            : "No extra pattern printed",
+      },
     ],
     reasons: [
       `Victor pin bar — ${dir === "bullish" ? "bullish rejection at demand" : "bearish rejection at supply"}`,
       `Stop at pin ${dir === "bullish" ? "low" : "high"} ${stopLoss}, target next opposing zone`,
-      "Multi-timeframe aligned zone — level confirmed on 5m+15m",
+      zone.strong
+        ? "Multi-timeframe aligned zone — level confirmed on 5m+15m"
+        : "Single-timeframe zone — level confirmed on one context TF",
+      ...(patNames.length > 0 ? [`Pattern confirmation: ${patNames.join(", ")}`] : []),
     ],
     entry,
     stopLoss,

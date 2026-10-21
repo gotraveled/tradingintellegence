@@ -78,6 +78,12 @@ function pullbackToDemand(): Candle[] {
       ),
     );
   }
+  // Tail: a small red bar, then a bullish engulfing hammer — gives the
+  // pattern gate its ≥2 confirmation points on the bullish side.
+  const tail = candles[candles.length - 1];
+  const r = tail.time + 60_000;
+  candles.push(candle(r, base - 2.2, base - 1.95, base - 2.45, base - 2.35));
+  candles.push(candle(r + 60_000, base - 2.5, base - 1.75, base - 3.6, base - 2.0));
   return candles;
 }
 

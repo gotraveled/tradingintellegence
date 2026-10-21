@@ -1,5 +1,5 @@
 import type { Candle, Timeframe } from "@/lib/types";
-import { analyzeCandles } from "./analysis";
+import { analyzeCandles, type TradeSignal } from "./analysis";
 import { analyzeTechnicals } from "./technicals";
 import {
   entryBlockReason,
@@ -38,6 +38,16 @@ export interface BacktestOptions {
   bias?: Candle[];
   /** High-impact events for the news guard — the same list live reads. */
   news?: NewsGuardEvent[];
+  /**
+   * Pluggable entry method for the strategy tournament — overrides the
+   * default Confluence engine. Management, costs, and journal gates stay
+   * identical so the comparison is honest.
+   */
+  strategy?: {
+    /** Journal tag stored on booked trades. */
+    name: string;
+    signalFor: (hist: Candle[]) => TradeSignal | undefined;
+  };
 }
 
 export interface BacktestStats {
@@ -101,14 +111,18 @@ export function backtestCandles(
     trades = trades.map((t) => evaluateTrade(t, hist));
     if (trades.some((t) => t.status === "open")) continue;
 
-    // 2. Ask the engine.
-    const a = analyzeCandles(hist);
-    if (a === undefined || a.signal.direction === "wait") continue;
+    // 2. Ask the engine — the tournament strategy when one is supplied,
+    //    otherwise the default Confluence analysis.
+    const signal =
+      opts.strategy !== undefined
+        ? opts.strategy.signalFor(hist)
+        : analyzeCandles(hist)?.signal;
+    if (signal === undefined || signal.direction === "wait") continue;
 
     // 3. Same SMC veto the live scan applies.
     if (smc) {
       const tech = analyzeTechnicals(hist, symbol, timeframe);
-      const dir = a.signal.direction;
+      const dir = signal.direction;
       if (
         tech !== undefined &&
         (tech.trend === "range" ||
@@ -133,7 +147,7 @@ export function backtestCandles(
         }
       }
       if (usable >= 0) {
-        const dir = a.signal.direction;
+        const dir = signal.direction;
         const b = analyzeCandles(opts.bias.slice(0, usable + 1))?.trend.direction;
         if ((b === "bullish" || b === "bearish") && b !== dir) {
           blockedEntries += 1;
@@ -148,9 +162,8 @@ export function backtestCandles(
       continue;
     }
 
-    // 6. Session + circuit breakers — same gate live uses, including the
-    //    same-direction concentration cap.
-    if (entryBlockReason(trades, bar.time, a.signal.direction) !== undefined) {
+    // 6. Session gate — same check live uses.
+    if (entryBlockReason(trades, bar.time, signal.direction) !== undefined) {
       blockedEntries += 1;
       continue;
     }
@@ -160,9 +173,10 @@ export function backtestCandles(
       venue,
       symbol,
       timeframe,
-      signal: a.signal,
+      signal,
       barTime: bar.time,
       now: bar.time,
+      strategy: opts.strategy?.name ?? "confluence",
     }).trades;
   }
 
