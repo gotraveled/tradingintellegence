@@ -135,10 +135,11 @@ export function entryBlockReason(
   trades: readonly TradeRecord[],
   now: number,
   direction?: Direction,
+  sessionUtc: readonly [number, number] = ENTRY_SESSION_UTC,
 ): string | undefined {
   const hour = new Date(now).getUTCHours();
-  if (hour < ENTRY_SESSION_UTC[0] || hour >= ENTRY_SESSION_UTC[1]) {
-    return `outside ${ENTRY_SESSION_UTC[0]}:00–${ENTRY_SESSION_UTC[1]}:00 UTC session`;
+  if (hour < sessionUtc[0] || hour >= sessionUtc[1]) {
+    return `outside ${sessionUtc[0]}:00–${sessionUtc[1]}:00 UTC session`;
   }
   if (
     direction !== undefined &&
@@ -271,16 +272,18 @@ export function registerSignal(
     barTime: number;
     now: number;
     strategy?: string;
+    /** Venue entry session in UTC hours — defaults to the crypto window. */
+    sessionUtc?: readonly [number, number];
   },
 ): { trades: TradeRecord[]; added?: TradeRecord } {
-  const { venue, symbol, timeframe, signal, barTime, now, strategy } = params;
+  const { venue, symbol, timeframe, signal, barTime, now, strategy, sessionUtc } = params;
   if (
     signal.direction === "wait" ||
     signal.entry === undefined ||
     signal.stopLoss === undefined ||
     signal.targets.length === 0 ||
     signal.confidence < MIN_ENTRY_SCORE ||
-    entryBlockReason(trades, now, signal.direction) !== undefined
+    entryBlockReason(trades, now, signal.direction, sessionUtc) !== undefined
   ) {
     return { trades };
   }
@@ -336,6 +339,8 @@ export function registerBestSignal(
     /** Situational bonus added to RR when ranking (e.g. fresh liquidity sweep). */
     edge?: number;
     strategy?: string;
+    /** Venue entry session in UTC hours — defaults to the crypto window. */
+    sessionUtc?: readonly [number, number];
   }[],
   now: number,
 ): { trades: TradeRecord[]; added?: TradeRecord } {

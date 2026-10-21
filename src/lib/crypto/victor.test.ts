@@ -23,20 +23,31 @@ function entryTape(): Candle[] {
   return cs;
 }
 
-/** Context tape A: demand zone 94–96.5 (@10) + supply zone 109.5–112 (@15). */
+/**
+ * Context tape A: drop-base-rally leaves demand 94–96.5, rally-base-drop
+ * leaves supply 109.5–112 — legs are ~6–12pt bodies on a 0.8pt flat tape.
+ */
 function ctxA(): Candle[] {
   const cs: Candle[] = [];
   for (let i = 0; i < 35; i += 1) cs.push(flat(i * BAR));
-  cs[10] = candle(10 * BAR, 96.5, 97, 94, 96); // pivot low → demand 94–96.5
-  cs[15] = candle(15 * BAR, 109.5, 112, 109, 110); // pivot high → supply 109.5–112
+  // Drop-base-rally → demand zone = the base's 94–96.5 range
+  cs[7] = candle(7 * BAR, 100.5, 101, 95, 95.5); // bearish leg-in
+  cs[8] = candle(8 * BAR, 95.5, 96.5, 94, 96); // base candle → zone 94–96.5
+  cs[9] = candle(9 * BAR, 96, 102, 95.5, 101.5); // bullish leg-out
+  // Rally-base-drop → supply zone = the base's 109.5–112 range
+  cs[14] = candle(14 * BAR, 100, 111.5, 99.5, 111); // bullish leg-in
+  cs[15] = candle(15 * BAR, 110.5, 112, 109.5, 110); // base candle → zone 109.5–112
+  cs[16] = candle(16 * BAR, 110, 110.5, 99, 99.5); // bearish leg-out
   return cs;
 }
 
-/** Context tape B: demand zone 93–96 overlapping A's demand. */
+/** Context tape B: drop-base-rally → demand 93–96 overlapping A's demand. */
 function ctxB(shift = 0): Candle[] {
   const cs: Candle[] = [];
   for (let i = 0; i < 35; i += 1) cs.push(flat(i * 3_600_000));
-  cs[10] = candle(10 * 3_600_000, 95.5 + shift, 96 + shift, 93 + shift, 96 + shift);
+  cs[7] = candle(7 * 3_600_000, 100.5, 101, 95, 95.5); // bearish leg-in
+  cs[8] = candle(8 * 3_600_000, 95.5 + shift, 96 + shift, 93 + shift, 96 + shift); // base → 93–96
+  cs[9] = candle(9 * 3_600_000, 96, 102, 95.5, 101.5); // bullish leg-out
   return cs;
 }
 

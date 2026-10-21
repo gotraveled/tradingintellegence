@@ -26,9 +26,10 @@ import type { TradeSignal } from "./analysis";
  * Target = next opposing context zone edge, else the nearest opposing
  *          entry-TF swing; TP2 = 2.5R runner.
  *
- * Zones come from k=3 swing pivots: a pivot high unbroken by closes is
- * supply, a pivot low unbroken is demand — same measured levels the chart
- * marks, never smoothed or invented.
+ * Zones are leg–base–leg imbalances: a strong leg-in candle, a 1–4-bar
+ * consolidation base, then a strong leg-out in the opposite direction.
+ * Drop-base-rally leaves demand, rally-base-drop leaves supply — zones
+ * born from energetic departure, never lone wicks, never smoothed.
  */
 
 export interface VictorZone {
@@ -104,35 +105,79 @@ function swings(candles: Candle[]): Pivot[] {
   return out;
 }
 
+// ---- Leg–base–leg zone detection ----------------------------------------
+// A tradeable zone is an imbalance pocket, not a lone wick: a STRONG leg-in
+// candle, 1–BASE_MAX small consolidation bars, then a STRONG leg-out candle
+// in the OPPOSITE direction. Drop-base-rally → demand, rally-base-drop →
+// supply. Zone bounds are the base's full range; a close through the far
+// edge kills it.
+const BASE_MAX = 4;
+/** A leg bar's range must beat this multiple of the tape's average. */
+const LEG_RANGE_MULT = 1.5;
+/** And close decisively — body ≥ this share of range, near the extreme. */
+const LEG_BODY_SHARE = 0.55;
+const LEG_CLOSE_OFFSET = 0.3;
+
+function barRange(c: Candle): number {
+  return c.high - c.low;
+}
+
+/** Direction of an energetic leg candle; undefined for ordinary bars. */
+function legDir(c: Candle, avgRange: number): Direction | undefined {
+  const r = barRange(c);
+  const body = Math.abs(c.close - c.open);
+  if (r < LEG_RANGE_MULT * avgRange || body < LEG_BODY_SHARE * r) return undefined;
+  if (c.close >= c.high - LEG_CLOSE_OFFSET * r) return "bullish";
+  if (c.close <= c.low + LEG_CLOSE_OFFSET * r) return "bearish";
+  return undefined;
+}
+
 /**
- * Swing pivots → supply/demand zones. Edges are the pivot bar's wick→body
- * span (same convention as the confluence engine); a zone dies once price
- * closes through it. `strong` is filled by `markStrong` later — zones from
- * a single timeframe alone are never assumed MTF-confirmed.
+ * Leg–base–leg supply/demand zones. A bearish leg + base + bullish leg
+ * leaves demand; bullish leg + base + bearish leg leaves supply. A zone
+ * dies once price closes through its far edge. `strong` is filled by
+ * `markStrongAcross` later — zones from one timeframe alone are never
+ * assumed MTF-confirmed.
  */
 export function swingZones(candles: Candle[]): VictorZone[] {
   const last = candles.length - 1;
   const zones: VictorZone[] = [];
-  for (const p of swings(candles)) {
-    if (last - p.index > ZONE_MAX_AGE) continue;
-    const bar = candles[p.index];
-    // A zone is dead once a close pierces the pivot that made it.
-    const broken = candles
-      .slice(p.index + 1)
-      .some((c) => (p.kind === "high" ? c.close > p.price : c.close < p.price));
+  const ranges = candles.map(barRange);
+  const avgRange = ranges.reduce((a, b) => a + b, 0) / Math.max(ranges.length, 1);
+  if (avgRange === 0) return zones;
+
+  for (let i = 1; i < candles.length - 1; i += 1) {
+    const inDir = legDir(candles[i], avgRange);
+    if (inDir === undefined) continue;
+    // Collect up to BASE_MAX small base bars, then require the opposite leg.
+    let baseEnd = i + 1;
+    while (
+      baseEnd < candles.length &&
+      baseEnd - (i + 1) < BASE_MAX &&
+      legDir(candles[baseEnd], avgRange) === undefined
+    ) {
+      baseEnd += 1;
+    }
+    if (baseEnd === i + 1 || baseEnd >= candles.length) continue; // no base, or ran off the tape
+    const outDir = legDir(candles[baseEnd], avgRange);
+    if (outDir === undefined || outDir === inDir) continue;
+    const base = candles.slice(i + 1, baseEnd);
+    const lower = Math.min(...base.map((c) => c.low));
+    const upper = Math.max(...base.map((c) => c.high));
+    const kind = inDir === "bearish" ? "demand" : "supply"; // fell in/rallied out → demand
+    if (last - (baseEnd - 1) > ZONE_MAX_AGE) continue;
+    const after = candles.slice(baseEnd + 1);
+    const broken = after.some((c) => (kind === "demand" ? c.close < lower : c.close > upper));
     if (broken) continue;
-    const after = candles.slice(p.index + 1);
-    const upper = p.kind === "high" ? bar.high : Math.max(bar.open, bar.close);
-    const lower = p.kind === "high" ? Math.min(bar.open, bar.close) : bar.low;
     zones.push({
-      kind: p.kind === "high" ? "supply" : "demand",
-      upper,
+      kind,
       lower,
-      pivotIndex: p.index,
+      upper,
+      pivotIndex: baseEnd - 1,
       strong: false,
-      // Touches = bars that re-entered the zone without breaking it.
       touches: after.filter((c) => c.low <= upper && c.high >= lower).length,
     });
+    i = baseEnd; // consumed the pattern — resume after the leg-out
   }
   return zones;
 }

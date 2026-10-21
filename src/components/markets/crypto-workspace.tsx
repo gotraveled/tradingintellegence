@@ -31,6 +31,7 @@ import {
   floatingPnlUsd,
   BIAS_TIMEFRAME,
   entryBlockReason,
+  ENTRY_SESSION_UTC,
   journalKey,
   loadTrades,
   pointsCaptured,
@@ -61,6 +62,15 @@ import {
 import { normalizeStreamKline, normalizeTicker } from "@/lib/crypto/binance/normalize";
 import { BinanceStream, klineStream, tickerStreams } from "@/lib/crypto/binance/stream";
 import { fetchKrakenOhlc, fetchKrakenQuotes } from "@/lib/crypto/kraken/client";
+import { fetchIndiaKlines, fetchIndiaQuotes } from "@/lib/crypto/india/client";
+import {
+  DEFAULT_INDIA_SYMBOL,
+  INDIA_INTERVALS,
+  INDIA_SESSION_UTC,
+  INDIA_SYMBOLS,
+  indiaSymbolInfo,
+  VENUE_LABEL as INDIA_VENUE,
+} from "@/lib/crypto/india/constants";
 import {
   DEFAULT_KRAKEN_SYMBOL,
   KRAKEN_INTERVALS,
@@ -88,7 +98,7 @@ import { cn } from "@/lib/utils";
 
 // ---------- feed plumbing ----------
 
-type VenueId = "binance" | "kraken";
+type VenueId = "binance" | "kraken" | "india";
 
 interface VenueSymbol {
   symbol: string;
@@ -176,9 +186,39 @@ const VENUES: Record<VenueId, VenueDef> = {
       return feed;
     },
   },
+  india: {
+    id: "india",
+    label: INDIA_VENUE,
+    symbols: INDIA_SYMBOLS,
+    defaultSymbol: DEFAULT_INDIA_SYMBOL,
+    intervals: INDIA_INTERVALS.map((i) => ({ timeframe: i.timeframe, label: i.label })),
+    symbolInfo: indiaSymbolInfo,
+    fetchQuotes: fetchIndiaQuotes,
+    fetchKlines: (symbol, timeframe) => fetchIndiaKlines(symbol, timeframe),
+    connect({ symbol, timeframe, onQuote, onCandle, onStatus }) {
+      // No public tick socket exists for NSE/BSE — REST poll every
+      // minute; the tail bar arrives forming and closes as its interval
+      // ends, so the chart moves without a websocket.
+      onStatus("live", Date.now());
+      const timer = setInterval(() => {
+        void fetchIndiaKlines(symbol, timeframe).then((res) => {
+          if (!res.ok) return;
+          const tail = res.data.candles[res.data.candles.length - 1];
+          if (tail !== undefined) {
+            onCandle(tail, !res.data.hasFormingCandle);
+            onStatus("live", Date.now());
+          }
+        });
+        void fetchIndiaQuotes().then((res) => {
+          if (res.ok) for (const q of res.data) onQuote(q);
+        });
+      }, 60_000);
+      return { close: () => clearInterval(timer) };
+    },
+  },
 };
 
-const VENUE_ORDER: VenueId[] = ["binance", "kraken"];
+const VENUE_ORDER: VenueId[] = ["binance", "india", "kraken"];
 
 /** Timeframes scanned continuously for intraday setups. */
 const SCAN_TIMEFRAMES: Timeframe[] = ["5m", "15m", "30m", "1h", "4h"];
@@ -526,10 +566,10 @@ export function CryptoMarketsWorkspace() {
         const v = VENUES[vId];
         for (const s of v.symbols) {
           const sym = s.symbol;
-          // Entries trade Binance Spot only — Kraken pairs are the same
-          // markets, so this venue is manage-only (legacy trades still
-          // resolve on their own timeframe's bars; nothing new opens).
-          const trading = vId === "binance";
+          // Entries trade Binance Spot + NSE/BSE indices — Kraken pairs
+          // duplicate Binance markets, so that venue is manage-only
+          // (legacy trades still resolve on their own timeframe's bars).
+          const trading = vId !== "kraken";
           const legacyTfs = tradesRef.current
             .filter((t) => t.status === "open" && t.venue === vId && t.symbol === sym)
             .map((t) => t.timeframe);
@@ -547,9 +587,10 @@ export function CryptoMarketsWorkspace() {
             fetchTfs.map((tf) => v.fetchKlines(sym, tf).then((res) => ({ tf, res }))),
           ).then((rows) => {
             if (cancelled) return;
-            // News guard: a high-impact USD release ±15 min vetoes every new
-            // entry this tick — open trades keep managing either way.
-            const newsOn = trading && newsBlockEvent(newsRef.current, Date.now()) !== undefined;
+            // News guard: a high-impact USD release ±15 min vetoes crypto
+            // entries — it doesn't gate NSE index trading.
+            const newsOn =
+              vId === "binance" && newsBlockEvent(newsRef.current, Date.now()) !== undefined;
             const candidates: {
               venue: string;
               symbol: string;
@@ -558,7 +599,9 @@ export function CryptoMarketsWorkspace() {
               barTime: number;
               edge?: number;
               strategy?: string;
+              sessionUtc?: readonly [number, number];
             }[] = [];
+            const sessionUtc = vId === "india" ? INDIA_SESSION_UTC : undefined;
             const pairBusyNow =
               trading &&
               tradesRef.current.some(
@@ -612,6 +655,7 @@ export function CryptoMarketsWorkspace() {
                     barTime: m1[m1.length - 1].time,
                     edge: 0,
                     strategy: "victor",
+                    sessionUtc,
                   });
                 }
                 setCtxSets((p) => ({
@@ -675,6 +719,7 @@ export function CryptoMarketsWorkspace() {
                       signal: a.signal,
                       barTime: lastBar,
                       edge: sweepSupport ? 0.5 : 0,
+                      sessionUtc,
                     });
                   }
                 }
@@ -1535,9 +1580,20 @@ export function CryptoMarketsWorkspace() {
             <span className="font-medium text-foreground">
               Scan {new Date(scanWhy.at).toISOString().slice(11, 16)} UTC
             </span>
-            {entryBlockReason(trades, now) !== undefined && (
+            {entryBlockReason(
+              trades,
+              now,
+              undefined,
+              venueId === "india" ? INDIA_SESSION_UTC : ENTRY_SESSION_UTC,
+            ) !== undefined && (
               <span className="text-warning">
-                {" "}· entries paused — {entryBlockReason(trades, now)}
+                {" "}· entries paused —{" "}
+                {entryBlockReason(
+                  trades,
+                  now,
+                  undefined,
+                  venueId === "india" ? INDIA_SESSION_UTC : ENTRY_SESSION_UTC,
+                )}
               </span>
             )}
             {Object.entries(
