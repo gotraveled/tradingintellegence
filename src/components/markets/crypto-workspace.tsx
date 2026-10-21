@@ -30,6 +30,7 @@ import {
   evaluateTrade,
   floatingPnlUsd,
   BIAS_TIMEFRAME,
+  entryBlockReason,
   journalKey,
   loadTrades,
   pointsCaptured,
@@ -445,6 +446,12 @@ export function CryptoMarketsWorkspace() {
   // Live marks: last close per venue|symbol|tf, fed by every kline fetch
   // (global scan, MTF scan, live chart) — drives floating P&L per trade.
   const [marks, setMarks] = useState<Record<string, number>>({});
+  // Why each pair/timeframe did not book this scan tick — makes a quiet
+  // market visible instead of looking like a dead engine.
+  const [scanWhy, setScanWhy] = useState<{ at: number; cells: Record<string, string> } | undefined>(
+    undefined,
+  );
+  const scanWhyRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -525,6 +532,11 @@ export function CryptoMarketsWorkspace() {
               barTime: number;
               edge?: number;
             }[] = [];
+            const pairBusyNow =
+              trading &&
+              tradesRef.current.some(
+                (t) => t.status === "open" && t.venue === vId && t.symbol === sym,
+              );
             const tfSets = new Map<string, Candle[]>();
             const markEntries: Record<string, number> = {};
             // Higher-timeframe bias first — never take a scalp against the
@@ -546,11 +558,22 @@ export function CryptoMarketsWorkspace() {
               if (!trading || !TRADE_TIMEFRAMES.includes(tf)) continue; // context/manage only
               // Entries are decided on CLOSED bars only — a pro waits for
               // the candle to print, never trades a half-formed signal.
+              const cell = `${sym} ${tf}`;
               const a = analyzeCandles(closed);
-              if (a !== undefined && a.signal.direction !== "wait") {
+              if (a === undefined) {
+                scanWhyRef.current[cell] = "warming up";
+              } else if (a.signal.direction === "wait") {
+                scanWhyRef.current[cell] =
+                  a.trend.direction === "ranging"
+                    ? "ranging"
+                    : `weak ${a.signal.confidence}pts`;
+              } else {
                 const dir = a.signal.direction;
                 // HTF gate — never fight the higher-timeframe trend.
-                if (bias === "bullish" || bias === "bearish" ? bias !== dir : false) continue;
+                if (bias === "bullish" || bias === "bearish" ? bias !== dir : false) {
+                  scanWhyRef.current[cell] = `vs 1h ${bias}`;
+                  continue;
+                }
                 // SMC gate: the ICT engine suite must not contradict the
                 // signal — a "range" verdict or opposing structure trend
                 // vetoes the candidate outright.
@@ -560,6 +583,15 @@ export function CryptoMarketsWorkspace() {
                   (tech.trend === "range" ||
                     (dir === "bullish" && tech.trend === "downtrend") ||
                     (dir === "bearish" && tech.trend === "uptrend"));
+                if (smcBlocks) {
+                  scanWhyRef.current[cell] = `smc ${tech?.trend}`;
+                } else if (newsOn) {
+                  scanWhyRef.current[cell] = "news blackout";
+                } else if (pairBusyNow) {
+                  scanWhyRef.current[cell] = "position open";
+                } else {
+                  scanWhyRef.current[cell] = `${dir.slice(0, 4)} ${a.signal.confidence}pts`;
+                }
                 if (!smcBlocks && !newsOn) {
                   // Liquidity edge: a fresh confirmed sweep on the
                   // supporting side (sell-side taken → long) is where
@@ -596,6 +628,7 @@ export function CryptoMarketsWorkspace() {
               return pairBusy ? next : registerBestSignal(next, candidates, Date.now()).trades;
             });
             setMarks((m) => ({ ...m, ...markEntries }));
+            setScanWhy({ at: Date.now(), cells: { ...scanWhyRef.current } });
           });
         }
       }
@@ -1297,6 +1330,28 @@ export function CryptoMarketsWorkspace() {
             </div>
           ))}
         </div>
+        {scanWhy !== undefined && (
+          <div className="mb-4 rounded-md border border-border bg-surface px-3 py-2 text-xs text-subtle-foreground">
+            <span className="font-medium text-foreground">
+              Scan {new Date(scanWhy.at).toISOString().slice(11, 16)} UTC
+            </span>
+            {entryBlockReason(trades, now) !== undefined && (
+              <span className="text-warning">
+                {" "}· entries paused — {entryBlockReason(trades, now)}
+              </span>
+            )}
+            {Object.entries(
+              Object.entries(scanWhy.cells).reduce<Record<string, string[]>>((g, [cell, why]) => {
+                (g[why] = g[why] ?? []).push(cell);
+                return g;
+              }, {}),
+            ).map(([why, cells]) => (
+              <span key={why}>
+                {" "}· {cells.length === 1 ? cells[0] : `${cells.length} pairs`} {why}
+              </span>
+            ))}
+          </div>
+        )}
         {bt !== undefined && (
           <div className="mb-4 rounded-md border border-border bg-surface p-3 text-xs">
             <div className="mb-1 font-medium text-foreground">

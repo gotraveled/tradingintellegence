@@ -463,6 +463,11 @@ describe("constants", () => {
       "XRPUSDT",
       "ADAUSDT",
       "DOGEUSDT",
+      "LINKUSDT",
+      "AVAXUSDT",
+      "DOTUSDT",
+      "LTCUSDT",
+      "TRXUSDT",
     ]);
   });
 });
