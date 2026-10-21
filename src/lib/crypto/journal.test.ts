@@ -96,6 +96,35 @@ describe("registerSignal — booking and dedup", () => {
     expect(trades.length).toBe(0);
   });
 
+  it("rejects a signal whose stop sits inside the cost floor", () => {
+    // DOGE-style trade: entry 0.08210, stop 0.08211 — a ~1-tick risk unit.
+    // The ~0.15%/side cost on ~0.1642 of costPx would book >2R of fees
+    // alone; these trades must never enter the journal.
+    const { trades, added } = reg([], {
+      signal: {
+        ...signal("bearish"),
+        entry: 0.0821,
+        stopLoss: 0.08211, // 0.01% risk — under the 4×cost floor (0.6%)
+        targets: [{ label: "TP1", price: 0.0819, rr: 2 }],
+      },
+    });
+    expect(added).toBeUndefined();
+    expect(trades.length).toBe(0);
+  });
+
+  it("still books a signal whose stop clears the cost floor", () => {
+    const { trades, added } = reg([], {
+      signal: {
+        ...signal("bearish"),
+        entry: 0.0821,
+        stopLoss: 0.0836, // 1.8% risk — well above the floor
+        targets: [{ label: "TP1", price: 0.0796, rr: 1.7 }],
+      },
+    });
+    expect(added).toBeDefined();
+    expect(trades.length).toBe(1);
+  });
+
   it("refuses a second position while one is open on the same market", () => {
     const { trades: t1 } = reg([]);
     const { trades: t2, added } = reg(t1, { barTime: T0 + 50 * BAR });

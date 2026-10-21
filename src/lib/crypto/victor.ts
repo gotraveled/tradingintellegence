@@ -71,6 +71,8 @@ const RUNNER_R = 2.5;
 
 /** Wick/body anatomy of a pin bar — returns the rejection direction. */
 export function pinBar(c: Candle): Direction | undefined {
+  // A zero-range bar can't be a rejection — every wick is zero too.
+  if (c.high - c.low === 0) return undefined;
   const body = Math.abs(c.close - c.open);
   const upper = c.high - Math.max(c.open, c.close);
   const lower = Math.min(c.open, c.close) - c.low;
@@ -267,6 +269,12 @@ export function victorSignal(
   const stopLoss = dir === "bullish" ? pin.low : pin.high;
   const risk = Math.abs(entry - stopLoss);
   if (risk === 0) return undefined;
+  // Room check: a stop tighter than half an average entry bar is fee
+  // fodder, not a rejection — the pin's tail must clear real distance.
+  const atr =
+    entryCandles.slice(-14).reduce((a, c) => a + (c.high - c.low), 0) /
+    Math.min(14, entryCandles.length);
+  if (risk < 0.5 * atr) return undefined;
 
   // Target = next opposing level: nearest opposite-kind context-zone edge
   // past entry, falling back to the nearest opposing entry-TF swing pivot.

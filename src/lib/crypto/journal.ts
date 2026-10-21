@@ -249,6 +249,15 @@ export function registerSignal(
   ) {
     return { trades };
   }
+  // Degenerate risk unit: when entry→stop is a few ticks, the fixed
+  // ~0.15%/side cost divides by a near-zero denominator and a routine
+  // stop-out books multiple R of "loss" (the -3R on a tick-size stop).
+  // Require the risk distance to cover at least ~4× the per-side cost —
+  // round-trip costs then stay under ~0.5R of the trade's R.
+  const riskUnit = Math.abs(signal.entry - signal.stopLoss);
+  if (riskUnit < 4 * signal.entry * COST_PER_SIDE) {
+    return { trades };
+  }
   // One open trade per (PAIR, STRATEGY) — Victor's 1m scalp and the
   // Confluence 5m swing may each hold one position on the same pair at
   // once; pairs themselves are unlimited.
