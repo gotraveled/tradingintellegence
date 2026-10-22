@@ -243,7 +243,7 @@ export function registerSignal(
     barTime: number;
     now: number;
     strategy?: string;
-    /** Venue entry session in UTC hours — defaults to the crypto window. */
+    /** Venue entry session in UTC hours — omitted = ungated (crypto 24/7). */
     sessionUtc?: readonly [number, number];
   },
 ): { trades: TradeRecord[]; added?: TradeRecord } {

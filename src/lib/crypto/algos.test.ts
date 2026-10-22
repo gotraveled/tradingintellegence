@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Candle } from "@/lib/types";
-import { donchianSignal, superTrendSignal } from "./algos";
+import { donchianSignal, superTrendSignal, zarattiniOrbFactory } from "./algos";
 
 let t = 1_700_000_000_000;
 function bar(o: number, h: number, l: number, c: number, v = 1000): Candle {
@@ -80,5 +80,56 @@ describe("donchianSignal", () => {
       Array.from({ length: 230 }, (_, i) => 100 + Math.sin(i * 0.5) * 1.5),
     );
     expect(donchianSignal(chop)).toBeUndefined();
+  });
+});
+
+/**
+ * Session tape for the Stocks-in-Play ORB: ~65 quiet baseline bars, a >4h
+ * gap (a new session), one opening bar with `openVol` volume, then bars
+ * closing above/below its range.
+ */
+function zorbTape(openVol: number, breakUp = true): Candle[] {
+  const cs: Candle[] = [];
+  for (let i = 0; i < 65; i += 1) cs.push(bar(100, 100.35, 99.65, 100, 1000));
+  t += 5 * 3_600_000; // session gap → next bar is the session's first
+  cs.push(bar(100, 100.6, 99.8, 100.4, openVol)); // 5-min opening range
+  for (let i = 0; i < 4; i += 1) {
+    const c = breakUp ? 100.45 + i * 0.05 : 100.35 - i * 0.05;
+    cs.push(bar(c - 0.03, c + 0.1, c - 0.1, c, 1200));
+  }
+  cs.push(breakUp ? bar(100.7, 101.0, 100.65, 100.9, 1500) : bar(99.7, 99.8, 99.4, 99.5, 1500));
+  return cs;
+}
+
+describe("zarattiniOrb (Stocks in Play)", () => {
+  it("buys a breakout of the opening range on a high-volume open", () => {
+    const sig = zarattiniOrbFactory()(zorbTape(4000));
+    expect(sig?.direction).toBe("bullish");
+    expect(sig?.entry).toBeCloseTo(100.9, 1);
+    expect(sig?.stopLoss).toBeCloseTo(99.8, 1); // far side of the range
+    expect((sig?.targets[0]?.price ?? 0) > (sig?.entry ?? 0)).toBe(true);
+    expect(sig?.reasons.join(" ")).toMatch(/ORB/);
+  });
+
+  it("refuses the SAME breakout on a quiet open — the RVOL gate is the edge", () => {
+    expect(zarattiniOrbFactory()(zorbTape(900))).toBeUndefined();
+  });
+
+  it("takes at most one trade per session", () => {
+    const fn = zarattiniOrbFactory();
+    const cs = zorbTape(4000);
+    expect(fn(cs)).toBeDefined();
+    expect(fn(cs)).toBeUndefined(); // already fired for this session
+  });
+
+  it("does nothing while price sits inside the opening range", () => {
+    const cs = zorbTape(4000);
+    // Replace the breakout tail with bars that stay inside 99.8–100.6.
+    const inside = [
+      ...cs.slice(0, 66),
+      bar(100.4, 100.5, 100.2, 100.3, 1500),
+      bar(100.3, 100.55, 100.25, 100.45, 1500),
+    ];
+    expect(zarattiniOrbFactory()(inside)).toBeUndefined();
   });
 });

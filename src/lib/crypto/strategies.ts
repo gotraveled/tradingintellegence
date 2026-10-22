@@ -8,7 +8,7 @@ import {
 } from "./analysis";
 import { pinBar, victorSignal } from "./victor";
 import { srTrendSignal } from "./srtrend";
-import { donchianSignal, superTrendSignal } from "./algos";
+import { donchianSignal, superTrendSignal, zarattiniOrbFactory } from "./algos";
 /**
  * Strategy tournament — a registry of named, published intraday methods,
  * each distilled to its mechanical core so the backtest harness can rank
@@ -129,7 +129,7 @@ function trendOf(hist: Candle[]): Direction | undefined {
 const srTrend: StrategyDef = {
   id: "sr",
   label: "S/R + trend",
-  blurb: "The live engine: major swing levels + EMA20/50 trend — buy a held support, sell a held resistance, target the next opposing level.",
+  blurb: "The live engine: major swing levels only — buy a held support or a broken resistance, sell a held resistance or a broken support. Bounce or breakout, level-to-level targets.",
   create: () => (hist) => srTrendSignal(hist),
 };
 
@@ -138,6 +138,13 @@ const superTrend: StrategyDef = {
   label: "SuperTrend AI",
   blurb: "Published algo (DefinedEdge-style): SuperTrend(10,3) flip + AI score — ADX regime, EMA50, volume, displacement ≥65. 2.5×ATR stop, 2.5R target.",
   create: () => (hist) => superTrendSignal(hist),
+};
+
+const zarattiniOrb: StrategyDef = {
+  id: "zorb",
+  label: "ORB · Stocks in Play",
+  blurb: "Zarattini/Barbon/Aziz (SSRN, 7k stocks 2016–23): 5-min opening-range breakout ONLY on high-RVOL opens — the published 2.81-Sharpe variant, independently replicated.",
+  create: () => zarattiniOrbFactory(),
 };
 
 const donchian: StrategyDef = {
@@ -427,6 +434,7 @@ const rangeFade: StrategyDef = {
 /** Registry order = display order in the tournament table. */
 export const STRATEGIES: readonly StrategyDef[] = [
   srTrend,
+  zarattiniOrb,
   superTrend,
   donchian,
   confluence,

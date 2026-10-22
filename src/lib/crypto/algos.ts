@@ -113,6 +113,109 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+// ---------------------------------------------------------------------------
+// Zarattini / Barbon / Aziz — "A Profitable Day Trading Strategy for the U.S.
+// Equity Market" (SSRN, 7,000+ stocks, 2016–2023): the plain 5-minute ORB is
+// weak (Sharpe 0.48), but the SAME breakout restricted to "Stocks in Play" —
+// abnormally high volume in the opening minutes — produced 1,600%+ net,
+// Sharpe 2.81, 36% annualized alpha. Independently replicated (giovannibrusco/
+// zarattini-2023-orb-qqq: Sharpe 1.06 vs the paper's 1.12 on QQQ).
+//
+// The relative-volume gate IS the edge — without it the breakout is noise.
+// ---------------------------------------------------------------------------
+
+const DAY_MS = 86_400_000;
+const ZORB_WINDOW_MS = 4 * 3_600_000; // breaks after 4h of the session are stale
+const ZORB_RVOL = 1.75; // "in play": opening volume ≥1.75× the recent baseline
+const ZORB_MAX_WIDTH_ATR = 1.5; // opening range wider than this → move done
+const ZORB_MIN_WIDTH_PCT = 0.0005; // degenerate hairline range → noise
+
+/** First index of the last session: a new UTC day (crypto) or a >4h gap (NSE). */
+function sessionStartIdx(hist: Candle[]): number {
+  let start = 0;
+  for (let i = 1; i < hist.length; i += 1) {
+    const gap = hist[i].time - hist[i - 1].time;
+    const newDay =
+      Math.floor(hist[i].time / DAY_MS) !== Math.floor(hist[i - 1].time / DAY_MS);
+    if (gap > 4 * 3_600_000 || newDay) start = i;
+  }
+  return start;
+}
+
+/**
+ * Stocks-in-Play 5-min ORB — factory form so "one trade per session" state
+ * survives between ticks, same contract as the other StrategyDef creators.
+ */
+export function zarattiniOrbFactory(): (hist: Candle[]) => TradeSignal | undefined {
+  let tradedSession = -1;
+  return (hist) => {
+    if (hist.length < 70) return undefined;
+    const last = hist[hist.length - 1];
+    const i0 = sessionStartIdx(hist);
+    const today = hist.slice(i0);
+    if (today.length < 2) return undefined; // opening bar still forming the range
+    if (tradedSession === today[0].time) return undefined; // one bullet per session
+    if (last.time > today[0].time + ZORB_WINDOW_MS) return undefined; // stale
+
+    // The opening range on a 5m tape IS the first bar of the session.
+    const orb = today[0];
+    const hi = orb.high;
+    const lo = orb.low;
+    const width = hi - lo;
+    const width14 = atr(hist, 14);
+    if (
+      width14 === 0 ||
+      width > ZORB_MAX_WIDTH_ATR * width14 ||
+      width / last.close < ZORB_MIN_WIDTH_PCT
+    ) {
+      return undefined;
+    }
+
+    // Stocks-in-Play gate: opening-bar volume vs the recent baseline. No
+    // volume data → the gate can't verify "in play", so the trade is
+    // allowed but scores lower — the filter is the edge, after all.
+    const baseline = hist.slice(Math.max(0, i0 - 60), i0);
+    const avgV =
+      baseline.length > 0
+        ? baseline.reduce((s, c) => s + (c.volume ?? 0), 0) / baseline.length
+        : NaN;
+    const rvolOk =
+      !Number.isNaN(avgV) && avgV > 0 ? (orb.volume ?? 0) >= ZORB_RVOL * avgV : true;
+    const rvolVerified = !Number.isNaN(avgV) && avgV > 0;
+    if (rvolVerified && !rvolOk) return undefined; // not in play → no edge
+
+    const dir =
+      last.close > hi ? ("bullish" as const) : last.close < lo ? ("bearish" as const) : undefined;
+    if (dir === undefined) return undefined;
+
+    const entry = last.close;
+    const stop = dir === "bullish" ? lo : hi; // opposite edge — thesis dead back inside
+    const risk = Math.abs(entry - stop);
+    if (risk <= 0) return undefined;
+    const tp1 = dir === "bullish" ? entry + 2 * risk : entry - 2 * risk;
+    const tp2 = dir === "bullish" ? entry + 4 * risk : entry - 4 * risk;
+
+    tradedSession = today[0].time;
+    return {
+      direction: dir,
+      confidence: rvolVerified ? 72 : 55,
+      factors: [],
+      reasons: [
+        `Stocks-in-Play 5-min ORB: opening range ${round2(lo)}–${round2(hi)}${rvolVerified ? ` on ${round2((orb.volume ?? 0) / avgV)}× volume` : " (no volume feed)"}`,
+        `Close ${dir === "bullish" ? "above" : "below"} the range — the high-RVOL breakout the paper's 2.81-Sharpe variant trades`,
+        `Plan: stop ${round2(stop)} (far side of the range), TP1 ${round2(tp1)} (2R), TP2 ${round2(tp2)} (4R)`,
+      ],
+      entry,
+      stopLoss: stop,
+      riskReward: 2,
+      targets: [
+        { label: "TP1", price: tp1, rr: 2 },
+        { label: "TP2", price: tp2, rr: 4 },
+      ],
+    };
+  };
+}
+
 /**
  * SuperTrend AI Adaptive — a flip is only worth taking when the tape
  * confirms it: trending regime (ADX ≥ 20), EMA50 on-side, volume above

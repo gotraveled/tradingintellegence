@@ -561,7 +561,7 @@ export function CryptoMarketsWorkspace({
 
   // Global scan: every listed pair on the trading venues (Binance Spot +
   // NSE/BSE India — kept fully separate markets), every minute. One engine
-  // — S/R + trend on 5m — one open position per pair.
+  // — S/R levels on 5m — one open position per pair.
   useEffect(() => {
     let cancelled = false;
     const run = () => {
@@ -620,14 +620,14 @@ export function CryptoMarketsWorkspace({
             // Entries are decided on CLOSED bars only — a pro waits for
             // the candle to print, never trades a half-formed signal.
             if (trading) {
-              // ---- S/R + trend — 5m: buy a held support / sell a held
-              // resistance WITH the EMA20/50 trend, level-to-level. ----
+              // ---- S/R — 5m: buy a held support or broken resistance,
+              // sell the mirrors — bounce or break, level-to-level. ----
               const closed5 = tfSets.get(journalKey(vId, sym, "5m"));
               const setup = closed5 !== undefined ? srTrendSignal(closed5) : undefined;
               if (closed5 === undefined) {
                 scanWhyRef.current[sym] = "warming up";
               } else if (setup === undefined) {
-                scanWhyRef.current[sym] = "no level/trend setup";
+                scanWhyRef.current[sym] = "no level setup";
               } else if (slotBusy(SR_STRATEGY_ID)) {
                 scanWhyRef.current[sym] = "position open";
               } else {
@@ -1039,10 +1039,10 @@ export function CryptoMarketsWorkspace({
       {/* The trading engine — one strategy, one tape, no filters. */}
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs text-subtle-foreground">Engine</span>
-        <Badge tone="developing">S/R + trend · 5m</Badge>
+        <Badge tone="developing">S/R levels · 5m</Badge>
         <span className="text-xs text-subtle-foreground">
-          buys a held support / sells a held resistance with the EMA20/50 trend —
-          one position per pair, level-to-level targets
+          buys a held support or a broken resistance / sells the mirrors —
+          bounces and breakouts, level-to-level targets
         </span>
         {entryRegime !== undefined && (
           <Badge tone={entryRegime === "ranging" ? "neutral" : "developing"}>
@@ -1113,8 +1113,8 @@ export function CryptoMarketsWorkspace({
       {/* Engine detail — the live S/R + trend read on this market */}
       <Card>
         <CardHeader
-          title="S/R + trend — the trading engine"
-          description="Major swing levels on the chart; trend from EMA20/50. BUY when price tags a support level and holds it in an uptrend — SELL the mirror at resistance. Stop just beyond the level, target the next opposing level (level-to-level, ≥1.2R)."
+          title="S/R — the trading engine"
+          description="Major swing levels on the chart (≥2 respects). BOUNCE: buy a support that holds, sell a resistance that rejects. BREAK: buy a resistance that breaks, sell a support that breaks. Stop beyond the level, target the next opposing level (≥1R). Untested zones, liquidity sweeps and fair-value gaps boost the setup's score."
           action={
             srLive !== undefined && (
               <Badge tone={DIR_META[srLive.direction].tone}>
@@ -1142,8 +1142,7 @@ export function CryptoMarketsWorkspace({
         </div>
         {srLive === undefined && (
           <p className="mt-3 text-xs text-subtle-foreground">
-            No setup right now — waiting for price to tag a major level inside a
-            trending tape.
+            No setup right now — waiting for price to tag a major level.
           </p>
         )}
         <div className="mt-4 border-t border-border pt-3">
@@ -1379,7 +1378,7 @@ export function CryptoMarketsWorkspace({
         <CardHeader
           title="Paper trades"
           description={
-            "Virtual $10,000 terminal — one engine on Binance Spot and NSE/BSE indices: S/R + trend on the 5m tape. Buys a held support in an uptrend, sells a held resistance in a downtrend; stop beyond the level, target the next opposing level. One open position per pair, no other gates. TP1 banks half; the stop trails candle by candle."
+            "Virtual $10,000 terminal — one engine on Binance Spot and NSE/BSE indices: S/R levels on the 5m tape. Buys a held support or a broken resistance, sells a held resistance or a broken support; stop beyond the level, target the next opposing level. One open position per pair, no other gates. TP1 banks half; the stop trails candle by candle."
           }
           action={
             <div className="flex items-center gap-2">
@@ -1793,9 +1792,10 @@ export function CryptoMarketsWorkspace({
         {trades.length === 0 ? (
           <p className="text-sm text-subtle-foreground">
             No trades yet — every Binance Spot pair and NSE/BSE index is scanned each
-            minute by the S/R + trend engine. A trade needs the EMA20/50 trend aligned
-            and price tagging a major level (≥2 respects) that holds — stop beyond the
-            level, target the next opposing level. One position per pair.
+            minute by the S/R engine. A trade needs price at a major level
+            (≥2 respects) — either holding it for a bounce or closing through
+            it for a break. Stop beyond the level, target the next opposing
+            level. One position per pair.
           </p>
         ) : (
           <div className="space-y-4">
