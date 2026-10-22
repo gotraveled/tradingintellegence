@@ -84,9 +84,9 @@ export interface DailyStats {
   winPct: number;
 }
 
-// v2 — bumped 2026-10-21 to wipe the pre-cost-gate book (fee-dominated
-// rows booked before the risk floor) and restart equity at $10k.
-export const JOURNAL_STORAGE_KEY = "crypto-journal-v2";
+// v3 — bumped 2026-10-23: engine switched to the single S/R + trend
+// strategy; the old two-engine book is wiped and equity resets to $10k.
+export const JOURNAL_STORAGE_KEY = "crypto-journal-v3";
 const MAX_TRADES = 400;
 /** Re-booking an identical direction on the same market is suppressed for this many bars. */
 const DEDUP_BARS = 24;
@@ -134,8 +134,11 @@ export function entryBlockReason(
   trades: readonly TradeRecord[],
   now: number,
   direction?: Direction,
-  sessionUtc: readonly [number, number] = ENTRY_SESSION_UTC,
+  sessionUtc?: readonly [number, number],
 ): string | undefined {
+  // sessionUtc only applies when a venue passes one (NSE/BSE hours).
+  // Crypto runs 24/7 — no session gate.
+  if (sessionUtc === undefined) return undefined;
   const hour = new Date(now).getUTCHours();
   if (hour < sessionUtc[0] || hour >= sessionUtc[1]) {
     return `outside ${sessionUtc[0]}:00–${sessionUtc[1]}:00 UTC session`;
@@ -464,8 +467,8 @@ export function evaluateTrade(rec: TradeRecord, closedBars: Candle[]): TradeReco
       t.tp1Hit = true;
       t.stopLoss = bull ? Math.max(t.stopLoss, t.entry) : Math.min(t.stopLoss, t.entry);
     }
-    if (t.strategy === "victor") {
-      // Scalp trail: ratchet the stop under the extreme of the candle
+    if (t.strategy === "victor" || t.strategy === "sr") {
+      // Candle trail: ratchet the stop under the extreme of the candle
       // before the newest closed bar (the "2nd candle" counting the
       // newest) — tightens while price runs, never loosens.
       const post = closedBars.filter((b) => b.time > t.entryBarTime && b.time <= bar.time);

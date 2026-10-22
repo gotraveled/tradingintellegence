@@ -213,13 +213,16 @@ describe("registerSignal — booking and dedup", () => {
     expect(ok.added).toBeDefined();
   });
 
-  it("blocks entries outside the UTC session", () => {
-    const night = Date.UTC(2024, 0, 2, 23); // 23:00 UTC — dead hours
-    const day = Date.UTC(2024, 0, 2, 12); // noon UTC — EU/US overlap
-    expect(entryBlockReason([], night)).toContain("session");
-    expect(entryBlockReason([], day)).toBeUndefined();
-    expect(reg([], { now: night }).added).toBeUndefined();
-    expect(reg([], { now: day }).added).toBeDefined();
+  it("crypto trades 24/7 — a session gate only applies when a venue passes one", () => {
+    const night = Date.UTC(2024, 0, 2, 23); // 23:00 UTC
+    const indiaSession: readonly [number, number] = [4, 10]; // NSE/BSE hours UTC
+    // No session passed → ungated, even at 23:00 UTC.
+    expect(entryBlockReason([], night)).toBeUndefined();
+    expect(reg([], { now: night }).added).toBeDefined();
+    // A passed session still gates (India).
+    expect(entryBlockReason([], night, undefined, indiaSession)).toContain("session");
+    expect(entryBlockReason([], Date.UTC(2024, 0, 2, 6), undefined, indiaSession)).toBeUndefined();
+    expect(reg([], { now: night, sessionUtc: indiaSession }).added).toBeUndefined();
   });
 
   it("keeps booking through drawdown — the paper journal has no loss caps", () => {

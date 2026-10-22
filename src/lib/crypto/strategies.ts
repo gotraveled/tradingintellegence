@@ -7,7 +7,7 @@ import {
   type TradeSignal,
 } from "./analysis";
 import { pinBar, victorSignal } from "./victor";
-
+import { srTrendSignal } from "./srtrend";
 /**
  * Strategy tournament — a registry of named, published intraday methods,
  * each distilled to its mechanical core so the backtest harness can rank
@@ -124,6 +124,13 @@ function trendOf(hist: Candle[]): Direction | undefined {
 // ---------------------------------------------------------------------------
 // Baseline — the existing engines, wrapped so they replay identically.
 // ---------------------------------------------------------------------------
+
+const srTrend: StrategyDef = {
+  id: "sr",
+  label: "S/R + trend",
+  blurb: "The live engine: major swing levels + EMA20/50 trend — buy a held support, sell a held resistance, target the next opposing level.",
+  create: () => (hist) => srTrendSignal(hist),
+};
 
 const confluence: StrategyDef = {
   id: "confluence",
@@ -404,6 +411,7 @@ const rangeFade: StrategyDef = {
 
 /** Registry order = display order in the tournament table. */
 export const STRATEGIES: readonly StrategyDef[] = [
+  srTrend,
   confluence,
   victor,
   orb,

@@ -30,24 +30,21 @@ import {
   floatingPnlUsd,
   BIAS_TIMEFRAME,
   entryBlockReason,
-  ENTRY_SESSION_UTC,
   journalKey,
   loadTrades,
   pointsCaptured,
   registerSignal,
   saveTrades,
   symbolStats,
-  timeframeMs,
   tradeKey,
   unrealizedR,
   unrealizedUsd,
   type TradeRecord,
 } from "@/lib/crypto/journal";
 import { analyzeTechnicals } from "@/lib/crypto/technicals";
-import { newsBlockEvent } from "@/lib/crypto/news";
 import { backtestCandles, type BacktestStats } from "@/lib/crypto/backtest";
 import { STRATEGIES } from "@/lib/crypto/strategies";
-import { markStrongAcross, pinBar, swingZones, victorSignal } from "@/lib/crypto/victor";
+import { majorLevels, srTrendSignal, SR_STRATEGY_ID } from "@/lib/crypto/srtrend";
 import type { CalendarEvent } from "@/app/api/economic-calendar/route";
 import { fetchCryptoKlines, fetchCryptoQuotes } from "@/lib/crypto/binance/client";
 import {
@@ -321,7 +318,7 @@ export function CryptoMarketsWorkspace({
   const [selectedTradeId, setSelectedTradeId] = useState<string | undefined>(undefined);
   const [bt, setBt] = useState<{ key: string; stats: BacktestStats } | undefined>(undefined);
   const [btBusy, setBtBusy] = useState(false);
-  const [btStrategy, setBtStrategy] = useState<string>("confluence");
+  const [btStrategy, setBtStrategy] = useState<string>("sr");
   const [btAll, setBtAll] = useState<
     { timeframe: Timeframe; rows: { symbol: string; stats: BacktestStats }[] } | undefined
   >(undefined);
@@ -518,28 +515,8 @@ export function CryptoMarketsWorkspace({
   );
   const scanWhyRef = useRef<Record<string, string>>({});
 
-  // Entry strategy — confluence (indicators + structure) or Victor (pure
-  // price action: pin bar at MTF-aligned supply/demand). Persisted so a
-  // refresh doesn't silently switch the book back.
-  const [strategy, setStrategy] = useState<"confluence" | "victor">(() =>
-    typeof window !== "undefined" && window.localStorage.getItem("crypto-strategy") === "victor"
-      ? "victor"
-      : "confluence",
-  );
-  const strategyRef = useRef(strategy);
-  useEffect(() => {
-    strategyRef.current = strategy;
-    try {
-      window.localStorage.setItem("crypto-strategy", strategy);
-    } catch {
-      /* private mode — keep working */
-    }
-  }, [strategy]);
-  // Latest closed candles per symbol for Victor: 1m entry + 5m/15m zone
-  // context. State (not a ref): the chart-zone memo reads it during render.
-  const [ctxSets, setCtxSets] = useState<
-    Record<string, { m1?: Candle[]; m5?: Candle[]; m15?: Candle[] }>
-  >({});
+  // Single engine — S/R + trend on the 5m tape (srtrend.ts). No strategy
+  // picker, no context sets: one method, one timeframe, every pair.
 
   useEffect(() => {
     let cancelled = false;
@@ -583,10 +560,8 @@ export function CryptoMarketsWorkspace({
   }, [venue, symbol, timeframe, updateTrades]);
 
   // Global scan: every listed pair on the trading venues (Binance Spot +
-  // NSE/BSE India — kept fully separate markets), every minute. BOTH
-  // engines run in parallel: Victor takes 1m pin scalps at 5m/15m zones,
-  // Confluence takes 5m entries with 15m/1h context. Each pair holds at
-  // most one trade PER STRATEGY — two per pair, pairs unlimited.
+  // NSE/BSE India — kept fully separate markets), every minute. One engine
+  // — S/R + trend on 5m — one open position per pair.
   useEffect(() => {
     let cancelled = false;
     const run = () => {
@@ -602,20 +577,15 @@ export function CryptoMarketsWorkspace({
             .filter((t) => t.status === "open" && t.venue === vId && t.symbol === sym)
             .map((t) => t.timeframe);
           if (!trading && legacyTfs.length === 0) continue;
-          // Both engines scanned: Victor needs 1m/5m/15m, Confluence needs
-          // 5m/15m/1h — the union covers both, deduped below.
-          const entryTfs = ["1m", "5m", "15m", BIAS_TIMEFRAME] as const;
+          // The engine trades the 5m tape; legacy open trades keep their
+          // own timeframe's bars fetched for management.
           const fetchTfs = [
-            ...new Set<Timeframe>([...(trading ? entryTfs : []), ...legacyTfs]),
+            ...new Set<Timeframe>([...(trading ? ["5m" as Timeframe] : []), ...legacyTfs]),
           ];
           void Promise.all(
             fetchTfs.map((tf) => v.fetchKlines(sym, tf).then((res) => ({ tf, res }))),
           ).then((rows) => {
             if (cancelled) return;
-            // News guard: a high-impact USD release ±15 min vetoes crypto
-            // entries — it doesn't gate NSE index trading.
-            const newsOn =
-              vId === "binance" && newsBlockEvent(newsRef.current, Date.now()) !== undefined;
             const candidates: {
               venue: string;
               symbol: string;
@@ -627,9 +597,7 @@ export function CryptoMarketsWorkspace({
               sessionUtc?: readonly [number, number];
             }[] = [];
             const sessionUtc = vId === "india" ? INDIA_SESSION_UTC : undefined;
-            // One slot per strategy per pair — Victor and Confluence are
-            // independent books; a running Victor scalp doesn't block a
-            // Confluence entry on the same pair.
+            // One open position per pair — the single engine's slot.
             const slotBusy = (strat: string) =>
               trading &&
               tradesRef.current.some(
@@ -641,15 +609,6 @@ export function CryptoMarketsWorkspace({
               );
             const tfSets = new Map<string, Candle[]>();
             const markEntries: Record<string, number> = {};
-            // Higher-timeframe bias first — never take a scalp against the
-            // 1h trend. "ranging" or unreadable HTF passes no judgment.
-            let bias: Direction | "ranging" | undefined;
-            const biasRow = rows.find((r) => r.tf === BIAS_TIMEFRAME);
-            if (biasRow !== undefined && biasRow.res.ok && biasRow.res.data.candles.length > 0) {
-              const s = biasRow.res.data.candles;
-              const c = biasRow.res.data.hasFormingCandle ? s.slice(0, -1) : s;
-              bias = analyzeCandles(c)?.trend.direction;
-            }
             for (const { tf, res } of rows) {
               if (!res.ok || res.data.candles.length === 0) continue;
               const set = res.data.candles;
@@ -661,100 +620,29 @@ export function CryptoMarketsWorkspace({
             // Entries are decided on CLOSED bars only — a pro waits for
             // the candle to print, never trades a half-formed signal.
             if (trading) {
-              // ---- Victor scalp — 1m pin bar at a 5m+15m S/D zone ----
-              const m1 = tfSets.get(journalKey(vId, sym, "1m"));
-              const m5 = tfSets.get(journalKey(vId, sym, "5m"));
-              const m15v = tfSets.get(journalKey(vId, sym, "15m"));
-              const vCell = `${sym} vic`;
-              const setup =
-                m1 !== undefined ? victorSignal(m1, [m1, m5 ?? [], m15v ?? []]) : undefined;
-              if (m1 === undefined || setup === undefined) {
-                scanWhyRef.current[vCell] = m1 === undefined ? "no data" : "no pin/zone setup";
-              } else if (newsOn) {
-                scanWhyRef.current[vCell] = "news blackout";
-              } else if (slotBusy("victor")) {
-                scanWhyRef.current[vCell] = "victor position open";
+              // ---- S/R + trend — 5m: buy a held support / sell a held
+              // resistance WITH the EMA20/50 trend, level-to-level. ----
+              const closed5 = tfSets.get(journalKey(vId, sym, "5m"));
+              const setup = closed5 !== undefined ? srTrendSignal(closed5) : undefined;
+              if (closed5 === undefined) {
+                scanWhyRef.current[sym] = "warming up";
+              } else if (setup === undefined) {
+                scanWhyRef.current[sym] = "no level/trend setup";
+              } else if (slotBusy(SR_STRATEGY_ID)) {
+                scanWhyRef.current[sym] = "position open";
               } else {
-                scanWhyRef.current[vCell] = `victor ${setup.signal.confidence}pts`;
+                scanWhyRef.current[sym] =
+                  `${setup.direction === "bullish" ? "buy" : "sell"} ${setup.confidence}pts`;
                 candidates.push({
                   venue: vId,
                   symbol: sym,
-                  timeframe: "1m",
-                  signal: setup.signal,
-                  barTime: m1[m1.length - 1].time,
+                  timeframe: "5m",
+                  signal: setup,
+                  barTime: closed5[closed5.length - 1].time,
                   edge: 0,
-                  strategy: "victor",
+                  strategy: SR_STRATEGY_ID,
                   sessionUtc,
                 });
-              }
-              setCtxSets((p) => ({
-                ...p,
-                [sym]: { m1, m5, m15: m15v },
-              }));
-
-              // ---- Confluence — 5m entries; 15m SMC + 1h bias context ----
-              {
-                const closed5 = tfSets.get(journalKey(vId, sym, "5m"));
-                const cell = `${sym} con`;
-                const a = closed5 !== undefined ? analyzeCandles(closed5) : undefined;
-                if (closed5 === undefined || a === undefined) {
-                  scanWhyRef.current[cell] = "warming up";
-                } else if (a.signal.direction === "wait") {
-                  scanWhyRef.current[cell] =
-                    a.trend.direction === "ranging"
-                      ? "ranging"
-                      : `weak ${a.signal.confidence}pts`;
-                } else if (slotBusy("confluence")) {
-                  scanWhyRef.current[cell] = "confluence position open";
-                } else {
-                  const dir = a.signal.direction;
-                  const lastBar = closed5[closed5.length - 1].time;
-                  const biasBlocks =
-                    bias === "bullish" || bias === "bearish" ? bias !== dir : false;
-                  // SMC gate on the 15m context — structure must not
-                  // contradict the 5m signal.
-                  const ctx15 = tfSets.get(journalKey(vId, sym, "15m"));
-                  const tech =
-                    ctx15 !== undefined ? analyzeTechnicals(ctx15, sym, "15m") : undefined;
-                  // Sideways is judged on the ENTRY tape only — the 5m ER
-                  // veto inside analyzeCandles already handled that. A 15m
-                  // "range" is just consolidation; only a 15m trend that
-                  // actively disagrees vetoes the 5m signal.
-                  const smcBlocks =
-                    tech !== undefined &&
-                    ((dir === "bullish" && tech.trend === "downtrend") ||
-                      (dir === "bearish" && tech.trend === "uptrend"));
-                  if (biasBlocks) {
-                    scanWhyRef.current[cell] = `vs 1h ${bias}`;
-                  } else if (smcBlocks) {
-                    scanWhyRef.current[cell] = `smc ${tech?.trend}`;
-                  } else if (newsOn) {
-                    scanWhyRef.current[cell] = "news blackout";
-                  } else {
-                    scanWhyRef.current[cell] = `${dir.slice(0, 4)} ${a.signal.confidence}pts`;
-                  }
-                  if (!biasBlocks && !smcBlocks && !newsOn) {
-                    // Liquidity edge: a fresh confirmed 15m sweep on the
-                    // supporting side is where reversals are born — worth
-                    // +0.5R in the ranking.
-                    const sweepSupport =
-                      tech !== undefined &&
-                      tech.sweeps.some(
-                        (sw) =>
-                          (dir === "bullish" ? sw.side === "sell_side" : sw.side === "buy_side") &&
-                          lastBar - Date.parse(sw.at) < 20 * timeframeMs("15m"),
-                      );
-                    candidates.push({
-                      venue: vId,
-                      symbol: sym,
-                      timeframe: "5m",
-                      signal: a.signal,
-                      barTime: lastBar,
-                      edge: sweepSupport ? 0.5 : 0,
-                      sessionUtc,
-                    });
-                  }
-                }
               }
             }
             updateTrades((prev) => {
@@ -764,9 +652,8 @@ export function CryptoMarketsWorkspace({
                 const set = tfSets.get(tradeKey(t));
                 return set === undefined ? t : evaluateTrade(t, set);
               });
-              // Book each candidate — registerSignal owns the
-              // per-(pair, strategy) slot guard, so Victor and Confluence
-              // can enter the same pair in the same tick.
+              // Book each candidate — registerSignal owns the per-pair
+              // slot guard, so a pair never stacks positions.
               const now2 = Date.now();
               for (const c of candidates) {
                 next = registerSignal(next, { ...c, now: now2 }).trades;
@@ -931,75 +818,42 @@ export function CryptoMarketsWorkspace({
     .slice(0, 6);
   const newsRisk = upcomingNews.find((e) => Math.abs(e.ms - now) <= 60 * 60_000);
 
-  // Victor live readout for the charted symbol — the same evaluation the
-  // scan runs: 1m pin + follow-up against 5m/15m strong zones.
-  const victorCtx = ctxSets[symbol];
-  const victorLive = useMemo(() => {
-    if (strategy !== "victor" || victorCtx?.m1 === undefined) return undefined;
-    return victorSignal(victorCtx.m1, [victorCtx.m1, victorCtx.m5 ?? [], victorCtx.m15 ?? []]);
-  }, [strategy, victorCtx]);
-  const victorLastPin =
-    victorCtx?.m1 !== undefined && victorCtx.m1.length >= 2
-      ? pinBar(victorCtx.m1[victorCtx.m1.length - 2])
-      : undefined;
-
-  // Sideways regime is judged on the ENTRY tape only — 1m for Victor,
-  // 5m for Confluence — never the charted or context timeframe. Clear
-  // zones inside a higher-TF consolidation still mean a live entry tape.
-  const entryTf: Timeframe = strategy === "victor" ? "1m" : "5m";
-  const entryTape =
-    entryTf === timeframe
-      ? candles
-      : ctxSets[symbol]?.[strategy === "victor" ? "m1" : "m5"];
-  const entryRegime = useMemo(
+  // Live S/R readout for the charted market — the same evaluation the
+  // scan runs on every pair's 5m tape: major swing levels + EMA20/50 trend.
+  const closedChart = useMemo(
     () =>
-      entryTape !== undefined && entryTape.length >= 60
-        ? analyzeCandles(entryTape)?.trend.direction
+      candles !== undefined
+        ? candlesSet?.hasFormingCandle
+          ? candles.slice(0, -1)
+          : candles
         : undefined,
-    [entryTape],
+    [candles, candlesSet],
   );
-
-  // Victor zones for the charted symbol — measured on 1m+5m+15m, strong
-  // only where zones from DIFFERENT timeframes overlap.
-  const victorZones = useMemo(() => {
-    if (strategy !== "victor") return [];
-    const ctx = ctxSets[symbol];
-    if (ctx === undefined) return [];
-    return markStrongAcross(
-      [ctx.m1, ctx.m5, ctx.m15].filter((c): c is Candle[] => c !== undefined).map(swingZones),
-    );
-  }, [strategy, symbol, ctxSets]);
+  const srLive = useMemo(
+    () => (closedChart !== undefined ? srTrendSignal(closedChart) : undefined),
+    [closedChart],
+  );
+  const srLevels = useMemo(
+    () => (closedChart !== undefined ? majorLevels(closedChart) : []),
+    [closedChart],
+  );
+  const entryRegime = analysis?.trend.direction;
 
   const signalOverlays = useMemo<ChartOverlay[]>(() => {
-    if (!analysis) return [];
     const out: ChartOverlay[] = [];
-    if (strategy === "victor") {
-      victorZones.forEach((z, i) => {
-        out.push({
-          kind: "zone",
-          id: `vz-${i}`,
-          layer: "zones",
-          zoneType: z.kind,
-          upper: z.upper,
-          lower: z.lower,
-          label: `${z.strong ? "Strong " : ""}${z.kind} zone`,
-        });
-      });
-    } else {
-      analysis.zones.forEach((z, i) => {
+    // Major swing levels — the S/R the engine trades off.
+    srLevels.slice(0, 10).forEach((l, i) => {
       out.push({
-        kind: "zone",
-        id: `zone-${i}`,
-        layer: "zones",
-        zoneType: z.kind,
-        upper: z.upper,
-        lower: z.lower,
-        label: z.kind === "demand" ? "Demand zone" : "Supply zone",
+        kind: "level",
+        id: `sr-${i}`,
+        layer: "structure",
+        price: l.price,
+        label: `${l.kind === "support" ? "S" : "R"} ×${l.touches}`,
+        direction: l.kind === "support" ? "bullish" : "bearish",
       });
     });
-    }
-    const s = analysis.signal;
-    if (s.direction !== "wait") {
+    const s = srLive;
+    if (s !== undefined && s.direction !== "wait") {
       const dir = s.direction;
       if (s.entry !== undefined) {
         out.push({
@@ -1073,7 +927,7 @@ export function CryptoMarketsWorkspace({
       });
     }
     return out;
-  }, [analysis, openTrade, selectedTrade, currentKey, strategy, victorZones]);
+  }, [srLevels, srLive, openTrade, selectedTrade, currentKey]);
 
   const signalMarkers = useMemo<ChartMarker[]>(() => {
     const s = analysis?.signal;
@@ -1182,37 +1036,17 @@ export function CryptoMarketsWorkspace({
         ))}
       </div>
 
-      {/* Chart view — which engine's overlays/zones to draw. BOTH engines
-          scan and trade every listed pair independently of this pick. */}
+      {/* The trading engine — one strategy, one tape, no filters. */}
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs text-subtle-foreground">Chart strategy</span>
-        {(
-          [
-            { id: "confluence", label: "Confluence · 5m" },
-            { id: "victor", label: "Victor — pin bar at S/D zone · 1m" },
-          ] as const
-        ).map((m) => (
-          <button
-            key={m.id}
-            type="button"
-            onClick={() => setStrategy(m.id)}
-            aria-pressed={strategy === m.id}
-            className={cn(
-              "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
-              strategy === m.id
-                ? "border-accent bg-accent/10 text-foreground"
-                : "border-border text-subtle-foreground hover:bg-surface-hover hover:text-foreground",
-            )}
-          >
-            {m.label}
-          </button>
-        ))}
+        <span className="text-xs text-subtle-foreground">Engine</span>
+        <Badge tone="developing">S/R + trend · 5m</Badge>
         <span className="text-xs text-subtle-foreground">
-          both engines trade in parallel — one open slot each per pair
+          buys a held support / sells a held resistance with the EMA20/50 trend —
+          one position per pair, level-to-level targets
         </span>
         {entryRegime !== undefined && (
           <Badge tone={entryRegime === "ranging" ? "neutral" : "developing"}>
-            {entryTf} {entryRegime === "ranging" ? "sideways" : entryRegime}
+            {entryRegime === "ranging" ? "sideways" : entryRegime}
           </Badge>
         )}
       </div>
@@ -1222,7 +1056,7 @@ export function CryptoMarketsWorkspace({
         <span className="font-medium text-foreground">Sessions</span>
         {(
           [
-            { label: "Crypto EU/US", w: ENTRY_SESSION_UTC, range: "06:00–22:00 UTC" },
+            { label: "Crypto", w: [0, 24] as readonly [number, number], range: "24/7" },
             { label: "NSE/BSE India", w: INDIA_SESSION_UTC, range: "04:00–10:00 UTC · 09:30–15:30 IST" },
           ] as const
         ).map((s) => {
@@ -1276,73 +1110,65 @@ export function CryptoMarketsWorkspace({
         </p>
       </Card>
 
-      {/* Victor detail — shown when the strategy is selected */}
-      {strategy === "victor" && (
-        <Card>
-          <CardHeader
-            title="Victor scalp — pin bar at supply/demand"
-            description="Pure price action. Zones measured on 1m + 5m + 15m; a zone is STRONG when zones on different timeframes overlap. Entry fires on a 1m pin bar whose tail rejects a zone, confirmed by the next candle. Stop = pin extreme, trailing to the previous candle; target = next opposing swing, ≥1.5R."
-            action={
-              victorLive !== undefined && (
-                <Badge tone={DIR_META[victorLive.signal.direction as Direction].tone}>
-                  {victorLive.signal.direction === "bullish" ? "BUY" : "SELL"} ·{" "}
-                  {victorLive.signal.confidence} pts
-                </Badge>
-              )
-            }
-          />
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-            {[
-              { label: "Entry", value: victorLive?.signal.entry },
-              { label: "Stop (pin extreme)", value: victorLive?.signal.stopLoss },
-              { label: "TP1 · next zone", value: victorLive?.signal.targets[0]?.price },
-              { label: "TP2 · runner", value: victorLive?.signal.targets[1]?.price },
-              { label: "RR", value: victorLive?.signal.riskReward, suffix: "R" },
-            ].map((f) => (
-              <div key={f.label}>
-                <div className="text-xs text-subtle-foreground">{f.label}</div>
-                <div className="numeric mt-0.5 text-sm text-foreground">
-                  {f.value === undefined ? "—" : `${fmtPrice(f.value, precision)}${f.suffix ?? ""}`}
-                </div>
+      {/* Engine detail — the live S/R + trend read on this market */}
+      <Card>
+        <CardHeader
+          title="S/R + trend — the trading engine"
+          description="Major swing levels on the chart; trend from EMA20/50. BUY when price tags a support level and holds it in an uptrend — SELL the mirror at resistance. Stop just beyond the level, target the next opposing level (level-to-level, ≥1.2R)."
+          action={
+            srLive !== undefined && (
+              <Badge tone={DIR_META[srLive.direction].tone}>
+                {srLive.direction === "bullish" ? "BUY" : "SELL"} ·{" "}
+                {srLive.confidence} pts
+              </Badge>
+            )
+          }
+        />
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+          {[
+            { label: "Entry", value: srLive?.entry },
+            { label: "Stop · beyond level", value: srLive?.stopLoss },
+            { label: "TP1 · next level", value: srLive?.targets[0]?.price },
+            { label: "TP2 · runner", value: srLive?.targets[1]?.price },
+            { label: "RR", value: srLive?.riskReward, suffix: "R" },
+          ].map((f) => (
+            <div key={f.label}>
+              <div className="text-xs text-subtle-foreground">{f.label}</div>
+              <div className="numeric mt-0.5 text-sm text-foreground">
+                {f.value === undefined ? "—" : `${fmtPrice(f.value, precision)}${f.suffix ?? ""}`}
               </div>
-            ))}
-          </div>
-          {victorLive === undefined && (
-            <p className="mt-3 text-xs text-subtle-foreground">
-              No confirmed setup right now —{" "}
-              {victorLastPin !== undefined
-                ? `a ${victorLastPin} pin bar printed on 1m but not at a strong zone or unconfirmed`
-                : "no qualifying pin bar on the last closed 1m candle"}
-              .
-            </p>
+            </div>
+          ))}
+        </div>
+        {srLive === undefined && (
+          <p className="mt-3 text-xs text-subtle-foreground">
+            No setup right now — waiting for price to tag a major level inside a
+            trending tape.
+          </p>
+        )}
+        <div className="mt-4 border-t border-border pt-3">
+          <p className="text-xs text-subtle-foreground">
+            Major support / resistance — a level needs ≥2 respects to count
+          </p>
+          {srLevels.length === 0 ? (
+            <p className="mt-0.5 text-sm text-muted-foreground">Waiting for level data…</p>
+          ) : (
+            <ul className="mt-1 space-y-0.5 text-xs">
+              {srLevels.slice(0, 8).map((l, i) => (
+                <li key={i} className="flex flex-wrap items-center gap-2">
+                  <Badge tone={l.kind === "support" ? "bullish" : "bearish"}>
+                    {l.kind}
+                  </Badge>
+                  <span className="numeric text-foreground">
+                    {fmtPrice(l.price, precision)}
+                  </span>
+                  <span className="text-subtle-foreground">{l.touches} respects</span>
+                </li>
+              ))}
+            </ul>
           )}
-          <div className="mt-4 border-t border-border pt-3">
-            <p className="text-xs text-subtle-foreground">
-              Supply/demand zones — 5m+15m overlap = strong
-            </p>
-            {victorZones.length === 0 ? (
-              <p className="mt-0.5 text-sm text-muted-foreground">Waiting for zone data…</p>
-            ) : (
-              <ul className="mt-1 space-y-0.5 text-xs">
-                {victorZones.slice(0, 6).map((z, i) => (
-                  <li key={i} className="flex flex-wrap items-center gap-2">
-                    <Badge tone={z.kind === "demand" ? "bullish" : "bearish"}>
-                      {z.kind}
-                    </Badge>
-                    <span className="numeric text-foreground">
-                      {fmtPrice(z.lower, precision)}–{fmtPrice(z.upper, precision)}
-                    </span>
-                    {z.strong && <Badge tone="developing">STRONG</Badge>}
-                    {z.touches > 0 && (
-                      <span className="text-subtle-foreground">{z.touches} touches</span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </Card>
-      )}
+        </div>
+      </Card>
 
       {/* Signal detail — entry / SL / targets / reasoning / points */}
       <Card>
@@ -1553,7 +1379,7 @@ export function CryptoMarketsWorkspace({
         <CardHeader
           title="Paper trades"
           description={
-            "Virtual $10,000 terminal — both engines run on Binance Spot and NSE/BSE indices: Victor scalps 1m pin bars at leg–base–leg S/D zones; Confluence trades 5m with 15m structure + 1h bias. One open position per pair per strategy — pairs unlimited, no loss caps on a paper book. TP1 banks half; stops trail."
+            "Virtual $10,000 terminal — one engine on Binance Spot and NSE/BSE indices: S/R + trend on the 5m tape. Buys a held support in an uptrend, sells a held resistance in a downtrend; stop beyond the level, target the next opposing level. One open position per pair, no other gates. TP1 banks half; the stop trails candle by candle."
           }
           action={
             <div className="flex items-center gap-2">
@@ -1758,7 +1584,7 @@ export function CryptoMarketsWorkspace({
               trades,
               now,
               undefined,
-              venueId === "india" ? INDIA_SESSION_UTC : ENTRY_SESSION_UTC,
+              venueId === "india" ? INDIA_SESSION_UTC : undefined,
             ) !== undefined && (
               <span className="text-warning">
                 {" "}· entries paused —{" "}
@@ -1766,7 +1592,7 @@ export function CryptoMarketsWorkspace({
                   trades,
                   now,
                   undefined,
-                  venueId === "india" ? INDIA_SESSION_UTC : ENTRY_SESSION_UTC,
+                  venueId === "india" ? INDIA_SESSION_UTC : undefined,
                 )}
               </span>
             )}
@@ -1967,10 +1793,9 @@ export function CryptoMarketsWorkspace({
         {trades.length === 0 ? (
           <p className="text-sm text-subtle-foreground">
             No trades yet — every Binance Spot pair and NSE/BSE index is scanned each
-            minute by both engines. Victor needs a 1m pin + follow-up at a leg–base–leg
-            zone with RR ≥ 1; Confluence needs ≥3 confirmations (trend, structure, momentum,
-            zone, RR, candlestick patterns) at a 5m zone with live volume — inside each
-            venue&apos;s session window. One position per pair per strategy.
+            minute by the S/R + trend engine. A trade needs the EMA20/50 trend aligned
+            and price tagging a major level (≥2 respects) that holds — stop beyond the
+            level, target the next opposing level. One position per pair.
           </p>
         ) : (
           <div className="space-y-4">
@@ -2062,11 +1887,8 @@ export function CryptoMarketsWorkspace({
                               <span className="ml-1.5 text-xs font-normal text-subtle-foreground">
                                 {VENUES[t.venue as VenueId]?.label ?? t.venue}
                               </span>
-                              <Badge
-                                tone={t.strategy === "victor" ? "developing" : "neutral"}
-                                className="ml-1.5"
-                              >
-                                {t.strategy === "victor" ? "Victor" : "Conf"}
+                              <Badge tone="developing" className="ml-1.5">
+                                S/R
                               </Badge>
                             </td>
                             <td className="py-2.5 pr-3">
@@ -2194,11 +2016,9 @@ export function CryptoMarketsWorkspace({
                               <span className="ml-1.5 text-xs font-normal text-subtle-foreground">
                                 {VENUES[t.venue as VenueId]?.label ?? t.venue}
                               </span>
-                              {t.strategy === "victor" && (
-                                <Badge tone="developing" className="ml-1.5">
-                                  Victor
-                                </Badge>
-                              )}
+                              <Badge tone="developing" className="ml-1.5">
+                                S/R
+                              </Badge>
                             </td>
                             <td className="py-2.5 pr-3">
                               <Badge tone={DIR_META[t.direction].tone}>
