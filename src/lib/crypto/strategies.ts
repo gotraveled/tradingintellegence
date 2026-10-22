@@ -8,6 +8,7 @@ import {
 } from "./analysis";
 import { pinBar, victorSignal } from "./victor";
 import { srTrendSignal } from "./srtrend";
+import { donchianSignal, superTrendSignal } from "./algos";
 /**
  * Strategy tournament — a registry of named, published intraday methods,
  * each distilled to its mechanical core so the backtest harness can rank
@@ -130,6 +131,20 @@ const srTrend: StrategyDef = {
   label: "S/R + trend",
   blurb: "The live engine: major swing levels + EMA20/50 trend — buy a held support, sell a held resistance, target the next opposing level.",
   create: () => (hist) => srTrendSignal(hist),
+};
+
+const superTrend: StrategyDef = {
+  id: "supertrend-ai",
+  label: "SuperTrend AI",
+  blurb: "Published algo (DefinedEdge-style): SuperTrend(10,3) flip + AI score — ADX regime, EMA50, volume, displacement ≥65. 2.5×ATR stop, 2.5R target.",
+  create: () => (hist) => superTrendSignal(hist),
+};
+
+const donchian: StrategyDef = {
+  id: "donchian",
+  label: "Donchian breakout",
+  blurb: "Turtle-style: close through the prior 20-bar extreme with the 200-EMA trend. The only viral strategy above break-even in StratCoreAlpha's test.",
+  create: () => (hist) => donchianSignal(hist),
 };
 
 const confluence: StrategyDef = {
@@ -412,6 +427,8 @@ const rangeFade: StrategyDef = {
 /** Registry order = display order in the tournament table. */
 export const STRATEGIES: readonly StrategyDef[] = [
   srTrend,
+  superTrend,
+  donchian,
   confluence,
   victor,
   orb,
