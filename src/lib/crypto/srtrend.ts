@@ -4,10 +4,11 @@ import { atr, type TradeSignal } from "./analysis";
 /**
  * S/R — the whole trading engine, kept deliberately simple:
  *
- *  1. Find swing levels: every swing pivot (3-bar fractal) over the recent
- *    tape is a support/resistance level — pivots within 0.5×ATR of each
- *    other merge into one zone, so repeated attempts at roughly the same
- *    price strengthen a level rather than duplicating it.
+ *  1. Find MAJOR swing levels: a swing pivot is only real when a high/low
+ *    is the extreme for 10 bars on each side (~50 min on 5m — the small
+ *    wiggles don't count). Pivots within 0.5×ATR of each other merge into
+ *    one zone, so repeated attempts at roughly the same price strengthen a
+ *    level rather than duplicating it.
  *  2. Whichever level price interacts with decides direction — TWO plays:
  *       BOUNCE — support tagged and held → BUY; resistance tagged and
  *        rejected → SELL (the demand-zone / supply-zone play).
@@ -36,9 +37,8 @@ export interface SrLevel {
   /** Bar index of the most recent pivot that formed this level. */
   formedIdx: number;
 }
-
-const LOOKBACK = 160; // bars scanned for pivots
-const PIVOT_W = 3; // fractal half-window
+const LOOKBACK = 240; // bars scanned for pivots
+const PIVOT_W = 10; // fractal half-window — only MAJOR swings qualify
 const CLUSTER_ATR = 0.5; // pivots closer than this merge into one level
 const MIN_TOUCHES = 1; // every swing pivot is a level — touches only rank strength
 const TAG_ATR = 0.5; // "price is at the level" tolerance

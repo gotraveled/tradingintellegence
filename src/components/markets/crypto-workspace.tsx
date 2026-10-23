@@ -515,7 +515,8 @@ export function CryptoMarketsWorkspace({
     engineIdRef.current = id;
     engineFnRef.current = fn;
     setEngineId(id);
-    setEngineFn(fn);
+    // Wrap it — a bare function passed to setState is treated as an updater.
+    setEngineFn(() => fn);
   };
 
   // Global scan: every listed pair on the trading venues (Binance Spot +
@@ -582,9 +583,12 @@ export function CryptoMarketsWorkspace({
               // ---- The selected strategy's 5m signal — one engine,
               // one timeframe, every pair. ----
               const closed5 = tfSets.get(journalKey(vId, sym, "5m"));
-              const setup = closed5 !== undefined
-                ? engineFnRef.current(closed5)
-                : undefined;
+              let setup: ReturnType<StrategyFn>;
+              try {
+                setup = closed5 !== undefined ? engineFnRef.current(closed5) : undefined;
+              } catch {
+                setup = undefined; // engine threw on this tape — skip the pair
+              }
               if (closed5 === undefined) {
                 scanWhyRef.current[sym] = "warming up";
               } else if (setup === undefined) {
@@ -770,10 +774,14 @@ export function CryptoMarketsWorkspace({
         : undefined,
     [candles, candlesSet],
   );
-  const engineLive = useMemo(
-    () => (closedChart !== undefined ? engineFn(closedChart) : undefined),
-    [closedChart, engineFn],
-  );
+  const engineLive = useMemo(() => {
+    if (closedChart === undefined) return undefined;
+    try {
+      return engineFn(closedChart);
+    } catch {
+      return undefined; // a strategy that throws just has no signal — never crash the page
+    }
+  }, [closedChart, engineFn]);
   const srLevels = useMemo(
     () => (closedChart !== undefined && engineId === "sr" ? majorLevels(closedChart) : []),
     [closedChart, engineId],
