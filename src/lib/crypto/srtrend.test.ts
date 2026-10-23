@@ -37,8 +37,8 @@ function bullishTape(): Candle[] {
   closes.push(106.3, 106.7, 107.0, 106.5, 106.1); // peak #2 (i 65-69)
   for (let i = 70; i < 116; i += 1) closes.push(105.8 + Math.sin(i * 0.9) * 0.5); // chop
   closes.push(105.2, 105.0, 105.4, 105.6); // tag the level, hold (i 116-119)
-  const lows: Record<number, number> = { 50: 104.6, 62: 104.6, 116: 104.9, 117: 104.85 };
-  const highs: Record<number, number> = { 55: 107.1, 67: 107.1 };
+  const lows: Record<number, number> = { 50: 104.6, 62: 104.6, 85: 104.6, 116: 104.9, 117: 104.85 };
+  const highs: Record<number, number> = { 55: 107.1, 67: 107.1, 90: 107.1 };
   return tape(closes, lows, highs);
 }
 
@@ -53,27 +53,27 @@ function bearishTape(): Candle[] {
   closes.push(94.6, 94.1, 93.7);
   for (let i = 68; i < 116; i += 1) closes.push(94.2 + Math.sin(i * 0.9) * 0.5); // chop
   closes.push(94.8, 95.0, 94.6, 94.4); // tag resistance, reject
-  const highs: Record<number, number> = { 50: 95.4, 62: 95.4, 116: 95.1, 117: 95.15 };
-  const lows: Record<number, number> = { 55: 92.9, 67: 92.9 };
+  const highs: Record<number, number> = { 50: 95.4, 62: 95.4, 85: 95.4, 116: 95.1, 117: 95.15 };
+  const lows: Record<number, number> = { 55: 92.9, 67: 92.9, 95: 92.9 };
   return tape(closes, lows, highs);
 }
 
 describe("majorLevels", () => {
-  it("finds the swing support and resistance price respected ≥2 times", () => {
+  it("finds the swing support and resistance levels", () => {
     const levels = majorLevels(bullishTape());
     const support = levels.find((l) => l.kind === "support");
     const resistance = levels.find((l) => l.kind === "resistance");
     expect(support?.price).toBeGreaterThan(104.4);
     expect(support?.price).toBeLessThan(105.1);
-    expect(support?.touches ?? 0).toBeGreaterThanOrEqual(2);
+    expect(support?.touches ?? 0).toBeGreaterThanOrEqual(1);
     expect(resistance?.price).toBeGreaterThan(106.5);
   });
 
-  it("ignores one-off spikes (not major)", () => {
+  it("marks a single-touch spike as a level", () => {
     const flat = tape(Array.from({ length: 120 }, (_, i) => 100 + Math.sin(i) * 0.3));
-    flat[60] = bar(100, 103, 99.5, 100.2); // single spike — never respected again
+    flat[60] = bar(100, 103, 99.5, 100.2); // single spike — a level all the same
     const levels = majorLevels(flat);
-    expect(levels.every((l) => Math.abs(l.price - 103) > 0.5)).toBe(true);
+    expect(levels.some((l) => Math.abs(l.price - 103) <= 0.5 && l.touches === 1)).toBe(true);
   });
 });
 
@@ -101,8 +101,8 @@ describe("srTrendSignal", () => {
     const closes: number[] = [];
     for (let i = 0; i < 116; i += 1) closes.push(100 + Math.sin(i * 0.4) * 0.8);
     closes.push(98.9, 99.0, 99.4, 99.6); // tag + hold
-    const lows: Record<number, number> = { 40: 98.0, 80: 98.0, 116: 98.1, 117: 98.05 };
-    const highs: Record<number, number> = { 20: 102.0, 60: 102.0 };
+    const lows: Record<number, number> = { 40: 98.0, 60: 98.0, 80: 98.0, 116: 98.1, 117: 98.05 };
+    const highs: Record<number, number> = { 20: 102.0, 60: 102.0, 90: 102.0 };
     const sig = srTrendSignal(tape(closes, lows, highs));
     expect(sig?.direction).toBe("bullish");
     expect(sig?.stopLoss ?? 0).toBeLessThan(98.2); // beyond the level
@@ -119,8 +119,8 @@ describe("srTrendSignal", () => {
     const closes: number[] = [];
     for (let i = 0; i < 116; i += 1) closes.push(100 + Math.sin(i * 0.4) * 0.8);
     closes.push(99.5, 99.2, 98.9, 97.4); // decisive close under the 98 level
-    const lows: Record<number, number> = { 40: 98.0, 80: 98.0, 116: 99.0 };
-    const highs: Record<number, number> = { 20: 102.0, 60: 102.0, 116: 99.6 };
+    const lows: Record<number, number> = { 40: 98.0, 60: 98.0, 80: 98.0, 116: 99.0 };
+    const highs: Record<number, number> = { 20: 102.0, 60: 102.0, 90: 102.0, 116: 99.6 };
     const sig = srTrendSignal(tape(closes, lows, highs));
     expect(sig?.direction).toBe("bearish");
     expect(sig?.stopLoss ?? 0).toBeGreaterThan(sig?.entry ?? 0); // stop = reclaim side
@@ -131,8 +131,8 @@ describe("srTrendSignal", () => {
     const closes: number[] = [];
     for (let i = 0; i < 116; i += 1) closes.push(100 + Math.sin(i * 0.4) * 0.8);
     closes.push(100.8, 101.0, 101.2, 102.7); // decisive close over the 102 level
-    const lows: Record<number, number> = { 40: 98.0, 80: 98.0 };
-    const highs: Record<number, number> = { 20: 102.0, 60: 102.0, 116: 100.9 };
+    const lows: Record<number, number> = { 40: 98.0, 60: 98.0, 80: 98.0 };
+    const highs: Record<number, number> = { 20: 102.0, 60: 102.0, 90: 102.0, 116: 100.9 };
     const sig = srTrendSignal(tape(closes, lows, highs));
     expect(sig?.direction).toBe("bullish");
     expect(sig?.stopLoss ?? 0).toBeLessThan(sig?.entry ?? 0); // stop below broken level
@@ -144,8 +144,8 @@ describe("srTrendSignal", () => {
     for (let i = 0; i < 116; i += 1) closes.push(100 + Math.sin(i * 0.4) * 0.8);
     closes.push(98.6, 98.4, 98.3, 98.7); // settle just above the 98 level
     // Wick plunges through the 98 level then closes back above it.
-    const lows: Record<number, number> = { 40: 98.0, 80: 98.0, 117: 97.5 };
-    const highs: Record<number, number> = { 20: 102.0, 60: 102.0 };
+    const lows: Record<number, number> = { 40: 98.0, 60: 98.0, 80: 98.0, 117: 97.5 };
+    const highs: Record<number, number> = { 20: 102.0, 60: 102.0, 90: 102.0 };
     const sig = srTrendSignal(tape(closes, lows, highs));
     expect(sig?.direction).toBe("bullish");
     expect(sig?.reasons.join(" ")).toMatch(/liquidity sweep/);
@@ -160,8 +160,8 @@ describe("srTrendSignal", () => {
     closes.push(98.1, 98.2, 98.3); // second dip (support pivot #2 ~98)
     for (let i = 43; i < 116; i += 1) closes.push(99.2 + (i - 42) * 0.06); // drift up & away
     closes.push(99.0, 98.6, 98.4, 98.9); // FIRST return to ~98
-    const lows: Record<number, number> = { 21: 98.0, 40: 98.0, 116: 98.5, 117: 98.2 };
-    const highs: Record<number, number> = { 60: 103.0, 90: 103.4 };
+    const lows: Record<number, number> = { 21: 98.0, 40: 98.0, 60: 98.0, 116: 98.5, 117: 98.2 };
+    const highs: Record<number, number> = { 30: 103.0, 60: 103.0, 90: 103.0 };
     const sig = srTrendSignal(tape(closes, lows, highs));
     expect(sig?.direction).toBe("bullish");
     expect(sig?.reasons.join(" ")).toMatch(/untested/);

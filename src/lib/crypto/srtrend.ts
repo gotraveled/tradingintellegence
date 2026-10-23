@@ -4,9 +4,10 @@ import { atr, type TradeSignal } from "./analysis";
 /**
  * S/R — the whole trading engine, kept deliberately simple:
  *
- *  1. Find MAJOR levels: swing pivots (3-bar fractals) over the recent tape,
- *    clustered within 0.4×ATR — a level is only real once price has
- *    respected it ≥2 times.
+ *  1. Find swing levels: every swing pivot (3-bar fractal) over the recent
+ *    tape is a support/resistance level — pivots within 0.5×ATR of each
+ *    other merge into one zone, so repeated attempts at roughly the same
+ *    price strengthen a level rather than duplicating it.
  *  2. Whichever level price interacts with decides direction — TWO plays:
  *       BOUNCE — support tagged and held → BUY; resistance tagged and
  *        rejected → SELL (the demand-zone / supply-zone play).
@@ -38,8 +39,8 @@ export interface SrLevel {
 
 const LOOKBACK = 160; // bars scanned for pivots
 const PIVOT_W = 3; // fractal half-window
-const CLUSTER_ATR = 0.4; // pivots closer than this merge into one level
-const MIN_TOUCHES = 2; // a level needs this many respects to be "major"
+const CLUSTER_ATR = 0.5; // pivots closer than this merge into one level
+const MIN_TOUCHES = 1; // every swing pivot is a level — touches only rank strength
 const TAG_ATR = 0.5; // "price is at the level" tolerance
 const TAG_BARS = 4; // the tag may be this many closed bars old
 const NEAR_ATR = 2.5; // candidate levels must be within this of price
@@ -90,7 +91,7 @@ function cluster(ps: Pivot[], radius: number): SrLevel[] {
   return lvls;
 }
 
-/** Major support/resistance levels over the recent tape — chart + engine share these. */
+/** Support/resistance levels over the recent tape — chart + engine share these. */
 export function majorLevels(hist: Candle[]): SrLevel[] {
   if (hist.length < 40) return [];
   const width = atr(hist, 14) || hist[hist.length - 1].close * 0.002;

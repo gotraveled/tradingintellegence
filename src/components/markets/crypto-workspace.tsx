@@ -19,7 +19,7 @@ import type { ChartOverlay } from "@/components/charts/chart-types";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader } from "@/components/ui/card";
 import { Notice } from "@/components/ui/notice";
-import { analyzeCandles, type SignalAnalysis, type TradeSignal } from "@/lib/crypto/analysis";
+import type { TradeSignal } from "@/lib/crypto/analysis";
 import {
   ACCOUNT_CAPITAL_USD,
   closeAllPositions,
@@ -41,10 +41,9 @@ import {
   unrealizedUsd,
   type TradeRecord,
 } from "@/lib/crypto/journal";
-import { analyzeTechnicals } from "@/lib/crypto/technicals";
 import { backtestCandles, type BacktestStats } from "@/lib/crypto/backtest";
-import { STRATEGIES } from "@/lib/crypto/strategies";
-import { majorLevels, srTrendSignal, SR_STRATEGY_ID } from "@/lib/crypto/srtrend";
+import { STRATEGIES, type StrategyFn } from "@/lib/crypto/strategies";
+import { majorLevels, srTrendSignal } from "@/lib/crypto/srtrend";
 import type { CalendarEvent } from "@/app/api/economic-calendar/route";
 import { fetchCryptoKlines, fetchCryptoQuotes } from "@/lib/crypto/binance/client";
 import {
@@ -222,8 +221,6 @@ const VENUES: Record<VenueId, VenueDef> = {
 
 const VENUE_ORDER: VenueId[] = ["binance", "india", "kraken"];
 
-/** Timeframes scanned continuously for intraday setups. */
-const SCAN_TIMEFRAMES: Timeframe[] = ["5m", "15m", "30m", "1h", "4h"];
 const SCAN_REFRESH_MS = 60_000;
 const CANDLE_FLUSH_MS = 700;
 
@@ -241,14 +238,6 @@ const DIR_META: Record<Direction | "wait" | "ranging", { tone: Tone; label: stri
   wait: { tone: "neutral", label: "WAIT", icon: Minus },
   ranging: { tone: "neutral", label: "Ranging", icon: Minus },
 };
-
-interface ScanRow {
-  state: "loading" | "ready" | "error";
-  analysis?: SignalAnalysis;
-  error?: string;
-}
-
-type ScanState = Partial<Record<Timeframe, ScanRow>>;
 
 /** A journaled trade event surfaced to the user (in-app feed + browser notification). */
 interface TradeAlert {
@@ -281,11 +270,9 @@ function fmtUsdPnl(value: number): string {
   })}`;
 }
 
-/** "in 4h 12m" / "in 7m" countdown for upcoming calendar events. */
-function fmtCountdown(deltaMs: number): string {
-  const m = Math.max(1, Math.round(deltaMs / 60_000));
-  if (m >= 60) return `in ${Math.floor(m / 60)}h ${m % 60}m`;
-  return `in ${m}m`;
+/** Journal's strategy tag → the registry's display label. */
+function strategyLabel(id: string | undefined): string {
+  return STRATEGIES.find((d) => d.id === (id ?? "confluence"))?.label ?? "Confluence";
 }
 
 function fmtSignedPct(value: number | undefined): string {
@@ -312,7 +299,6 @@ export function CryptoMarketsWorkspace({
   const [restError, setRestError] = useState<string | undefined>();
   const [feedStatus, setFeedStatus] = useState<FeedStatus>("connecting");
   const [lastEventAt, setLastEventAt] = useState<number | undefined>();
-  const [scan, setScan] = useState<ScanState>({});
   const [trades, setTrades] = useState<TradeRecord[]>([]);
   const [alerts, setAlerts] = useState<TradeAlert[]>([]);
   const [selectedTradeId, setSelectedTradeId] = useState<string | undefined>(undefined);
@@ -330,6 +316,15 @@ export function CryptoMarketsWorkspace({
   const [notifyOn, setNotifyOn] = useState(false);
   const [news, setNews] = useState<{ events: CalendarEvent[]; error?: string }>({ events: [] });
   const [now, setNow] = useState(0);
+  // Which registered strategy is the live trading engine — button row below.
+  // The fn lives in state so the render path stays ref-free; it keeps its
+  // run-local memory (e.g. ORB's one-trade-per-session) for the scan.
+  const [engineId, setEngineId] = useState<string>(STRATEGIES[0]?.id ?? "sr");
+  const [engineFn, setEngineFn] = useState<StrategyFn>(
+    () => STRATEGIES.find((d) => d.id === (STRATEGIES[0]?.id ?? "sr"))?.create() ?? srTrendSignal,
+  );
+  const engineIdRef = useRef(engineId);
+  const engineFnRef = useRef(engineFn);
   const prevTradesRef = useRef<Map<string, TradeRecord>>(new Map());
   const seededRef = useRef(false);
 
@@ -389,7 +384,6 @@ export function CryptoMarketsWorkspace({
     setQuotes({});
     setCandlesSet(undefined);
     setRestError(undefined);
-    setScan({});
   };
 
   const switchSymbol = (next: string) => {
@@ -397,7 +391,6 @@ export function CryptoMarketsWorkspace({
     setSymbol(next);
     setCandlesSet(undefined);
     setRestError(undefined);
-    setScan({});
   };
 
   const switchTimeframe = (next: Timeframe) => {
@@ -503,61 +496,27 @@ export function CryptoMarketsWorkspace({
     };
   }, [venue, symbol, timeframe, onStreamCandle]);
 
-  // Intraday scan: analyze the other scan timeframes over REST, refreshed
-  // every minute. The selected timeframe's row comes from the live analysis.
   // Live marks: last close per venue|symbol|tf, fed by every kline fetch
-  // (global scan, MTF scan, live chart) — drives floating P&L per trade.
+  // (global scan, live chart) — drives floating P&L per trade.
   const [marks, setMarks] = useState<Record<string, number>>({});
-  // Why each pair/timeframe did not book this scan tick — makes a quiet
+  // Why each pair did not book this scan tick — makes a quiet
   // market visible instead of looking like a dead engine.
   const [scanWhy, setScanWhy] = useState<{ at: number; cells: Record<string, string> } | undefined>(
     undefined,
   );
   const scanWhyRef = useRef<Record<string, string>>({});
 
-  // Single engine — S/R + trend on the 5m tape (srtrend.ts). No strategy
-  // picker, no context sets: one method, one timeframe, every pair.
-
-  useEffect(() => {
-    let cancelled = false;
-    const run = () => {
-      for (const tf of SCAN_TIMEFRAMES) {
-        if (tf === timeframe) continue;
-        // Skip intervals the venue doesn't offer (e.g. 4h on NSE/BSE) —
-        // fetching them would produce a permanent error row.
-        if (!venue.intervals.some((i) => i.timeframe === tf)) continue;
-        void venue.fetchKlines(symbol, tf).then((res) => {
-          if (cancelled) return;
-          const rowAnalysis = res.ok ? analyzeCandles(res.data.candles) : undefined;
-          setScan((prev) => ({
-            ...prev,
-            [tf]: res.ok
-              ? { state: "ready", analysis: rowAnalysis }
-              : { state: "error", error: res.error.message },
-          }));
-          // Management only — entry selection is centralized in the
-          // global scan (one trade per pair, best timeframe wins).
-          if (res.ok && res.data.candles.length > 0) {
-            const set = res.data.candles;
-            const closed = res.data.hasFormingCandle ? set.slice(0, -1) : set;
-            const key = journalKey(venue.id, symbol, tf);
-            setMarks((m) => ({ ...m, [key]: set[set.length - 1].close }));
-            updateTrades((prev) =>
-              prev.map((t) =>
-                t.status === "open" && tradeKey(t) === key ? evaluateTrade(t, closed) : t,
-              ),
-            );
-          }
-        });
-      }
-    };
-    run();
-    const timer = setInterval(run, SCAN_REFRESH_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [venue, symbol, timeframe, updateTrades]);
+  // The strategy buttons pick the engine — a fresh StrategyFn is created
+  // on each switch so its internal session state starts clean.
+  const engineDef = STRATEGIES.find((d) => d.id === engineId);
+  const selectEngine = (id: string) => {
+    const def = STRATEGIES.find((d) => d.id === id);
+    const fn = def !== undefined ? def.create() : srTrendSignal;
+    engineIdRef.current = id;
+    engineFnRef.current = fn;
+    setEngineId(id);
+    setEngineFn(fn);
+  };
 
   // Global scan: every listed pair on the trading venues (Binance Spot +
   // NSE/BSE India — kept fully separate markets), every minute. One engine
@@ -620,15 +579,17 @@ export function CryptoMarketsWorkspace({
             // Entries are decided on CLOSED bars only — a pro waits for
             // the candle to print, never trades a half-formed signal.
             if (trading) {
-              // ---- S/R — 5m: buy a held support or broken resistance,
-              // sell the mirrors — bounce or break, level-to-level. ----
+              // ---- The selected strategy's 5m signal — one engine,
+              // one timeframe, every pair. ----
               const closed5 = tfSets.get(journalKey(vId, sym, "5m"));
-              const setup = closed5 !== undefined ? srTrendSignal(closed5) : undefined;
+              const setup = closed5 !== undefined
+                ? engineFnRef.current(closed5)
+                : undefined;
               if (closed5 === undefined) {
                 scanWhyRef.current[sym] = "warming up";
               } else if (setup === undefined) {
                 scanWhyRef.current[sym] = "no level setup";
-              } else if (slotBusy(SR_STRATEGY_ID)) {
+              } else if (slotBusy(engineIdRef.current)) {
                 scanWhyRef.current[sym] = "position open";
               } else {
                 scanWhyRef.current[sym] =
@@ -640,7 +601,7 @@ export function CryptoMarketsWorkspace({
                   signal: setup,
                   barTime: closed5[closed5.length - 1].time,
                   edge: 0,
-                  strategy: SR_STRATEGY_ID,
+                  strategy: engineIdRef.current,
                   sessionUtc,
                 });
               }
@@ -675,17 +636,6 @@ export function CryptoMarketsWorkspace({
   }, [updateTrades]);
 
   const candles = candlesSet?.candles;
-  const analysis = useMemo(
-    () => (candles !== undefined ? analyzeCandles(candles) : undefined),
-    [candles],
-  );
-
-  // Institutional engine context — structure/liquidity/FVGs, causal only.
-  const technicals = useMemo(
-    () =>
-      candles !== undefined ? analyzeTechnicals(candles, symbol, timeframe) : undefined,
-    [candles, symbol, timeframe],
-  );
 
   // High-impact economic calendar (Forex Factory mirror) — every 15 min.
   // `now` is a state tick (render must stay pure — no Date.now() there).
@@ -809,17 +759,8 @@ export function CryptoMarketsWorkspace({
   const floating = floatingPnlUsd(pageTrades, markOf);
   const liveEquity = Math.round((balance + floating) * 100) / 100;
 
-  // High-impact events: released in the last 30m or coming within 48h.
-  const upcomingNews = news.events
-    .filter((e) => e.impact === "High")
-    .map((e) => ({ ...e, ms: Date.parse(e.time) }))
-    .filter((e) => e.ms > now - 30 * 60_000 && e.ms < now + 48 * 3_600_000)
-    .sort((a, b) => a.ms - b.ms)
-    .slice(0, 6);
-  const newsRisk = upcomingNews.find((e) => Math.abs(e.ms - now) <= 60 * 60_000);
-
-  // Live S/R readout for the charted market — the same evaluation the
-  // scan runs on every pair's 5m tape: major swing levels + EMA20/50 trend.
+  // Live engine readout for the charted market — the same evaluation the
+  // scan runs on every pair's 5m tape.
   const closedChart = useMemo(
     () =>
       candles !== undefined
@@ -829,20 +770,23 @@ export function CryptoMarketsWorkspace({
         : undefined,
     [candles, candlesSet],
   );
-  const srLive = useMemo(
-    () => (closedChart !== undefined ? srTrendSignal(closedChart) : undefined),
-    [closedChart],
+  const engineLive = useMemo(
+    () => (closedChart !== undefined ? engineFn(closedChart) : undefined),
+    [closedChart, engineFn],
   );
   const srLevels = useMemo(
-    () => (closedChart !== undefined ? majorLevels(closedChart) : []),
-    [closedChart],
+    () => (closedChart !== undefined && engineId === "sr" ? majorLevels(closedChart) : []),
+    [closedChart, engineId],
   );
-  const entryRegime = analysis?.trend.direction;
 
   const signalOverlays = useMemo<ChartOverlay[]>(() => {
     const out: ChartOverlay[] = [];
-    // Major swing levels — the S/R the engine trades off.
-    srLevels.slice(0, 10).forEach((l, i) => {
+    // Major swing levels only — the S/R the engine trades off, capped to
+    // the ones nearest price so the chart stays clean.
+    [...srLevels]
+      .sort((a, b) => Math.abs(a.price - (lastClose ?? 0)) - Math.abs(b.price - (lastClose ?? 0)))
+      .slice(0, 6)
+      .forEach((l, i) => {
       out.push({
         kind: "level",
         id: `sr-${i}`,
@@ -852,7 +796,7 @@ export function CryptoMarketsWorkspace({
         direction: l.kind === "support" ? "bullish" : "bearish",
       });
     });
-    const s = srLive;
+    const s = engineLive;
     if (s !== undefined && s.direction !== "wait") {
       const dir = s.direction;
       if (s.entry !== undefined) {
@@ -927,12 +871,12 @@ export function CryptoMarketsWorkspace({
       });
     }
     return out;
-  }, [srLevels, srLive, openTrade, selectedTrade, currentKey]);
+  }, [srLevels, engineLive, openTrade, selectedTrade, currentKey, lastClose]);
 
   const signalMarkers = useMemo<ChartMarker[]>(() => {
-    const s = analysis?.signal;
+    const s = engineLive;
     const lastCandle = candles?.[candles.length - 1];
-    if (!analysis || s === undefined || s.direction === "wait" || lastCandle === undefined) {
+    if (s === undefined || s.direction === "wait" || lastCandle === undefined) {
       return [];
     }
     return [
@@ -944,18 +888,10 @@ export function CryptoMarketsWorkspace({
         text: `${s.direction === "bullish" ? "BUY" : "SELL"} ${s.confidence}pts`,
       },
     ];
-  }, [analysis, candles]);
+  }, [engineLive, candles]);
 
   const feed = FEED_META[feedStatus];
   const FeedIcon = feed.icon;
-  const signal = analysis?.signal;
-  const signalMeta = signal ? DIR_META[signal.direction] : DIR_META.wait;
-  const SignalIcon = signalMeta.icon;
-
-  const scanRowFor = (tf: Timeframe): ScanRow =>
-    tf === timeframe
-      ? { state: "ready", analysis }
-      : scan[tf] ?? { state: "loading" };
 
   return (
     <div className="space-y-5">
@@ -1036,20 +972,31 @@ export function CryptoMarketsWorkspace({
         ))}
       </div>
 
-      {/* The trading engine — one strategy, one tape, no filters. */}
+      {/* Strategy buttons — the picked strategy IS the live engine:
+          every listed pair is scanned with it each minute. */}
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs text-subtle-foreground">Engine</span>
-        <Badge tone="developing">S/R levels · 5m</Badge>
-        <span className="text-xs text-subtle-foreground">
-          buys a held support or a broken resistance / sells the mirrors —
-          bounces and breakouts, level-to-level targets
-        </span>
-        {entryRegime !== undefined && (
-          <Badge tone={entryRegime === "ranging" ? "neutral" : "developing"}>
-            {entryRegime === "ranging" ? "sideways" : entryRegime}
-          </Badge>
-        )}
+        <span className="text-xs font-medium text-foreground">Engine</span>
+        {STRATEGIES.map((d) => (
+          <button
+            key={d.id}
+            type="button"
+            onClick={() => selectEngine(d.id)}
+            aria-pressed={engineId === d.id}
+            title={d.blurb}
+            className={cn(
+              "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
+              engineId === d.id
+                ? "border-accent bg-accent/10 text-foreground"
+                : "border-border text-subtle-foreground hover:bg-surface-hover hover:text-foreground",
+            )}
+          >
+            {d.label}
+          </button>
+        ))}
       </div>
+      <p className="text-xs text-subtle-foreground">
+        {engineDef?.blurb ?? ""} — trades the 5m tape, one position per pair.
+      </p>
 
       {/* Trading sessions — the entry windows each market obeys */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-subtle-foreground">
@@ -1110,27 +1057,27 @@ export function CryptoMarketsWorkspace({
         </p>
       </Card>
 
-      {/* Engine detail — the live S/R + trend read on this market */}
+      {/* Engine detail — the selected strategy's live read on this market */}
       <Card>
         <CardHeader
-          title="S/R — the trading engine"
-          description="Major swing levels on the chart (≥2 respects). BOUNCE: buy a support that holds, sell a resistance that rejects. BREAK: buy a resistance that breaks, sell a support that breaks. Stop beyond the level, target the next opposing level (≥1R). Untested zones, liquidity sweeps and fair-value gaps boost the setup's score."
+          title={`${engineDef?.label ?? "Engine"} — the trading engine`}
+          description={engineDef?.blurb ?? ""}
           action={
-            srLive !== undefined && (
-              <Badge tone={DIR_META[srLive.direction].tone}>
-                {srLive.direction === "bullish" ? "BUY" : "SELL"} ·{" "}
-                {srLive.confidence} pts
+            engineLive !== undefined && (
+              <Badge tone={DIR_META[engineLive.direction].tone}>
+                {engineLive.direction === "bullish" ? "BUY" : "SELL"} ·{" "}
+                {engineLive.confidence} pts
               </Badge>
             )
           }
         />
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
           {[
-            { label: "Entry", value: srLive?.entry },
-            { label: "Stop · beyond level", value: srLive?.stopLoss },
-            { label: "TP1 · next level", value: srLive?.targets[0]?.price },
-            { label: "TP2 · runner", value: srLive?.targets[1]?.price },
-            { label: "RR", value: srLive?.riskReward, suffix: "R" },
+            { label: "Entry", value: engineLive?.entry },
+            { label: "Stop", value: engineLive?.stopLoss },
+            { label: "TP1", value: engineLive?.targets[0]?.price },
+            { label: "TP2", value: engineLive?.targets[1]?.price },
+            { label: "RR", value: engineLive?.riskReward, suffix: "R" },
           ].map((f) => (
             <div key={f.label}>
               <div className="text-xs text-subtle-foreground">{f.label}</div>
@@ -1140,245 +1087,59 @@ export function CryptoMarketsWorkspace({
             </div>
           ))}
         </div>
-        {srLive === undefined && (
+        {engineLive === undefined ? (
           <p className="mt-3 text-xs text-subtle-foreground">
-            No setup right now — waiting for price to tag a major level.
-          </p>
-        )}
-        <div className="mt-4 border-t border-border pt-3">
-          <p className="text-xs text-subtle-foreground">
-            Major support / resistance — a level needs ≥2 respects to count
-          </p>
-          {srLevels.length === 0 ? (
-            <p className="mt-0.5 text-sm text-muted-foreground">Waiting for level data…</p>
-          ) : (
-            <ul className="mt-1 space-y-0.5 text-xs">
-              {srLevels.slice(0, 8).map((l, i) => (
-                <li key={i} className="flex flex-wrap items-center gap-2">
-                  <Badge tone={l.kind === "support" ? "bullish" : "bearish"}>
-                    {l.kind}
-                  </Badge>
-                  <span className="numeric text-foreground">
-                    {fmtPrice(l.price, precision)}
-                  </span>
-                  <span className="text-subtle-foreground">{l.touches} respects</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </Card>
-
-      {/* Signal detail — entry / SL / targets / reasoning / points */}
-      <Card>
-        <CardHeader
-          title="Signal analysis"
-          description="Deterministic read of the candles on the chart — same data, auditable factors."
-          action={
-            analysis !== undefined && (
-              <Badge tone={signalMeta.tone}>
-                <SignalIcon className="mr-1 inline size-3.5" aria-hidden="true" />
-                {signalMeta.label}
-                {signal && signal.direction !== "wait" ? ` · ${signal.confidence} pts` : ""}
-              </Badge>
-            )
-          }
-        />
-        {analysis === undefined || signal === undefined ? (
-          <p className="text-sm text-subtle-foreground">
-            {candles === undefined ? "Waiting for candles…" : "Not enough bars to analyze yet."}
+            No setup right now — {engineDef?.label ?? "the engine"} is waiting for its entry
+            conditions.
           </p>
         ) : (
-          <div className="space-y-4">
-            {newsRisk !== undefined && (
-              <Badge tone="developing" className="w-fit">
-                News risk — {newsRisk.title} ({newsRisk.currency}){" "}
-                {newsRisk.ms > now
-                  ? `in ${Math.max(1, Math.round((newsRisk.ms - now) / 60_000))}m`
-                  : "just released"}
-              </Badge>
-            )}
-            {/* Levels */}
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-              {[
-                { label: "Entry", value: signal.entry },
-                { label: "Stop loss", value: signal.stopLoss },
-                { label: "TP1", value: signal.targets[0]?.price },
-                { label: "TP2", value: signal.targets[1]?.price },
-                {
-                  label: "Risk : reward",
-                  value: undefined,
-                  text:
-                    signal.riskReward !== undefined ? `${signal.riskReward}R` : "—",
-                },
-              ].map((cell) => (
-                <div key={cell.label} className="rounded-md border border-border p-3">
-                  <div className="text-xs text-subtle-foreground">{cell.label}</div>
-                  <div className="numeric mt-1 text-sm font-semibold text-foreground">
-                    {cell.text ?? fmtPrice(cell.value, precision)}
-                  </div>
-                </div>
+          engineLive.reasons.length > 0 && (
+            <ul className="mt-3 list-inside list-disc space-y-0.5 text-xs text-muted-foreground">
+              {engineLive.reasons.map((r) => (
+                <li key={r}>{r}</li>
               ))}
-            </div>
-
-            {/* Points breakdown */}
-            <div>
-              <div className="mb-2 flex items-baseline justify-between">
-                <h3 className="text-sm font-medium text-foreground">Confluence points</h3>
-                <span className="numeric text-sm font-semibold text-foreground">
-                  {signal.confidence}/100
-                </span>
-              </div>
-              <ul className="divide-y divide-border rounded-md border border-border">
-                {signal.factors.map((f) => (
-                  <li key={f.label} className="flex items-center gap-3 px-3 py-2 text-sm">
-                    <span className="w-28 shrink-0 font-medium text-foreground">{f.label}</span>
-                    <span
-                      className={cn(
-                        "numeric w-12 shrink-0 text-right font-semibold",
-                        f.agrees ? "text-bullish" : "text-subtle-foreground",
-                      )}
-                    >
-                      {f.points}/{f.weight}
+            </ul>
+          )
+        )}
+        {engineId === "sr" && (
+          <div className="mt-4 border-t border-border pt-3">
+            <p className="text-xs text-subtle-foreground">
+              Support / resistance — every swing high/low; N respects = strength
+            </p>
+            {srLevels.length === 0 ? (
+              <p className="mt-0.5 text-sm text-muted-foreground">Waiting for level data…</p>
+            ) : (
+              <ul className="mt-1 space-y-0.5 text-xs">
+                {[...srLevels]
+                  .sort(
+                    (a, b) =>
+                      Math.abs(a.price - (lastClose ?? 0)) -
+                      Math.abs(b.price - (lastClose ?? 0)),
+                  )
+                  .slice(0, 6)
+                  .map((l, i) => (
+                  <li key={i} className="flex flex-wrap items-center gap-2">
+                    <Badge tone={l.kind === "support" ? "bullish" : "bearish"}>
+                      {l.kind}
+                    </Badge>
+                    <span className="numeric text-foreground">
+                      {fmtPrice(l.price, precision)}
                     </span>
-                    <span className="truncate text-subtle-foreground">{f.note}</span>
+                    <span className="text-subtle-foreground">{l.touches} respects</span>
                   </li>
                 ))}
               </ul>
-              <p className="mt-1.5 text-xs text-subtle-foreground">
-                Points count agreeing measured factors — they are a confluence score, not a
-                win-rate probability.
-              </p>
-            </div>
-
-            {/* Reasoning */}
-            {signal.reasons.length > 0 && (
-              <div>
-                <h3 className="mb-1.5 text-sm font-medium text-foreground">Why this trade</h3>
-                <ul className="list-inside list-disc space-y-1 text-sm text-muted-foreground">
-                  {signal.reasons.map((r) => (
-                    <li key={r}>{r}</li>
-                  ))}
-                </ul>
-              </div>
             )}
-
-            <ul className="space-y-0.5 text-xs text-subtle-foreground">
-              {analysis.caveats.map((c) => (
-                <li key={c}>· {c}</li>
-              ))}
-            </ul>
           </div>
         )}
       </Card>
-
-      {/* Pro read — institutional SMC/ICT context + news risk */}
-      {technicals !== undefined && (
-        <Card>
-          <CardHeader
-            title="Pro read — SMC & price action"
-            description="Market structure, liquidity and imbalances from the institutional engine suite — causal detections only, no look-ahead. Evidence to weigh beside the signal, not a second score."
-          />
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <div>
-              <p className="text-xs text-subtle-foreground">Structure</p>
-              <p className="mt-0.5 font-semibold capitalize text-foreground">{technicals.trend}</p>
-              {technicals.lastBreak !== undefined && (
-                <p className="mt-0.5 text-xs text-subtle-foreground">
-                  {technicals.lastBreak.type} {technicals.lastBreak.direction} @{" "}
-                  {fmtPrice(technicals.lastBreak.price, precision)}
-                  {technicals.lastBreak.failed ? " (failed)" : ""}
-                </p>
-              )}
-            </div>
-            <div>
-              <p className="text-xs text-subtle-foreground">Liquidity sweeps</p>
-              {technicals.sweeps.length === 0 ? (
-                <p className="mt-0.5 text-sm text-muted-foreground">None confirmed</p>
-              ) : (
-                <ul className="mt-0.5 space-y-0.5 text-xs text-foreground">
-                  {technicals.sweeps.map((sw) => (
-                    <li key={`${sw.at}-${sw.level}`}>
-                      {sw.side === "sell_side" ? "Sell-side" : "Buy-side"} swept @{" "}
-                      {fmtPrice(sw.level, precision)}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-            <div>
-              <p className="text-xs text-subtle-foreground">Resting liquidity</p>
-              {technicals.poolsAbove.length === 0 && technicals.poolsBelow.length === 0 ? (
-                <p className="mt-0.5 text-sm text-muted-foreground">None tracked</p>
-              ) : (
-                <ul className="mt-0.5 space-y-0.5 text-xs text-foreground">
-                  {technicals.poolsAbove.slice(0, 2).map((p) => (
-                    <li key={`a-${p.price}`}>
-                      Buyside {fmtPrice(p.price, precision)} · {p.touches}t
-                    </li>
-                  ))}
-                  {technicals.poolsBelow.slice(0, 2).map((p) => (
-                    <li key={`b-${p.price}`}>
-                      Sellside {fmtPrice(p.price, precision)} · {p.touches}t
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-            <div>
-              <p className="text-xs text-subtle-foreground">Fair value gaps</p>
-              {technicals.fvgs.length === 0 ? (
-                <p className="mt-0.5 text-sm text-muted-foreground">None near price</p>
-              ) : (
-                <ul className="mt-0.5 space-y-0.5 text-xs text-foreground">
-                  {technicals.fvgs.map((f) => (
-                    <li key={`${f.lower}-${f.upper}`}>
-                      {f.direction === "bullish" ? "Bull" : "Bear"} FVG {fmtPrice(f.lower, precision)}–{fmtPrice(f.upper, precision)}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </div>
-          <div className="mt-4 border-t border-border pt-3">
-            <p className="text-xs text-subtle-foreground">High-impact news — Forex Factory calendar</p>
-            {upcomingNews.length === 0 ? (
-              <p className="mt-0.5 text-sm text-muted-foreground">
-                {news.error !== undefined
-                  ? `Calendar unavailable — ${news.error}`
-                  : "No high-impact events in the next 48h."}
-              </p>
-            ) : (
-              <ul className="mt-1 space-y-1 text-xs">
-                {upcomingNews.map((e) => (
-                  <li key={`${e.time}-${e.title}`} className="flex flex-wrap items-center gap-2">
-                    <Badge
-                      tone={Math.abs(e.ms - now) <= 60 * 60_000 ? "developing" : "neutral"}
-                    >
-                      {e.currency}
-                    </Badge>
-                    <span className="text-foreground">{e.title}</span>
-                    <span className="text-subtle-foreground">
-                      {e.ms <= now
-                        ? "just released"
-                        : fmtCountdown(e.ms - now)}
-                      {e.forecast !== undefined ? ` · fcst ${e.forecast}` : ""}
-                      {e.previous !== undefined ? ` · prev ${e.previous}` : ""}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </Card>
-      )}
 
       {/* Paper-trade journal — every proposed trade, carried forward on real bars */}
       <Card>
         <CardHeader
           title="Paper trades"
           description={
-            "Virtual $10,000 terminal — one engine on Binance Spot and NSE/BSE indices: S/R levels on the 5m tape. Buys a held support or a broken resistance, sells a held resistance or a broken support; stop beyond the level, target the next opposing level. One open position per pair, no other gates. TP1 banks half; the stop trails candle by candle."
+            `Virtual $10,000 terminal — ${engineDef?.label ?? "the selected strategy"} auto-trades every Binance Spot pair and NSE/BSE index on the 5m tape. One open position per pair; TP1 banks half and the stop trails candle by candle.`
           }
           action={
             <div className="flex items-center gap-2">
@@ -1792,10 +1553,9 @@ export function CryptoMarketsWorkspace({
         {trades.length === 0 ? (
           <p className="text-sm text-subtle-foreground">
             No trades yet — every Binance Spot pair and NSE/BSE index is scanned each
-            minute by the S/R engine. A trade needs price at a major level
-            (≥2 respects) — either holding it for a bounce or closing through
-            it for a break. Stop beyond the level, target the next opposing
-            level. One position per pair.
+            minute by {engineDef?.label ?? "the selected engine"}. The moment its
+            entry condition prints on a closed 5m bar, a paper trade opens here
+            with its reason, stop, targets and running P&L. One position per pair.
           </p>
         ) : (
           <div className="space-y-4">
@@ -1888,8 +1648,13 @@ export function CryptoMarketsWorkspace({
                                 {VENUES[t.venue as VenueId]?.label ?? t.venue}
                               </span>
                               <Badge tone="developing" className="ml-1.5">
-                                S/R
+                                {strategyLabel(t.strategy)}
                               </Badge>
+                              {(t.reasons?.length ?? 0) > 0 && (
+                                <span className="mt-0.5 block max-w-xs truncate text-xs font-normal text-subtle-foreground">
+                                  {t.reasons?.[0]}
+                                </span>
+                              )}
                             </td>
                             <td className="py-2.5 pr-3">
                               <Badge tone={meta.tone}>
@@ -2017,8 +1782,13 @@ export function CryptoMarketsWorkspace({
                                 {VENUES[t.venue as VenueId]?.label ?? t.venue}
                               </span>
                               <Badge tone="developing" className="ml-1.5">
-                                S/R
+                                {strategyLabel(t.strategy)}
                               </Badge>
+                              {(t.reasons?.length ?? 0) > 0 && (
+                                <span className="mt-0.5 block max-w-xs truncate text-xs font-normal text-subtle-foreground">
+                                  {t.reasons?.[0]}
+                                </span>
+                              )}
                             </td>
                             <td className="py-2.5 pr-3">
                               <Badge tone={DIR_META[t.direction].tone}>
@@ -2218,75 +1988,6 @@ export function CryptoMarketsWorkspace({
         )}
       </Card>
 
-      {/* Intraday scan across 5m–4h */}
-      <Card>
-        <CardHeader
-          title="Intraday scan"
-          description={`${symbolInfo.label} on ${venue.label} — every scan timeframe re-analyzed each minute. A row shows a trade only when the engine's criteria are met.`}
-        />
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[560px] text-sm">
-            <thead>
-              <tr className="border-b border-border text-left text-xs text-subtle-foreground">
-                <th className="py-2 pr-3 font-medium">Timeframe</th>
-                <th className="py-2 pr-3 font-medium">Signal</th>
-                <th className="py-2 pr-3 font-medium">Points</th>
-                <th className="py-2 pr-3 font-medium">Entry</th>
-                <th className="py-2 pr-3 font-medium">Stop loss</th>
-                <th className="py-2 font-medium">TP1</th>
-              </tr>
-            </thead>
-            <tbody>
-              {SCAN_TIMEFRAMES.filter((tf) =>
-                venue.intervals.some((i) => i.timeframe === tf),
-              ).map((tf) => {
-                const row = scanRowFor(tf);
-                const a = row.analysis;
-                const s = a?.signal;
-                const dir = s?.direction ?? "wait";
-                const meta = DIR_META[dir];
-                const RowIcon = meta.icon;
-                return (
-                  <tr
-                    key={tf}
-                    className={cn(
-                      "border-b border-border last:border-b-0",
-                      tf === timeframe && "bg-accent/5",
-                    )}
-                  >
-                    <td className="py-2.5 pr-3 font-medium text-foreground">
-                      {venue.intervals.find((i) => i.timeframe === tf)?.label ?? tf}
-                      {tf === timeframe && (
-                        <span className="ml-1.5 text-xs text-subtle-foreground">(live)</span>
-                      )}
-                    </td>
-                    <td className="py-2.5 pr-3">
-                      {row.state === "loading" ? (
-                        <span className="text-xs text-subtle-foreground">…</span>
-                      ) : row.state === "error" ? (
-                        <span className="text-xs text-subtle-foreground" title={row.error}>
-                          unavailable
-                        </span>
-                      ) : (
-                        <Badge tone={meta.tone}>
-                          <RowIcon className="mr-1 inline size-3" aria-hidden="true" />
-                          {meta.label}
-                        </Badge>
-                      )}
-                    </td>
-                    <td className="numeric py-2.5 pr-3">
-                      {s ? `${s.confidence}/100` : "—"}
-                    </td>
-                    <td className="numeric py-2.5 pr-3">{fmtPrice(s?.entry, precision)}</td>
-                    <td className="numeric py-2.5 pr-3">{fmtPrice(s?.stopLoss, precision)}</td>
-                    <td className="numeric py-2.5">{fmtPrice(s?.targets[0]?.price, precision)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </Card>
     </div>
   );
 }
