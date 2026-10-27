@@ -73,7 +73,7 @@ export const DEFAULT_CRYPTO_SYMBOL: CryptoSymbol = "BTCUSDT";
 export const DEFAULT_CRYPTO_TIMEFRAME: Timeframe = "5m";
 
 /** REST + stream request bounds. */
-export const KLINE_LIMIT = 200;
+export const KLINE_LIMIT = 500;
 export const KLINE_LIMIT_MAX = 500;
 export const REST_TIMEOUT_MS = 10_000;
 

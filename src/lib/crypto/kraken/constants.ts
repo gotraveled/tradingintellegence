@@ -110,7 +110,7 @@ export function krakenIntervalMinutes(timeframe: Timeframe): number | undefined 
 export const DEFAULT_KRAKEN_SYMBOL: KrakenSymbol = "XBTUSD";
 
 /** Request bounds (OHLC returns ≤720 rows anyway; we slice to `KLINE_LIMIT`). */
-export const KLINE_LIMIT = 200;
+export const KLINE_LIMIT = 500;
 export const REST_TIMEOUT_MS = 10_000;
 
 /** Stream freshness + reconnect policy (mirrors the Binance feed). */

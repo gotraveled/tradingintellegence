@@ -162,11 +162,28 @@ const confluence: StrategyDef = {
   create: () => (hist) => analyzeCandles(hist)?.signal,
 };
 
+/** Aggregate consecutive bars into a higher-timeframe candle set (×3). */
+function resampleX3(hist: Candle[]): Candle[] {
+  const out: Candle[] = [];
+  for (let i = 0; i + 2 < hist.length; i += 3) {
+    const g = hist.slice(i, i + 3);
+    out.push({
+      time: g[0].time,
+      open: g[0].open,
+      high: Math.max(...g.map((c) => c.high)),
+      low: Math.min(...g.map((c) => c.low)),
+      close: g[2].close,
+      volume: g.reduce((s, c) => s + (c.volume ?? 0), 0),
+    });
+  }
+  return out;
+}
+
 const victor: StrategyDef = {
   id: "victor",
   label: "Victor scalp",
-  blurb: "Pin-bar rejection of a leg–base–leg S/D zone + confirming follow-up candle. Here its own tape supplies the zones.",
-  create: () => (hist) => victorSignal(hist, [hist])?.signal,
+  blurb: "Pin-bar rejection of a leg–base–leg S/D zone + confirming follow-up candle. 5m entries, zones measured on 5m + resampled 15m.",
+  create: () => (hist) => victorSignal(hist, [hist, resampleX3(hist)])?.signal,
 };
 
 // ---------------------------------------------------------------------------

@@ -262,11 +262,11 @@ export function registerSignal(
   // Degenerate risk unit: when entry→stop is a few ticks, the fixed
   // ~0.15%/side cost divides by a near-zero denominator and a routine
   // stop-out books multiple R of "loss" (the -3R on a tick-size stop).
-  // Require the risk distance to cover at least ~1× the round-trip cost —
+  // Require the risk distance to cover at least ~0.5× the per-side cost —
   // enough to keep the denominator meaningful without blocking normal
   // ATR-based stops on high-priced assets like BTC.
   const riskUnit = Math.abs(signal.entry - signal.stopLoss);
-  if (riskUnit < 2 * signal.entry * COST_PER_SIDE) {
+  if (riskUnit < 0.5 * signal.entry * COST_PER_SIDE) {
     return { trades };
   }
   // One open trade per (PAIR, STRATEGY) — Victor's 1m scalp and the
