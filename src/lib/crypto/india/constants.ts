@@ -78,7 +78,7 @@ export function indiaInterval(timeframe: Timeframe): { yahoo: string; range: str
 export const DEFAULT_INDIA_SYMBOL: IndiaSymbol = "NIFTY50";
 export const DEFAULT_INDIA_TIMEFRAME: Timeframe = "5m";
 
-/** NSE entry session in UTC hours — 04:00–10:00 UTC ≈ 09:30–15:30 IST. */
-export const INDIA_SESSION_UTC: readonly [number, number] = [4, 10];
+/** NSE entry session in UTC hours — 03:45–10:00 UTC ≈ 09:15–15:30 IST. */
+export const INDIA_SESSION_UTC: readonly [number, number] = [3.75, 10];
 
 export const REST_TIMEOUT_MS = 10_000;

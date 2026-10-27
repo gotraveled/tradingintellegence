@@ -8,6 +8,7 @@ import {
 } from "./analysis";
 import { pinBar, victorSignal } from "./victor";
 import { srTrendSignal } from "./srtrend";
+import { tciKeySignal } from "./tci-key-levels";
 import { donchianSignal, superTrendSignal, zarattiniOrbFactory } from "./algos";
 /**
  * Strategy tournament — a registry of named, published intraday methods,
@@ -431,8 +432,23 @@ const rangeFade: StrategyDef = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// TCI Key Institutional Levels — Smart Money Concepts engine based on the
+// TradingView indicator by The_Stock_Yogi / Trading Cafe India.
+// Tracks market structure (BOS/CHoCH), order blocks, FVGs, and premium/
+// discount zones to find institutional entry levels.
+// ---------------------------------------------------------------------------
+
+const tciKey: StrategyDef = {
+  id: "tci",
+  label: "TCI Key Institutional Levels",
+  blurb: "Smart Money Concepts: order blocks + market structure (BOS/CHoCH) + FVG + premium/discount zones. Inspired by the TCI Key Institutional Levels indicator by The_Stock_Yogi (Trading Cafe India).",
+  create: () => (hist) => tciKeySignal(hist),
+};
+
 /** Registry order = display order in the tournament table. */
 export const STRATEGIES: readonly StrategyDef[] = [
+  tciKey,
   srTrend,
   zarattiniOrb,
   superTrend,

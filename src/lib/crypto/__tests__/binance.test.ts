@@ -21,7 +21,8 @@ import type { FeedStatus } from "../types";
 describe("allowlists", () => {
   it("accepts only verified Binance Spot symbols", () => {
     expect(isCryptoSymbol("BTCUSDT")).toBe(true);
-    expect(isCryptoSymbol("DOGEUSDT")).toBe(true);
+    expect(isCryptoSymbol("ETHUSDT")).toBe(true);
+    expect(isCryptoSymbol("DOGEUSDT")).toBe(false);
     expect(isCryptoSymbol("btcusdt")).toBe(false); // case-sensitive wire format
     expect(isCryptoSymbol("BTCUSD")).toBe(false);
     expect(isCryptoSymbol("SHIBUSDT")).toBe(false);
@@ -458,16 +459,6 @@ describe("constants", () => {
     expect(CRYPTO_SYMBOLS.map((s) => s.symbol)).toEqual([
       "BTCUSDT",
       "ETHUSDT",
-      "SOLUSDT",
-      "BNBUSDT",
-      "XRPUSDT",
-      "ADAUSDT",
-      "DOGEUSDT",
-      "LINKUSDT",
-      "AVAXUSDT",
-      "DOTUSDT",
-      "LTCUSDT",
-      "TRXUSDT",
     ]);
   });
 });

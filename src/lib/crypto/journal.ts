@@ -139,9 +139,10 @@ export function entryBlockReason(
   // sessionUtc only applies when a venue passes one (NSE/BSE hours).
   // Crypto runs 24/7 — no session gate.
   if (sessionUtc === undefined) return undefined;
-  const hour = new Date(now).getUTCHours();
+  const d = new Date(now);
+  const hour = d.getUTCHours() + d.getUTCMinutes() / 60;
   if (hour < sessionUtc[0] || hour >= sessionUtc[1]) {
-    return `outside ${sessionUtc[0]}:00–${sessionUtc[1]}:00 UTC session`;
+    return `outside ${sessionUtc[0]}–${sessionUtc[1]} UTC session`;
   }
   return undefined;
 }
@@ -261,10 +262,11 @@ export function registerSignal(
   // Degenerate risk unit: when entry→stop is a few ticks, the fixed
   // ~0.15%/side cost divides by a near-zero denominator and a routine
   // stop-out books multiple R of "loss" (the -3R on a tick-size stop).
-  // Require the risk distance to cover at least ~4× the per-side cost —
-  // round-trip costs then stay under ~0.5R of the trade's R.
+  // Require the risk distance to cover at least ~1× the round-trip cost —
+  // enough to keep the denominator meaningful without blocking normal
+  // ATR-based stops on high-priced assets like BTC.
   const riskUnit = Math.abs(signal.entry - signal.stopLoss);
-  if (riskUnit < 4 * signal.entry * COST_PER_SIDE) {
+  if (riskUnit < 2 * signal.entry * COST_PER_SIDE) {
     return { trades };
   }
   // One open trade per (PAIR, STRATEGY) — Victor's 1m scalp and the

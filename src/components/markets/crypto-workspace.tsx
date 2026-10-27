@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader } from "@/components/ui/card";
 import { Notice } from "@/components/ui/notice";
 import type { TradeSignal } from "@/lib/crypto/analysis";
+import { atr as calcAtr } from "@/lib/crypto/analysis";
 import {
   ACCOUNT_CAPITAL_USD,
   closeAllPositions,
@@ -44,6 +45,7 @@ import {
 import { backtestCandles, type BacktestStats } from "@/lib/crypto/backtest";
 import { STRATEGIES, type StrategyFn } from "@/lib/crypto/strategies";
 import { majorLevels, srTrendSignal } from "@/lib/crypto/srtrend";
+import { findOrderBlocks as findTciObs, type OrderBlock as TciOrderBlock } from "@/lib/crypto/tci-key-levels";
 import type { CalendarEvent } from "@/app/api/economic-calendar/route";
 import { fetchCryptoKlines, fetchCryptoQuotes } from "@/lib/crypto/binance/client";
 import {
@@ -786,6 +788,14 @@ export function CryptoMarketsWorkspace({
     () => (closedChart !== undefined && engineId === "sr" ? majorLevels(closedChart) : []),
     [closedChart, engineId],
   );
+  const tciObs = useMemo<TciOrderBlock[]>(
+    () => {
+      if (closedChart === undefined || engineId !== "tci") return [];
+      const w = calcAtr(closedChart, 14) || closedChart[closedChart.length - 1].close * 0.002;
+      return w > 0 ? findTciObs(closedChart, w) : [];
+    },
+    [closedChart, engineId],
+  );
 
   const signalOverlays = useMemo<ChartOverlay[]>(() => {
     const out: ChartOverlay[] = [];
@@ -804,6 +814,24 @@ export function CryptoMarketsWorkspace({
         direction: l.kind === "support" ? "bullish" : "bearish",
       });
     });
+    // TCI order blocks — institutional entry zones, unmitigated only.
+    tciObs
+      .filter((ob) => !ob.mitigated)
+      .sort((a, b) =>
+        Math.abs(((a.upper + a.lower) / 2) - (lastClose ?? 0)) -
+        Math.abs(((b.upper + b.lower) / 2) - (lastClose ?? 0)),
+      )
+      .slice(0, 4)
+      .forEach((ob, i) => {
+        out.push({
+          kind: "level",
+          id: `tci-ob-${i}`,
+          layer: "structure",
+          price: (ob.upper + ob.lower) / 2,
+          label: `${ob.kind === "bullish" ? "Bull" : "Bear"} OB`,
+          direction: ob.kind === "bullish" ? "bullish" : "bearish",
+        });
+      });
     const s = engineLive;
     if (s !== undefined && s.direction !== "wait") {
       const dir = s.direction;
@@ -879,7 +907,7 @@ export function CryptoMarketsWorkspace({
       });
     }
     return out;
-  }, [srLevels, engineLive, openTrade, selectedTrade, currentKey, lastClose]);
+  }, [srLevels, tciObs, engineLive, openTrade, selectedTrade, currentKey, lastClose]);
 
   const signalMarkers = useMemo<ChartMarker[]>(() => {
     const s = engineLive;
@@ -1136,6 +1164,36 @@ export function CryptoMarketsWorkspace({
                     <span className="text-subtle-foreground">{l.touches} respects</span>
                   </li>
                 ))}
+              </ul>
+            )}
+          </div>
+        )}
+        {engineId === "tci" && (
+          <div className="mt-4 border-t border-border pt-3">
+            <p className="text-xs text-subtle-foreground">
+              TCI Order Blocks — institutional entry zones (unmitigated = fresh)
+            </p>
+            {tciObs.filter((ob) => !ob.mitigated).length === 0 ? (
+              <p className="mt-0.5 text-sm text-muted-foreground">Waiting for order block data…</p>
+            ) : (
+              <ul className="mt-1 space-y-0.5 text-xs">
+                {tciObs
+                  .filter((ob) => !ob.mitigated)
+                  .sort((a, b) =>
+                    Math.abs(((a.upper + a.lower) / 2) - (lastClose ?? 0)) -
+                    Math.abs(((b.upper + b.lower) / 2) - (lastClose ?? 0)),
+                  )
+                  .slice(0, 6)
+                  .map((ob, i) => (
+                    <li key={i} className="flex flex-wrap items-center gap-2">
+                      <Badge tone={ob.kind === "bullish" ? "bullish" : "bearish"}>
+                        {ob.kind === "bullish" ? "Bull OB" : "Bear OB"}
+                      </Badge>
+                      <span className="numeric text-foreground">
+                        {fmtPrice(ob.lower, precision)}–{fmtPrice(ob.upper, precision)}
+                      </span>
+                    </li>
+                  ))}
               </ul>
             )}
           </div>

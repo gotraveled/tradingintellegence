@@ -32,16 +32,6 @@ export const VENUE_LABEL = "Binance Spot";
 export const CRYPTO_SYMBOLS = [
   { symbol: "BTCUSDT", label: "BTC / USDT", name: "Bitcoin", pricePrecision: 2 },
   { symbol: "ETHUSDT", label: "ETH / USDT", name: "Ethereum", pricePrecision: 2 },
-  { symbol: "SOLUSDT", label: "SOL / USDT", name: "Solana", pricePrecision: 2 },
-  { symbol: "BNBUSDT", label: "BNB / USDT", name: "BNB", pricePrecision: 2 },
-  { symbol: "XRPUSDT", label: "XRP / USDT", name: "XRP", pricePrecision: 4 },
-  { symbol: "ADAUSDT", label: "ADA / USDT", name: "Cardano", pricePrecision: 4 },
-  { symbol: "DOGEUSDT", label: "DOGE / USDT", name: "Dogecoin", pricePrecision: 4 },
-  { symbol: "LINKUSDT", label: "LINK / USDT", name: "Chainlink", pricePrecision: 3 },
-  { symbol: "AVAXUSDT", label: "AVAX / USDT", name: "Avalanche", pricePrecision: 2 },
-  { symbol: "DOTUSDT", label: "DOT / USDT", name: "Polkadot", pricePrecision: 3 },
-  { symbol: "LTCUSDT", label: "LTC / USDT", name: "Litecoin", pricePrecision: 2 },
-  { symbol: "TRXUSDT", label: "TRX / USDT", name: "TRON", pricePrecision: 4 },
 ] as const;
 
 export type CryptoSymbol = (typeof CRYPTO_SYMBOLS)[number]["symbol"];
