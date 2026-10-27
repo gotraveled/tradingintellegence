@@ -247,6 +247,9 @@ export function victorSignal(
   const zones = markStrongAcross(usable.map((c) => swingZones(c)));
   const zone = zones.find((z) => {
     if (z.kind !== (dir === "bullish" ? "demand" : "supply")) return false;
+    // Strong zones only — a level counts when same-kind zones on BOTH
+    // context timeframes overlap; a one-timeframe wick pocket is noise.
+    if (!z.strong) return false;
     const tail = dir === "bullish" ? pin.low : pin.high;
     const entered = tail <= z.upper + TAG_TOLERANCE && tail >= z.lower - TAG_TOLERANCE;
     const closedOut =

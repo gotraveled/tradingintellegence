@@ -69,11 +69,12 @@ describe("majorLevels", () => {
     expect(resistance?.price).toBeGreaterThan(106.5);
   });
 
-  it("marks a single-touch spike as a level", () => {
+  it("rejects a single-touch spike — a lone pivot is not a tradeable zone", () => {
     const flat = tape(Array.from({ length: 120 }, (_, i) => 100 + Math.sin(i) * 0.3));
-    flat[60] = bar(100, 103, 99.5, 100.2); // single spike — a level all the same
+    flat[60] = bar(100, 103, 99.5, 100.2); // single spike — respected nowhere else
     const levels = majorLevels(flat);
-    expect(levels.some((l) => Math.abs(l.price - 103) <= 0.5 && l.touches === 1)).toBe(true);
+    expect(levels.every((l) => l.touches >= 2)).toBe(true);
+    expect(levels.some((l) => Math.abs(l.price - 103) <= 0.5)).toBe(false);
   });
 });
 

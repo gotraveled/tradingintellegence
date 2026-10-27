@@ -52,10 +52,13 @@ interface Structure {
 }
 
 const SWING_W = 3; // fractal half-window for structure pivots
+/** A pivot must beat its neighbours by this much ATR — small wiggles aren't structure. */
+const SWING_PROM_ATR = 0.15;
 const MIN_BARS = 40;
 
-function findSwings(hist: Candle[]): SwingPoint[] {
+function findSwings(hist: Candle[], width: number): SwingPoint[] {
   const out: SwingPoint[] = [];
+  const minProm = SWING_PROM_ATR * width;
   for (let i = SWING_W; i < hist.length - SWING_W; i += 1) {
     const c = hist[i];
     let isHigh = true;
@@ -66,8 +69,15 @@ function findSwings(hist: Candle[]): SwingPoint[] {
       if (hist[j].low <= c.low) isLow = false;
       if (!isHigh && !isLow) break;
     }
-    if (isHigh) out.push({ price: c.high, idx: i, kind: "high" });
-    if (isLow) out.push({ price: c.low, idx: i, kind: "low" });
+    // Prominence gate: the pivot must clear the EDGES of its window by
+    // minProm — price moved into and back out of the extreme. Adjacent
+    // bars always sit near a smooth peak, so measuring against them
+    // rejects real structure; a bump that never left its surroundings
+    // is noise, not a swing.
+    const edgeMax = Math.max(hist[i - SWING_W].high, hist[i + SWING_W].high);
+    const edgeMin = Math.min(hist[i - SWING_W].low, hist[i + SWING_W].low);
+    if (isHigh && c.high - edgeMax >= minProm) out.push({ price: c.high, idx: i, kind: "high" });
+    if (isLow && edgeMin - c.low >= minProm) out.push({ price: c.low, idx: i, kind: "low" });
   }
   return out;
 }
@@ -266,7 +276,7 @@ export function tciKeySignal(hist: Candle[]): TradeSignal | undefined {
   const width = atr(hist, 14);
   if (width === 0) return undefined;
 
-  const swings = findSwings(hist);
+  const swings = findSwings(hist, width);
   const structure = analyzeStructure(swings);
   const obs = findOrderBlocks(hist, width);
   const fvgs = findFvgs(hist, width);
@@ -294,8 +304,10 @@ export function tciKeySignal(hist: Candle[]): TradeSignal | undefined {
   const bullBos = structure.bos === "bullish";
   const bearBos = structure.bos === "bearish";
 
-  // Try bullish entry
-  if (bullObs.length > 0 && (bullBos || bullChoch)) {
+  // Try bullish entry — TCI rule: longs only fire in the DISCOUNT zone
+  // (below the swing-range equilibrium); a bullish OB tapped in premium
+  // is a liquidity grab, not an entry.
+  if (bullObs.length > 0 && (bullBos || bullChoch) && pd.discount) {
     const ob = bullObs[0];
     const stop = ob.lower - width * 0.25;
     const risk = Math.abs(entry - stop);
@@ -347,8 +359,10 @@ export function tciKeySignal(hist: Candle[]): TradeSignal | undefined {
     };
   }
 
-  // Try bearish entry
-  if (bearObs.length > 0 && (bearBos || bearChoch)) {
+  // Try bearish entry — TCI rule: shorts only fire in the PREMIUM zone
+  // (above the swing-range equilibrium); a bearish OB tapped in discount
+  // is a liquidity grab, not an entry.
+  if (bearObs.length > 0 && (bearBos || bearChoch) && pd.premium) {
     const ob = bearObs[0];
     const stop = ob.upper + width * 0.25;
     const risk = Math.abs(stop - entry);

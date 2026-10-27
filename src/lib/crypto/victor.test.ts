@@ -101,13 +101,9 @@ describe("victorSignal", () => {
     expect(s!.zone.strong).toBe(true);
   });
 
-  it("emits on a single-context zone too — weak MTF agreement lowers confidence", () => {
+  it("refuses a single-context zone — only MTF-confirmed strong zones trade", () => {
     const s = victorSignal(entryTape(), [ctxA(), ctxB(-20)]); // B zone shifted away
-    expect(s).toBeDefined();
-    expect(s!.zone.strong).toBe(false); // no cross-TF overlap
-    expect(s!.signal.confidence).toBeLessThan(
-      victorSignal(entryTape(), [ctxA(), ctxB()])!.signal.confidence,
-    );
+    expect(s).toBeUndefined(); // no cross-TF overlap → not a strong zone → no trade
   });
 
   it("refuses with a single context timeframe — MTF proof needs two", () => {

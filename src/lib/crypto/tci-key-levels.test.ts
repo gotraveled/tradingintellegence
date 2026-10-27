@@ -23,8 +23,9 @@ function tape(
 /** Build a bullish structure: rise, pullback to an OB, then BOS up. */
 function bullishTciTape(): Candle[] {
   const closes: number[] = [];
-  // Phase 1: chop (60 bars) — creates swing highs (~100.5) and lows (~99.5)
-  for (let i = 0; i < 60; i += 1) closes.push(100 + Math.sin(i * 0.25) * 0.5);
+  // Phase 1: chop (60 bars) — creates swing highs (~102) and lows (~98);
+  // amplitude must beat the 0.3×ATR prominence gate to count as structure
+  for (let i = 0; i < 60; i += 1) closes.push(100 + Math.sin(i * 0.25) * 2.0);
   // Phase 2: down-candle (bullish OB) at i=60
   closes.push(99.5);
   // Phase 3: displacement — one big up bar
@@ -43,8 +44,10 @@ function bullishTciTape(): Candle[] {
 /** Build a bearish structure: fall, rally to an OB, then BOS down. */
 function bearishTciTape(): Candle[] {
   const closes: number[] = [];
-  // Phase 1: chop (60 bars)
-  for (let i = 0; i < 60; i += 1) closes.push(100 + Math.sin(i * 0.25) * 0.5);
+  // Phase 1: chop (60 bars) — amplitude ≥ prominence gate, same as bullish
+  for (let i = 0; i < 60; i += 1) closes.push(100 + Math.sin(i * 0.25) * 2.0);
+  // Force bar 59 low so bar 60 (the OB) opens low → closes UP into 100.5.
+  closes[59] = 99.8;
   // Up-candle (bearish OB) at i=60
   closes.push(100.5);
   // Displacement — one big down bar
@@ -55,8 +58,8 @@ function bearishTciTape(): Candle[] {
   for (let i = 0; i < 10; i += 1) closes.push(95 - (i + 1) * 1.0); // → 94, 93, ..., 85
   // Pullback to OB (last bars — NOT detectable as swing, in recent window)
   closes.push(90, 95, 99.8, 100.0, 100.2, 100.1, 99.9);
-  const highs: Record<number, number> = { 60: 100.8, 71: 95.5 };
-  const lows: Record<number, number> = { 60: 100.3, 61: 89.5, 81: 84.5 };
+  const highs: Record<number, number> = { 60: 102.5, 71: 95.5 }; // 102.5 = swing high above all chop
+  const lows: Record<number, number> = { 60: 99.5, 61: 89.5, 81: 84.5 };
   return tape(closes, lows, highs);
 }
 

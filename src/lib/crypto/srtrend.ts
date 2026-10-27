@@ -40,7 +40,7 @@ export interface SrLevel {
 const LOOKBACK = 240; // bars scanned for pivots
 const PIVOT_W = 10; // fractal half-window — only MAJOR swings qualify
 const CLUSTER_ATR = 0.5; // pivots closer than this merge into one level
-const MIN_TOUCHES = 1; // every swing pivot is a level — touches only rank strength
+const MIN_TOUCHES = 2; // a level must be respected ≥2× — a lone wick is a pivot, not a zone
 const TAG_ATR = 0.5; // "price is at the level" tolerance
 const TAG_BARS = 4; // the tag may be this many closed bars old
 const NEAR_ATR = 2.5; // candidate levels must be within this of price
