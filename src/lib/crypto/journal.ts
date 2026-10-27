@@ -484,16 +484,23 @@ export function evaluateTrade(rec: TradeRecord, closedBars: Candle[]): TradeReco
       }
     }
 
-    // 2. Candle trail for ALL strategies: ratchet the stop under/over the
-    //    extreme of the candle before the newest closed bar. Only trails
-    //    when the trade is in profit — a pro doesn't move their stop on
-    //    flat bars, only when price is making new extremes in their favor.
+    // 2. Candle trail for ALL strategies: ratchet the stop under the low of
+    //    the last two closed bars MINUS a volatility buffer — a pro trails
+    //    under a swing low, not the last bar's wick. Only trails once the
+    //    trade has banked ≥0.5R of open profit — before that the move is
+    //    unproven and a tightened stop just feeds noise.
     const post = closedBars.filter((b) => b.time > t.entryBarTime && b.time <= bar.time);
-    const inProfit = bull ? bar.close > t.entry : bar.close < t.entry;
-    if (inProfit) {
+    const move = bull ? bar.close - t.entry : t.entry - bar.close;
+    if (move >= 0.5 * risk) {
       const back = post[post.length - 2];
+      const before = post[post.length - 3];
+      const trailAtr = atrOf(post);
+      const pad = (trailAtr ?? risk / 4) * 0.25;
       if (back !== undefined) {
-        t.stopLoss = bull ? Math.max(t.stopLoss, back.low) : Math.min(t.stopLoss, back.high);
+        const swing = bull
+          ? Math.min(back.low, before?.low ?? back.low) - pad
+          : Math.max(back.high, before?.high ?? back.high) + pad;
+        t.stopLoss = bull ? Math.max(t.stopLoss, swing) : Math.min(t.stopLoss, swing);
       }
     }
 

@@ -828,7 +828,8 @@ export function CryptoMarketsWorkspace({
         direction: l.kind === "support" ? "bullish" : "bearish",
       });
     });
-    // TCI order blocks — institutional entry zones, unmitigated only.
+    // TCI order blocks — institutional entry zones drawn as real bands,
+    // unmitigated only. Bullish OB = demand zone, bearish OB = supply zone.
     tciObs
       .filter((ob) => !ob.mitigated)
       .sort((a, b) =>
@@ -838,12 +839,13 @@ export function CryptoMarketsWorkspace({
       .slice(0, 4)
       .forEach((ob, i) => {
         out.push({
-          kind: "level",
+          kind: "zone",
           id: `tci-ob-${i}`,
-          layer: "structure",
-          price: (ob.upper + ob.lower) / 2,
+          layer: "zones",
+          zoneType: ob.kind === "bullish" ? "demand" : "supply",
+          upper: ob.upper,
+          lower: ob.lower,
           label: `${ob.kind === "bullish" ? "Bull" : "Bear"} OB`,
-          direction: ob.kind === "bullish" ? "bullish" : "bearish",
         });
       });
     const s = engineLive;
