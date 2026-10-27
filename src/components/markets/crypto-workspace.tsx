@@ -36,6 +36,7 @@ import {
   pointsCaptured,
   registerSignal,
   saveTrades,
+  strategyStats,
   symbolStats,
   tradeKey,
   unrealizedR,
@@ -318,15 +319,29 @@ export function CryptoMarketsWorkspace({
   const [notifyOn, setNotifyOn] = useState(false);
   const [news, setNews] = useState<{ events: CalendarEvent[]; error?: string }>({ events: [] });
   const [now, setNow] = useState(0);
-  // Which registered strategy is the live trading engine — button row below.
-  // The fn lives in state so the render path stays ref-free; it keeps its
-  // run-local memory (e.g. ORB's one-trade-per-session) for the scan.
+  // All strategies run simultaneously — each trades its own slot per pair.
+  // The user can toggle individual strategies on/off; the charted strategy
+  // is still highlighted for the chart overlay.
   const [engineId, setEngineId] = useState<string>(STRATEGIES[0]?.id ?? "sr");
+  const [enabledStrategies, setEnabledStrategies] = useState<Set<string>>(
+    () => new Set(STRATEGIES.map((d) => d.id)),
+  );
+  const enabledStrategiesRef = useRef(enabledStrategies);
   const [engineFn, setEngineFn] = useState<StrategyFn>(
     () => STRATEGIES.find((d) => d.id === (STRATEGIES[0]?.id ?? "sr"))?.create() ?? srTrendSignal,
   );
   const engineIdRef = useRef(engineId);
   const engineFnRef = useRef(engineFn);
+  // Pre-create all strategy functions once — they keep internal state
+  // (e.g. ORB's one-trade-per-session) across scan ticks.
+  const allStrategyFnsRef = useRef<Map<string, StrategyFn>>(new Map());
+  useEffect(() => {
+    if (allStrategyFnsRef.current.size === 0) {
+      for (const d of STRATEGIES) {
+        allStrategyFnsRef.current.set(d.id, d.create());
+      }
+    }
+  }, []);
   const prevTradesRef = useRef<Map<string, TradeRecord>>(new Map());
   const seededRef = useRef(false);
 
@@ -357,6 +372,9 @@ export function CryptoMarketsWorkspace({
   useEffect(() => {
     tradesRef.current = trades;
   }, [trades]);
+  useEffect(() => {
+    enabledStrategiesRef.current = enabledStrategies;
+  }, [enabledStrategies]);
 
   // News events arrive asynchronously — the scan reads them via a ref so
   // it doesn't re-subscribe on every calendar tick.
@@ -508,18 +526,7 @@ export function CryptoMarketsWorkspace({
   );
   const scanWhyRef = useRef<Record<string, string>>({});
 
-  // The strategy buttons pick the engine — a fresh StrategyFn is created
-  // on each switch so its internal session state starts clean.
   const engineDef = STRATEGIES.find((d) => d.id === engineId);
-  const selectEngine = (id: string) => {
-    const def = STRATEGIES.find((d) => d.id === id);
-    const fn = def !== undefined ? def.create() : srTrendSignal;
-    engineIdRef.current = id;
-    engineFnRef.current = fn;
-    setEngineId(id);
-    // Wrap it — a bare function passed to setState is treated as an updater.
-    setEngineFn(() => fn);
-  };
 
   // Global scan: every listed pair on the trading venues (Binance Spot +
   // NSE/BSE India — kept fully separate markets), every minute. One engine
@@ -582,34 +589,40 @@ export function CryptoMarketsWorkspace({
             // Entries are decided on CLOSED bars only — a pro waits for
             // the candle to print, never trades a half-formed signal.
             if (trading) {
-              // ---- The selected strategy's 5m signal — one engine,
-              // one timeframe, every pair. ----
+              // ---- ALL enabled strategies scan the 5m tape — each
+              // gets its own slot per pair, so multiple strategies can
+              // hold positions on the same pair at once. ----
               const closed5 = tfSets.get(journalKey(vId, sym, "5m"));
-              let setup: ReturnType<StrategyFn>;
-              try {
-                setup = closed5 !== undefined ? engineFnRef.current(closed5) : undefined;
-              } catch {
-                setup = undefined; // engine threw on this tape — skip the pair
-              }
               if (closed5 === undefined) {
                 scanWhyRef.current[sym] = "warming up";
-              } else if (setup === undefined) {
-                scanWhyRef.current[sym] = "no level setup";
-              } else if (slotBusy(engineIdRef.current)) {
-                scanWhyRef.current[sym] = "position open";
               } else {
+                const signals: string[] = [];
+                for (const d of STRATEGIES) {
+                  if (!enabledStrategiesRef.current.has(d.id)) continue;
+                  const fn = allStrategyFnsRef.current.get(d.id);
+                  if (fn === undefined) continue;
+                  let setup: ReturnType<StrategyFn>;
+                  try {
+                    setup = fn(closed5);
+                  } catch {
+                    setup = undefined;
+                  }
+                  if (setup === undefined) continue;
+                  if (slotBusy(d.id)) continue;
+                  signals.push(`${d.id}:${setup.direction === "bullish" ? "buy" : "sell"}${setup.confidence}`);
+                  candidates.push({
+                    venue: vId,
+                    symbol: sym,
+                    timeframe: "5m",
+                    signal: setup,
+                    barTime: closed5[closed5.length - 1].time,
+                    edge: 0,
+                    strategy: d.id,
+                    sessionUtc,
+                  });
+                }
                 scanWhyRef.current[sym] =
-                  `${setup.direction === "bullish" ? "buy" : "sell"} ${setup.confidence}pts`;
-                candidates.push({
-                  venue: vId,
-                  symbol: sym,
-                  timeframe: "5m",
-                  signal: setup,
-                  barTime: closed5[closed5.length - 1].time,
-                  edge: 0,
-                  strategy: engineIdRef.current,
-                  sessionUtc,
-                });
+                  signals.length > 0 ? signals.join(" · ") : "no level setup";
               }
             }
             updateTrades((prev) => {
@@ -751,6 +764,7 @@ export function CryptoMarketsWorkspace({
   const openTrades = pageTrades.filter((t) => t.status === "open");
   const stats = dailyStats(pageTrades);
   const byPair = symbolStats(pageTrades);
+  const byStrategy = strategyStats(pageTrades);
   const balance = equityOf(pageTrades); // realized equity — closed trades only
   const closedTrades = [...pageTrades]
     .filter((t) => t.status === "closed")
@@ -1008,30 +1022,49 @@ export function CryptoMarketsWorkspace({
         ))}
       </div>
 
-      {/* Strategy buttons — the picked strategy IS the live engine:
-          every listed pair is scanned with it each minute. */}
+      {/* Strategy toggles — ALL enabled strategies trade simultaneously.
+          The highlighted one is charted. */}
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs font-medium text-foreground">Engine</span>
-        {STRATEGIES.map((d) => (
-          <button
-            key={d.id}
-            type="button"
-            onClick={() => selectEngine(d.id)}
-            aria-pressed={engineId === d.id}
-            title={d.blurb}
-            className={cn(
-              "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
-              engineId === d.id
-                ? "border-accent bg-accent/10 text-foreground"
-                : "border-border text-subtle-foreground hover:bg-surface-hover hover:text-foreground",
-            )}
-          >
-            {d.label}
-          </button>
-        ))}
+        <span className="text-xs font-medium text-foreground">Strategies</span>
+        {STRATEGIES.map((d) => {
+          const enabled = enabledStrategies.has(d.id);
+          const charted = engineId === d.id;
+          return (
+            <button
+              key={d.id}
+              type="button"
+              onClick={() => {
+                setEnabledStrategies((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(d.id)) next.delete(d.id);
+                  else next.add(d.id);
+                  return next;
+                });
+                setEngineId(d.id);
+                engineIdRef.current = d.id;
+                const fn = allStrategyFnsRef.current.get(d.id) ?? d.create();
+                engineFnRef.current = fn;
+                setEngineFn(() => fn);
+              }}
+              aria-pressed={enabled}
+              title={d.blurb}
+              className={cn(
+                "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
+                enabled
+                  ? charted
+                    ? "border-accent bg-accent/10 text-foreground"
+                    : "border-bullish/40 bg-bullish/5 text-foreground"
+                  : "border-border text-subtle-foreground hover:bg-surface-hover hover:text-foreground",
+              )}
+            >
+              {d.label}
+              {enabled && <span className="ml-1 text-bullish">●</span>}
+            </button>
+          );
+        })}
       </div>
       <p className="text-xs text-subtle-foreground">
-        {engineDef?.blurb ?? ""} — trades the 5m tape, one position per pair.
+        All enabled strategies scan every pair on the 5m tape simultaneously — each holds its own position per pair. Click a strategy to chart it. {engineDef?.blurb ?? ""}
       </p>
 
       {/* Trading sessions — the entry windows each market obeys */}
@@ -1205,7 +1238,7 @@ export function CryptoMarketsWorkspace({
         <CardHeader
           title="Paper trades"
           description={
-            `Virtual $10,000 terminal — ${engineDef?.label ?? "the selected strategy"} auto-trades every Binance Spot pair and NSE/BSE index on the 5m tape. One open position per pair; TP1 banks half and the stop trails candle by candle.`
+            `Virtual $10,000 terminal — all enabled strategies auto-trade every Binance Spot pair and NSE/BSE index on the 5m tape. Each strategy holds its own position per pair; TP1 banks half, stop trails candle by candle.`
           }
           action={
             <div className="flex items-center gap-2">
@@ -1618,10 +1651,10 @@ export function CryptoMarketsWorkspace({
         )}
         {trades.length === 0 ? (
           <p className="text-sm text-subtle-foreground">
-            No trades yet — every Binance Spot pair and NSE/BSE index is scanned each
-            minute by {engineDef?.label ?? "the selected engine"}. The moment its
-            entry condition prints on a closed 5m bar, a paper trade opens here
-            with its reason, stop, targets and running P&L. One position per pair.
+            No trades yet — all enabled strategies scan every Binance Spot pair and NSE/BSE
+            index each minute on the 5m tape. The moment an entry condition prints
+            on a closed bar, a paper trade opens here with its reason, stop, targets and
+            running P&L. Each strategy holds its own position per pair.
           </p>
         ) : (
           <div className="space-y-4">
@@ -1664,21 +1697,21 @@ export function CryptoMarketsWorkspace({
                   </button>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[820px] text-sm">
+                  <table className="w-full min-w-[960px] text-sm">
                     <thead>
                       <tr className="border-b border-border text-left text-xs text-subtle-foreground">
+                        <th className="py-2 pr-3 font-medium">Strategy</th>
                         <th className="py-2 pr-3 font-medium">Symbol</th>
                         <th className="py-2 pr-3 font-medium">Type</th>
                         <th className="py-2 pr-3 font-medium">Score</th>
                         <th className="py-2 pr-3 font-medium">Entry</th>
                         <th className="py-2 pr-3 font-medium">S/L</th>
-                        <th className="py-2 pr-3 font-medium">T/P</th>
+                        <th className="py-2 pr-3 font-medium">TP1</th>
+                        <th className="py-2 pr-3 font-medium">TP2</th>
                         <th className="py-2 pr-3 font-medium">Price</th>
                         <th className="py-2 pr-3 font-medium">Pts</th>
-                        <th className="py-2 pr-3 font-medium">Risked</th>
-                        <th className="py-2 pr-3 font-medium">Opened</th>
-                        <th className="py-2 pr-3 font-medium">Held</th>
                         <th className="py-2 pr-3 font-medium">Profit</th>
+                        <th className="py-2 pr-3 font-medium">Why opened</th>
                         <th className="py-2 font-medium">Exit</th>
                       </tr>
                     </thead>
@@ -1687,6 +1720,7 @@ export function CryptoMarketsWorkspace({
                         const info = VENUES[t.venue as VenueId]?.symbolInfo(t.symbol);
                         const p = info?.pricePrecision ?? precision;
                         const tp1 = t.targets[0]?.price;
+                        const tp2 = t.targets[1]?.price;
                         const stopNote = t.tp1Hit
                           ? t.stopLoss === t.entry
                             ? "BE"
@@ -1708,19 +1742,16 @@ export function CryptoMarketsWorkspace({
                               selectedTradeId === t.id && "bg-surface-hover",
                             )}
                           >
-                            <td className="py-2.5 pr-3 font-medium text-foreground">
-                              {info?.label ?? t.symbol} · {t.timeframe}
-                              <span className="ml-1.5 text-xs font-normal text-subtle-foreground">
-                                {VENUES[t.venue as VenueId]?.label ?? t.venue}
-                              </span>
-                              <Badge tone="developing" className="ml-1.5">
+                            <td className="py-2.5 pr-3">
+                              <Badge tone="developing">
                                 {strategyLabel(t.strategy)}
                               </Badge>
-                              {(t.reasons?.length ?? 0) > 0 && (
-                                <span className="mt-0.5 block max-w-xs truncate text-xs font-normal text-subtle-foreground">
-                                  {t.reasons?.[0]}
-                                </span>
-                              )}
+                            </td>
+                            <td className="py-2.5 pr-3 font-medium text-foreground">
+                              {info?.label ?? t.symbol}
+                              <span className="ml-1 text-xs font-normal text-subtle-foreground">
+                                {t.timeframe}
+                              </span>
                             </td>
                             <td className="py-2.5 pr-3">
                               <Badge tone={meta.tone}>
@@ -1740,8 +1771,11 @@ export function CryptoMarketsWorkspace({
                             <td className="numeric py-2.5 pr-3">
                               {fmtPrice(tp1, p)}
                               {t.tp1Hit && (
-                                <span className="ml-1 text-xs text-bullish">banked</span>
+                                <span className="ml-1 text-xs text-bullish">✓</span>
                               )}
+                            </td>
+                            <td className="numeric py-2.5 pr-3 text-subtle-foreground">
+                              {tp2 !== undefined ? fmtPrice(tp2, p) : "—"}
                             </td>
                             <td className="numeric py-2.5 pr-3 text-foreground">
                               {mark !== undefined ? fmtPrice(mark, p) : "—"}
@@ -1757,18 +1791,9 @@ export function CryptoMarketsWorkspace({
                                 ? "—"
                                 : `${pts >= 0 ? "+" : ""}${fmtPrice(pts, p)}`}
                             </td>
-                            <td className="numeric py-2.5 pr-3">
-                              {t.riskUsd !== undefined ? fmtUsd(t.riskUsd) : "—"}
-                            </td>
-                            <td className="numeric py-2.5 pr-3 text-subtle-foreground">
-                              {new Date(t.openedAt).toISOString().slice(11, 16)}Z
-                            </td>
-                            <td className="numeric py-2.5 pr-3 text-subtle-foreground">
-                              {t.barsHeld}×{t.timeframe}
-                            </td>
                             <td
                               className={cn(
-                                "numeric py-2.5 font-semibold",
+                                "numeric py-2.5 pr-3 font-semibold",
                                 pnl !== undefined &&
                                   (pnl >= 0 ? "text-bullish" : "text-bearish"),
                               )}
@@ -1776,6 +1801,13 @@ export function CryptoMarketsWorkspace({
                               {pnl === undefined
                                 ? "—"
                                 : `${fmtUsdPnl(pnl)} (${r! >= 0 ? "+" : ""}${r}R)`}
+                            </td>
+                            <td className="py-2.5 pr-3 max-w-[200px]">
+                              {(t.reasons?.length ?? 0) > 0 ? (
+                                <span className="text-xs text-subtle-foreground">
+                                  {t.reasons?.[0]}
+                                </span>
+                              ) : "—"}
                             </td>
                             <td className="py-2.5">
                               <button
@@ -1811,15 +1843,15 @@ export function CryptoMarketsWorkspace({
                   Trade history — profit & loss
                 </h3>
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[820px] text-sm">
+                  <table className="w-full min-w-[960px] text-sm">
                     <thead>
                       <tr className="border-b border-border text-left text-xs text-subtle-foreground">
+                        <th className="py-2 pr-3 font-medium">Strategy</th>
                         <th className="py-2 pr-3 font-medium">Symbol</th>
                         <th className="py-2 pr-3 font-medium">Type</th>
                         <th className="py-2 pr-3 font-medium">Entry → Exit</th>
                         <th className="py-2 pr-3 font-medium">Closed by</th>
-                        <th className="py-2 pr-3 font-medium">Bars</th>
-                        <th className="py-2 pr-3 font-medium">Points</th>
+                        <th className="py-2 pr-3 font-medium">Why opened</th>
                         <th className="py-2 pr-3 font-medium">R</th>
                         <th className="py-2 font-medium">Profit</th>
                       </tr>
@@ -1830,7 +1862,6 @@ export function CryptoMarketsWorkspace({
                         const p = info?.pricePrecision ?? precision;
                         const r = t.realizedR ?? 0;
                         const pnl = r * (t.riskUsd ?? 0);
-                        const pts = pointsCaptured(t);
                         return (
                           <tr
                             key={t.id}
@@ -1842,19 +1873,16 @@ export function CryptoMarketsWorkspace({
                               selectedTradeId === t.id && "bg-surface-hover",
                             )}
                           >
-                            <td className="py-2.5 pr-3 font-medium text-foreground">
-                              {info?.label ?? t.symbol} · {t.timeframe}
-                              <span className="ml-1.5 text-xs font-normal text-subtle-foreground">
-                                {VENUES[t.venue as VenueId]?.label ?? t.venue}
-                              </span>
-                              <Badge tone="developing" className="ml-1.5">
+                            <td className="py-2.5 pr-3">
+                              <Badge tone="developing">
                                 {strategyLabel(t.strategy)}
                               </Badge>
-                              {(t.reasons?.length ?? 0) > 0 && (
-                                <span className="mt-0.5 block max-w-xs truncate text-xs font-normal text-subtle-foreground">
-                                  {t.reasons?.[0]}
-                                </span>
-                              )}
+                            </td>
+                            <td className="py-2.5 pr-3 font-medium text-foreground">
+                              {info?.label ?? t.symbol}
+                              <span className="ml-1 text-xs font-normal text-subtle-foreground">
+                                {t.timeframe}
+                              </span>
                             </td>
                             <td className="py-2.5 pr-3">
                               <Badge tone={DIR_META[t.direction].tone}>
@@ -1864,22 +1892,35 @@ export function CryptoMarketsWorkspace({
                             <td className="numeric py-2.5 pr-3">
                               {fmtPrice(t.entry, p)} → {fmtPrice(t.exitPrice, p)}
                             </td>
-                            <td className="py-2.5 pr-3 text-subtle-foreground">
-                              {t.exitReason}
-                            </td>
-                            <td className="numeric py-2.5 pr-3">{t.barsHeld}</td>
-                            <td
-                              className={cn(
-                                "numeric py-2.5 pr-3",
-                                pts > 0 ? "text-bullish" : pts < 0 ? "text-bearish" : "",
+                            <td className="py-2.5 pr-3">
+                              <span
+                                className={cn(
+                                  "text-xs font-medium",
+                                  t.exitReason === "target"
+                                    ? "text-bullish"
+                                    : t.exitReason === "stop"
+                                      ? "text-bearish"
+                                      : "text-subtle-foreground",
+                                )}
+                              >
+                                {t.exitReason}
+                              </span>
+                              {t.exitDetail !== undefined && (
+                                <span className="mt-0.5 block max-w-[200px] text-xs text-subtle-foreground">
+                                  {t.exitDetail}
+                                </span>
                               )}
-                            >
-                              {pts >= 0 ? "+" : ""}
-                              {fmtPrice(pts, p)}
+                            </td>
+                            <td className="py-2.5 pr-3 max-w-[200px]">
+                              {(t.reasons?.length ?? 0) > 0 ? (
+                                <span className="text-xs text-subtle-foreground">
+                                  {t.reasons?.[0]}
+                                </span>
+                              ) : "—"}
                             </td>
                             <td
                               className={cn(
-                                "numeric py-2.5 pr-3",
+                                "numeric py-2.5 pr-3 font-semibold",
                                 r > 0.01 ? "text-bullish" : r < -0.01 ? "text-bearish" : "",
                               )}
                             >
@@ -2047,6 +2088,79 @@ export function CryptoMarketsWorkspace({
                   Every Binance Spot pair is scanned every minute; pairs with
                   closed trades rank first by win %. A few trades is noise — judge a pair
                   after a meaningful sample.
+                </p>
+              </div>
+            )}
+            {byStrategy.length > 0 && (
+              <div>
+                <h3 className="mb-1.5 text-sm font-medium text-foreground">
+                  Strategy comparison — which engine wins?
+                </h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[640px] text-sm">
+                    <thead>
+                      <tr className="border-b border-border text-left text-xs text-subtle-foreground">
+                        <th className="py-2 pr-3 font-medium">Strategy</th>
+                        <th className="py-2 pr-3 font-medium">Trades</th>
+                        <th className="py-2 pr-3 font-medium">Open</th>
+                        <th className="py-2 pr-3 font-medium">W</th>
+                        <th className="py-2 pr-3 font-medium">L</th>
+                        <th className="py-2 pr-3 font-medium">Win %</th>
+                        <th className="py-2 pr-3 font-medium">Net R</th>
+                        <th className="py-2 font-medium">Net $</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {byStrategy.map((r) => {
+                        const def = STRATEGIES.find((d) => d.id === r.strategy);
+                        return (
+                          <tr
+                            key={r.strategy}
+                            className="border-b border-border last:border-b-0"
+                          >
+                            <td className="py-2.5 pr-3 font-medium text-foreground">
+                              {def?.label ?? r.strategy}
+                            </td>
+                            <td className="numeric py-2.5 pr-3">{r.closed}</td>
+                            <td className="numeric py-2.5 pr-3">{r.open}</td>
+                            <td className="numeric py-2.5 pr-3 text-bullish">{r.wins}</td>
+                            <td className="numeric py-2.5 pr-3 text-bearish">{r.losses}</td>
+                            <td className="numeric py-2.5 pr-3 font-semibold text-foreground">
+                              {r.closed > 0 ? `${r.winPct}%` : "—"}
+                            </td>
+                            <td
+                              className={cn(
+                                "numeric py-2.5 pr-3 font-semibold",
+                                r.closed === 0
+                                  ? "text-subtle-foreground"
+                                  : r.netR >= 0
+                                    ? "text-bullish"
+                                    : "text-bearish",
+                              )}
+                            >
+                              {r.closed > 0 ? `${r.netR >= 0 ? "+" : ""}${r.netR}R` : "—"}
+                            </td>
+                            <td
+                              className={cn(
+                                "numeric py-2.5 font-semibold",
+                                r.closed === 0
+                                  ? "text-subtle-foreground"
+                                  : r.netUsd >= 0
+                                    ? "text-bullish"
+                                    : "text-bearish",
+                              )}
+                            >
+                              {r.closed > 0 ? fmtUsdPnl(r.netUsd) : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="mt-1.5 text-xs text-subtle-foreground">
+                  All enabled strategies trade simultaneously — ranked by net R to show which
+                  has the real edge. A strategy with 1 win and 0 losses is lucky, not proven.
                 </p>
               </div>
             )}

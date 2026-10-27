@@ -469,23 +469,38 @@ export function evaluateTrade(rec: TradeRecord, closedBars: Candle[]): TradeReco
       t.tp1Hit = true;
       t.stopLoss = bull ? Math.max(t.stopLoss, t.entry) : Math.min(t.stopLoss, t.entry);
     }
-    if (t.strategy === "victor" || t.strategy === "sr") {
-      // Candle trail: ratchet the stop under the extreme of the candle
-      // before the newest closed bar (the "2nd candle" counting the
-      // newest) — tightens while price runs, never loosens.
-      const post = closedBars.filter((b) => b.time > t.entryBarTime && b.time <= bar.time);
+
+    // --- Pro-style trade management for ALL strategies ---
+
+    // 1. Breakeven move: when price is halfway to TP1, move stop to breakeven.
+    //    A pro doesn't wait for TP1 to protect the trade — halfway there is enough.
+    if (!t.tp1Hit && tp1 !== undefined) {
+      const halfWay = bull
+        ? t.entry + (tp1 - t.entry) * 0.5
+        : t.entry - (t.entry - tp1) * 0.5;
+      const reached = bull ? bar.close >= halfWay : bar.close <= halfWay;
+      if (reached) {
+        t.stopLoss = bull ? Math.max(t.stopLoss, t.entry) : Math.min(t.stopLoss, t.entry);
+      }
+    }
+
+    // 2. Candle trail for ALL strategies: ratchet the stop under/over the
+    //    extreme of the candle before the newest closed bar. Only trails
+    //    when the trade is in profit — a pro doesn't move their stop on
+    //    flat bars, only when price is making new extremes in their favor.
+    const post = closedBars.filter((b) => b.time > t.entryBarTime && b.time <= bar.time);
+    const inProfit = bull ? bar.close > t.entry : bar.close < t.entry;
+    if (inProfit) {
       const back = post[post.length - 2];
       if (back !== undefined) {
         t.stopLoss = bull ? Math.max(t.stopLoss, back.low) : Math.min(t.stopLoss, back.high);
       }
-    // After TP1 the runner trails two ways — a chandelier stop (3×ATR
-    // behind the extreme close since entry) AND a candle-by-candle
-    // ratchet under/over the previous closed bar's extreme, same as
-    // Victor's scalp trail. The tighter of the two wins; the stop can
-    // never loosen. ATR adapts the chandelier width to each pair's
-    // volatility; when ATR isn't computable yet it falls back to 1R.
-    } else if (t.tp1Hit) {
-      const post = closedBars.filter((b) => b.time > t.entryBarTime && b.time <= bar.time);
+    }
+
+    // 3. After TP1 the runner trails with a chandelier stop (3×ATR behind
+    //    the extreme close since entry) AND the candle ratchet above.
+    //    The tighter of the two wins; the stop can never loosen.
+    if (t.tp1Hit) {
       const atr = atrOf(post);
       const extreme = bull
         ? Math.max(...post.map((b) => b.close))
@@ -493,11 +508,8 @@ export function evaluateTrade(rec: TradeRecord, closedBars: Candle[]): TradeReco
       const width = atr !== undefined ? 3 * atr : risk;
       const trail = bull ? extreme - width : extreme + width;
       t.stopLoss = bull ? Math.max(t.stopLoss, trail) : Math.min(t.stopLoss, trail);
-      const back = post[post.length - 2];
-      if (back !== undefined) {
-        t.stopLoss = bull ? Math.max(t.stopLoss, back.low) : Math.min(t.stopLoss, back.high);
-      }
     }
+
     if (t.barsHeld >= EXPIRY_BARS) {
       return finish(
         t,
@@ -648,6 +660,64 @@ export function symbolStats(trades: TradeRecord[]): SymbolStats[] {
 }
 
 // ---------- persistence (localStorage — a local journal, not an account) ----------
+
+export interface StrategyStats {
+  strategy: string;
+  open: number;
+  closed: number;
+  wins: number;
+  losses: number;
+  flats: number;
+  netR: number;
+  netUsd: number;
+  winPct: number;
+}
+
+/**
+ * Per-strategy rollup — answers "which strategy is profitable?". Sorted:
+ * strategies with closed trades first (by net R), then strategies with
+ * only running trades.
+ */
+export function strategyStats(trades: TradeRecord[]): StrategyStats[] {
+  const map = new Map<string, StrategyStats>();
+  for (const t of trades) {
+    const key = t.strategy ?? "confluence";
+    let row = map.get(key);
+    if (row === undefined) {
+      row = {
+        strategy: key,
+        open: 0,
+        closed: 0,
+        wins: 0,
+        losses: 0,
+        flats: 0,
+        netR: 0,
+        netUsd: 0,
+        winPct: 0,
+      };
+      map.set(key, row);
+    }
+    if (t.status === "open") {
+      row.open += 1;
+      continue;
+    }
+    row.closed += 1;
+    const outcome = tradeOutcome(t);
+    if (outcome === "win") row.wins += 1;
+    else if (outcome === "loss") row.losses += 1;
+    else row.flats += 1;
+    row.netR = Math.round((row.netR + (t.realizedR ?? 0)) * 100) / 100;
+    row.netUsd = Math.round((row.netUsd + (t.realizedR ?? 0) * usdOf(t)) * 100) / 100;
+    const decided = row.wins + row.losses;
+    row.winPct = decided === 0 ? 0 : Math.round((row.wins / decided) * 1000) / 10;
+  }
+  return [...map.values()].sort((a, b) => {
+    const aRanked = a.closed > 0 ? 1 : 0;
+    const bRanked = b.closed > 0 ? 1 : 0;
+    if (aRanked !== bRanked) return bRanked - aRanked;
+    return b.netR - a.netR;
+  });
+}
 
 function store(): Storage | undefined {
   try {
